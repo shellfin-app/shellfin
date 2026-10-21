@@ -1,0 +1,13 @@
+/* Static terminal look-alike in Settings > Terminal; colours and fonts arrive as inline styles from the form. */
+.term-preview {
+  position: sticky; top: 0; z-index: 2; padding: 10px 12px; overflow: hidden; border: 1px solid var(--border-strong);
+  border-radius: var(--radius); white-space: pre; user-select: none;
+}
+.term-preview__line { min-height: 1lh; }
+.term-preview__cursor { display: inline-block; width: 1ch; vertical-align: bottom; }
+.term-preview__cursor--block { background: var(--term-cursor); }
+.term-preview__cursor--bar { box-shadow: inset 2px 0 0 var(--term-cursor); }
+.term-preview__cursor--underline { box-shadow: inset 0 -2px 0 var(--term-cursor); }
+/* The blink honours the reduce-motion setting (<html data-motion>, set by the live appearance preview too). */
+:root[data-motion="full"] .term-preview__cursor--blink { animation: term-preview-blink 1.06s step-end infinite; }
+@keyframes term-preview-blink { 50% { opacity: 0; } }

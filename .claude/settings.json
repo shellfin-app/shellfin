@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(git status *)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git show *)",
+      "Bash(git branch --show-current)",
+      "Bash(cd src-tauri && cargo fmt *)",
+      "Bash(cd src-tauri && cargo clippy *)",
+      "Bash(cd src-tauri && cargo test *)",
+      "Bash(cargo fmt *)",
+      "Bash(cargo clippy *)",
+      "Bash(cargo test *)",
+      "Bash(npm run lint)",
+      "Bash(npm run typecheck)",
+      "Bash(npm run test)",
+      "Bash(npm run test *)",
+      "Bash(npm run i18n:check)",
+      "Bash(npm run i18n:status)",
+      "Bash(npm run notices:check)",
+      "Bash(npm run build)",
+      "Bash(npm run test:freeze)",
+      "Bash(npm run bindings)",
+      "Bash(npm run bindings:check)",
+      "Bash(npm run rust:check)"
+    ],
+    "deny": [
+      "Bash(git push *)",
+      "Bash(git reset --hard *)",
+      "Bash(git clean *)",
+      "Bash(rm -rf *)",
+      "Bash(npm publish *)",
+      "Bash(cargo publish *)"
+    ]
+  }
+}

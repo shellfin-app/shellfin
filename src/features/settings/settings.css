@@ -1,0 +1,45 @@
+.settings-group {
+  margin: 0; padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 12px;
+  border: 1px solid var(--border); border-radius: var(--radius); min-width: 0;
+}
+.settings-group legend { padding: 0 6px; font-size: calc(11px * var(--ui-scale, 1)); font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--text-muted); }
+/* The dialog has a fixed size: the section list stays put, only the content pane scrolls. */
+.settings-layout { flex: 1; min-height: 0; display: flex; gap: 16px; align-items: stretch; }
+.settings-side { flex: 0 0 160px; display: flex; flex-direction: column; justify-content: space-between; gap: 12px; }
+.settings-nav { display: flex; flex-direction: column; gap: 2px; }
+.settings-actions { display: flex; flex-direction: column; gap: 14px; }
+.settings-action { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.settings-action .field__hint { font-size: calc(12px * var(--ui-scale, 1)); }
+.settings-nav__item {
+  text-align: left; padding: 6px 10px; border: 0; border-radius: var(--radius); background: transparent;
+  color: var(--text-muted); font: inherit; font-size: calc(13px * var(--ui-scale, 1)); cursor: pointer;
+}
+.settings-nav__item:hover { background: var(--hover); color: var(--text); }
+.settings-nav__item--active { background: var(--selected); color: var(--text); }
+.settings-sections { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 16px; padding-right: 4px; }
+.settings-preview {
+  margin: 0; padding: 10px 12px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
+  border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg); color: var(--text);
+}
+/* One setting per row: label (+ (?) tip) left, control right (`Setting`, `Checkbox`); compound controls are stacked. */
+.settings-group { gap: 8px; }
+.settings-group .check-row .field__hint { padding-left: 0; }
+.settings-group .check:not(.check--tip) { flex-direction: row-reverse; justify-content: space-between; min-height: 36px; }
+.settings-group .check--tip { min-height: 36px; }
+.settings-group .accent-picker, .settings-group .bg-picker { padding: 4px 0 8px; }
+
+/* ---- Appearance section and terminal background picker ---- */
+.accent-picker, .bg-picker { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.accent-picker__swatch, .bg-picker__swatch {
+  width: 26px; height: 26px; border-radius: 50%; border: 2px solid transparent;
+  box-shadow: inset 0 0 0 1px var(--swatch-edge);
+}
+.accent-picker__swatch--active, .bg-picker__swatch--active { border-color: var(--text-bright); box-shadow: inset 0 0 0 2px var(--bg); }
+.bg-picker__swatch { border-radius: var(--radius-sm); }
+.bg-picker__swatch:not(.bg-picker__swatch--active) { box-shadow: inset 0 0 0 1px var(--border-strong); }
+.bg-picker__theme {
+  height: 26px; padding: 0 10px; border: 1px solid var(--border-input); border-radius: var(--radius-sm);
+  color: var(--text-secondary); font-size: calc(12px * var(--ui-scale, 1));
+}
+.bg-picker__theme:hover { color: var(--text-bright); background: var(--hover); }
+.bg-picker__theme--active { border-color: var(--accent); color: var(--text-bright); background: var(--accent-bg); }

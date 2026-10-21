@@ -1,0 +1,87 @@
+[package]
+name = "shellfin"
+version = "0.1.0"
+description = "Shellfin — cross-platform SSH client with terminals, SFTP file tree and editor"
+edition = "2024"
+rust-version = "1.90"          # tauri 2.12 MSRV; File::lock needs ≥ 1.89; builds use rust-toolchain.toml
+authors = ["The Shellfin Authors"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/shellfin-app/shellfin"
+homepage = "https://shellfin.app"
+publish = false
+
+[lib]
+# The `_lib` suffix keeps the lib name distinct from the bin name (cargo#8519 on Windows).
+name = "shellfin_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "=2.7.3", features = [] }
+
+[dependencies]
+tauri = { version = "=2.12.4", features = [] }
+tauri-plugin-dialog = "=2.8.3"         # Rust-side only (no JS permissions)
+tauri-plugin-opener = "=2.7.2"         # Rust-side only (reveal paths, open http(s) links)
+tauri-plugin-notification = "=2.5.0"   # Rust-side only (OS notifications); no JS permission
+# Updater: signed self-update (minisign, §9.8). Rust-side only, no JS permission. rustls with
+# ring (no aws-lc, no OpenSSL); system proxy settings honoured; `zip` off (v1-compatible bundles only).
+tauri-plugin-updater = { version = "=2.13.3", default-features = false, features = ["rustls-tls", "system-proxy"] }
+# Single instance: a second launch focuses the running window and exits. Rust-side
+# only, no JS commands or permissions; no new crates in the tree (windows-sys / zbus 5 / tokio are
+# already there). 2.5.3 (2026-10-10): 2.5.4 was a week old.
+tauri-plugin-single-instance = "=2.5.3"
+russh = { version = "=0.64.1", default-features = false, features = ["ring", "rsa", "flate2"] }
+russh-sftp = "=3.0.1"
+tokio = { version = "=1.54.0", features = ["sync", "time", "net", "io-util", "macros", "fs"] }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
+bytes = "=1.12.1"
+futures-util = "=0.3.34"
+thiserror = "=2.0.21"
+tracing = "=0.1.44"
+tracing-subscriber = { version = "=0.3.23", features = ["env-filter", "fmt"] }
+tracing-appender = "=0.2.5"
+keyring = "=4.2.0"
+notify-debouncer-mini = "=0.7.0"
+encoding_rs = "=0.8.42"
+glob = "=0.3.4"
+uuid = { version = "=1.28.0", features = ["v4", "serde"] }
+zeroize = "=1.9.1"
+ring = "=0.17.14"
+base64 = "=0.23.1"
+ts-rs = "=12.0.1"
+url = "=2.5.8"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization",
+  "Win32_Storage_FileSystem", "Win32_System_Threading"] }  # Threading: OpenProcessToken (current user SID)
+# WebView2 settings Tauri does not expose (default context menus, browser accelerator
+# keys). Same versions tauri/wry already use (no new crates in the tree).
+webview2-com = "=0.39.1"
+windows-core = "=0.62.2"
+
+[target.'cfg(unix)'.dependencies]
+libc = "=0.2.191"
+
+[dev-dependencies]
+tempfile = "=3.27.0"
+pretty_assertions = "=1.4.1"
+tokio = { version = "=1.54.0", features = ["test-util", "rt-multi-thread", "macros"] }  # tests only: paused clock, #[tokio::test]
+
+[features]
+it = []   # integration tests against docker sshd (§10.2)
+# E2E test isolation (src/e2e.rs): SHELLFIN_E2E_ROOT redirects all user state. Test builds only:
+# never in release artifacts (compile_error! in optimised builds; CI greps release binaries).
+e2e = []
+
+[profile.release]               # replaces the scaffold profile: panic MUST unwind (§9.6)
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "unwind"
+strip = true
+
+[lints.clippy]
+unwrap_used = "deny"            # module-level #![allow] only in tests; indexing_slicing denied in ssh/, sftp/,
+expect_used = "deny"            # sshconfig/, known_hosts/ via #![deny(clippy::indexing_slicing)]
+disallowed_methods = "deny"     # clippy.toml: no std::process::Command anywhere (§3)

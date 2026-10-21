@@ -1,0 +1,12 @@
+# gitleaks configuration: default rules, plus an allowlist for the committed, test-only SSH keys
+# of the Docker integration suite (see src-tauri/tests/fixtures/keys/README.md). Nothing else
+# is allowlisted.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Test-only SSH keys for the Docker integration suite (comment: shellfin-test)"
+# Unanchored on the left: `gitleaks dir <path>` reports paths prefixed with the scanned root.
+paths = [
+  '''(^|/)src-tauri/tests/fixtures/keys/''',
+]

@@ -1,0 +1,14 @@
+/* Update dialog. Release notes are plain text in a bounded, scrollable box. */
+.update__notes-title {
+  margin: 4px 0 0; font-size: calc(12px * var(--ui-scale, 1)); font-weight: 600; color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: .04em;
+}
+.update__notes {
+  max-height: calc(220px * var(--ui-scale, 1)); overflow: auto; padding: 8px 10px;
+  border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg);
+  color: var(--code-fg); font-size: calc(12.5px * var(--ui-scale, 1)); line-height: 1.5;
+  white-space: pre-wrap; overflow-wrap: anywhere; user-select: text;
+}
+.update__notes:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.update__progress { display: flex; flex-direction: column; gap: 6px; }
+.update__error { color: var(--text-bright); }

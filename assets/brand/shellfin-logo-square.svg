@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="Shellfin">
+  <!-- Full-bleed variant for avatars: platforms (e.g. GitHub) apply their own rounded crop. -->
+  <rect width="512" height="512" fill="#4FD1C5"/>
+  <path d="M150 360 C 216 306 256 188 340 110 C 324 206 332 298 380 360 Z" fill="#0F1115"/>
+  <rect x="96" y="384" width="320" height="28" rx="14" fill="#0F1115"/>
+</svg>

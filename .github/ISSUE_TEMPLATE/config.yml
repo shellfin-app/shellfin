@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/shellfin-app/shellfin/security/advisories/new
+    about: Please do not open public issues for security problems. Use private vulnerability reporting.
+  - name: Questions and discussions
+    url: https://github.com/shellfin-app/shellfin/discussions
+    about: Ask questions, share ideas and get help from the community.

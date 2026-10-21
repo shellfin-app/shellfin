@@ -1,0 +1,100 @@
+name: Bug report
+description: Something does not work as expected
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Shellfin is pre-alpha, so bugs are expected; clear reports help a lot.
+
+        **Security problems do not belong here.** Use the private reporting link on the issue chooser page.
+
+        ## Redact before you paste
+        Logs and screenshots can contain hostnames, usernames, IP addresses, key fingerprints and file paths.
+        **Replace them with placeholders** (for example `host.example.com`, `user`, `203.0.113.10`).
+        **Never paste private keys, passphrases, passwords or tokens**, even in part.
+  - type: input
+    id: version
+    attributes:
+      label: Shellfin version or commit
+      description: Version shown in the app, or the git commit hash if you built from source.
+      placeholder: "main @ abc1234"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system and version
+      placeholder: "Windows 11 23H2 / Ubuntu 24.04 / macOS 15.1 (Apple Silicon)"
+    validations:
+      required: true
+  - type: dropdown
+    id: arch
+    attributes:
+      label: Architecture
+      options:
+        - x64 (Windows or Linux)
+        - ARM64 (Windows)
+        - Apple Silicon (macOS)
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How did you install or run Shellfin?
+      options:
+        - Windows installer (NSIS .exe)
+        - macOS DMG
+        - Linux AppImage
+        - Linux deb package
+        - Linux rpm package
+        - Built from source (npm run tauri build)
+        - Running in development (npm run tauri dev)
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Numbered steps, as exact as you can. Mention the kind of server and authentication method if relevant (OpenSSH version, key, agent, password, jump host).
+      placeholder: |
+        1. Open a connection to a host with ...
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What happened instead? Include exact error messages.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs (redacted)
+      description: |
+        Daily log files are named `shellfin.<date>.log` and live in the application log directory
+        (by default `%LOCALAPPDATA%\app.shellfin.desktop\logs` on Windows, `~/Library/Logs/app.shellfin.desktop`
+        on macOS and `~/.local/share/app.shellfin.desktop/logs` on Linux).
+        Shellfin does not log terminal data, file contents or secrets, but **check and redact** hostnames,
+        usernames, IP addresses and paths before pasting.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and did not find a duplicate.
+          required: true
+        - label: I removed or replaced hostnames, usernames, IP addresses and credentials, and did not include any private key or password.
+          required: true

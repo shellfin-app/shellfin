@@ -1,0 +1,13 @@
+.shortcuts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 28px; max-height: 60vh; overflow: auto; margin-top: 12px; }
+.shortcuts__section h3 { margin: 0 0 6px; }
+.shortcuts__list { margin: 0; }
+.shortcuts__row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 26px; }
+.shortcuts__row dt { color: var(--text); min-width: 0; }
+.shortcuts__row dd { margin: 0; flex: none; }
+@media (max-width: 700px) { .shortcuts { grid-template-columns: 1fr; } }
+
+.about { display: flex; gap: 16px; align-items: flex-start; }
+.about .brand-mark { flex: none; }
+.about__name { margin: 0; font-size: calc(18px * var(--ui-scale, 1)); font-weight: 600; color: var(--text-bright); }
+.about__version { margin: 2px 0 10px; color: var(--text-muted); font-size: calc(12px * var(--ui-scale, 1)); }
+.about__license { color: var(--text-muted); }

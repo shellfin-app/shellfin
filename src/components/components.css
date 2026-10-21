@@ -1,0 +1,50 @@
+/* Shared primitives. */
+
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  color: var(--text-muted);
+  border-radius: var(--radius-sm);
+}
+.icon-button:hover:not(:disabled) { background: var(--hover); color: var(--text-bright); }
+.icon-button--active { color: var(--text-bright); background: var(--hover); }
+.icon-button:disabled { color: var(--text-dim); }
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 14px;
+  border-radius: var(--radius);
+  white-space: nowrap;
+}
+.button--primary { background: var(--accent); color: var(--accent-fg); font-weight: 600; }
+.button--primary:hover { filter: brightness(1.08); }
+.button--outline { border: 1px solid var(--border-input); }
+.button--outline:hover { background: var(--hover); }
+
+.status-dot {
+  display: inline-block;
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+.status-dot--connected { background: var(--ok); }
+.status-dot--connecting { background: var(--warn); }
+.status-dot--error { background: var(--danger); }
+.status-dot--idle { border: 1.5px solid var(--status-ring); }
+
+.server-text { unicode-bidi: isolate; }
+
+.progress { height: 4px; border-radius: 2px; background: var(--border); overflow: hidden; }
+.progress__bar { height: 100%; background: var(--accent); transition: width .4s linear; }
+.button--ghost { color: var(--text-secondary); }
+.button--ghost:hover:not(:disabled) { background: var(--hover); color: var(--text-bright); }
+.button:disabled { opacity: .5; cursor: default; }
+
+/* Bookmark color mark (rows, connection tabs, session list). */
+.color-mark { display: inline-block; flex: none; width: 8px; height: 8px; border-radius: 2px; }

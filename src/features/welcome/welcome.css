@@ -1,0 +1,88 @@
+.welcome {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  overflow: auto;
+  display: flex;
+  justify-content: center;
+  padding: 72px 24px 40px;
+}
+.welcome__inner { width: 100%; max-width: 760px; display: flex; flex-direction: column; gap: 36px; }
+.welcome__hero { display: flex; flex-direction: column; gap: 14px; }
+.welcome__title { font-size: calc(26px * var(--ui-scale, 1)); font-weight: 600; color: var(--text-bright); }
+.welcome__actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.welcome__section { display: flex; flex-direction: column; gap: 12px; }
+.welcome__section h2, .info-card h2 { margin: 0; }
+.welcome__empty { margin: 0; color: var(--text-muted); }
+
+.quick-connect {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 48px;
+  padding: 0 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--chrome);
+  color: var(--text-muted);
+}
+.quick-connect:focus-within { box-shadow: 0 0 0 3px var(--accent-ring); border-color: var(--accent); }
+.quick-connect__input {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: 0;
+  outline: none;
+  color: var(--text-bright);
+  font-size: calc(14px * var(--ui-scale, 1));
+}
+.quick-connect__input::placeholder { color: var(--text-muted); }
+.kbd {
+  font-size: calc(11px * var(--ui-scale, 1));
+  color: var(--text-muted);
+  padding: 3px 6px;
+  border: 1px solid var(--border-input);
+  border-radius: 4px;
+}
+
+.card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+
+.recent-card {
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 10px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+}
+.recent-card:hover { border-color: var(--border-strong); background: var(--hover); }
+.recent-card__title { display: flex; align-items: center; gap: 8px; font-weight: 600; color: var(--text-bright); }
+.recent-card__title svg { color: var(--accent); }
+.recent-card__user { font-size: calc(12px * var(--ui-scale, 1)); color: var(--text-muted); }
+
+.info-card {
+  padding: 14px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.info-card__value { color: var(--text-bright); }
+
+/* Independent facts shown as separate items, never concatenated into one translated sentence (§8.2.2). */
+.chips { display: flex; flex-wrap: wrap; gap: 0 6px; font-size: calc(12px * var(--ui-scale, 1)); color: var(--text-muted); }
+.chips > span + span::before { content: "\00B7"; margin-right: 6px; }
+
+/* Long paths truncate with an ellipsis (the full text is the tooltip) instead of overflowing the card. */
+.card-grid > * { min-width: 0; }
+.info-card { min-width: 0; }
+.info-card__value { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* The reload button shows the config path: it truncates instead of widening the page. */
+.welcome__reload { max-width: 100%; min-width: 0; }
+.welcome__reload-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.welcome__first-run { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; }
+.info-card__hint { font-size: calc(12px * var(--ui-scale, 1)); line-height: 18px; color: var(--text-muted); }

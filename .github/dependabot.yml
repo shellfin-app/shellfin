@@ -1,0 +1,43 @@
+# Keeps SHA-pinned actions and the exact dependency pins current (§11.2, §11.4).
+# `cooldown`: a freshly published version waits 7 days before it is proposed (a malicious release is usually
+# yanked within days). Groups keep versions that must move together in one PR: the `tauri` crates ship with
+# `@tauri-apps/*` (the CLI refuses a crate/JS-API minor mismatch, so merge those two PRs together), and the
+# CodeMirror and xterm packages share internal APIs.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+  - package-ecosystem: cargo
+    directory: /src-tauri
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+    groups:
+      tauri:
+        patterns:
+          - "tauri"
+          - "tauri-*"
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+    groups:
+      tauri:
+        patterns:
+          - "@tauri-apps/*"
+      codemirror:
+        patterns:
+          - "@codemirror/*"
+          - "@lezer/*"
+      xterm:
+        patterns:
+          - "@xterm/*"

@@ -1,0 +1,113 @@
+# cargo-deny configuration (§11.2 `security` job, §11.4 dependency hygiene).
+# Run from the repo root: `cargo deny --manifest-path src-tauri/Cargo.toml check advisories bans sources licenses`
+
+[graph]
+# Exactly the targets we ship (§11.2 build matrix): Windows x64 + ARM64, Linux x64, macOS Apple
+# Silicon. No Intel Mac, no 32-bit Windows.
+targets = [
+  "x86_64-pc-windows-msvc",
+  "aarch64-pc-windows-msvc",
+  "x86_64-unknown-linux-gnu",
+  "aarch64-apple-darwin",
+]
+all-features = false
+no-default-features = false
+
+[output]
+feature-depth = 1
+
+[advisories]
+# RustSec advisories (vulnerabilities, unsound, unmaintained, yanked) fail the job. Every ignore
+# below has no fixed version available and carries its justification; re-check them on every
+# dependency upgrade (§13 risk 1 checklist).
+# Report unsound advisories for every crate in the graph, like cargo-audit does. The
+# cargo-deny default ("workspace") only covers our direct dependencies, which is why the glib
+# ignore below used to show up as "advisory was not encountered".
+unsound = "all"
+ignore = [
+  # rsa (via russh/ssh-key, feature "rsa", pinned by §2.2): Marvin timing side channel in
+  # private-key operations; no patched release exists ("patched = []"). Signing with the user's
+  # RSA key IS a private-key operation, and an SSH server can observe its latency, so
+  # "signing only" is NOT the argument. Accepted because:
+  #   - the pinned rsa 0.10.0-rc.18 uses constant-time crypto-bigint arithmetic
+  #     (BoxedMontyForm::pow), not the num-bigint-dig backend of rsa <= 0.9 that Marvin targeted;
+  #     cargo-audit still flags it because the advisory lists no patched version and the release
+  #     is a pre-release;
+  #   - we never RSA-decrypt (no decryption oracle);
+  #   - one signature per publickey auth attempt, measured across network jitter;
+  #   - agent-held RSA keys are signed by the agent, and Ed25519 is preferred.
+  # The acceptance depends on the 0.10 backend: [bans] denies rsa < 0.10.0-rc.0 below.
+  # Track RustCrypto/RSA#626 and drop this ignore as soon as a fixed rsa release lands in russh.
+  { id = "RUSTSEC-2023-0071", reason = "accepted for rsa 0.10 (constant-time crypto-bigint), see comment; rsa < 0.10 is banned" },
+  # proc-macro-error (build-time proc macro via glib-macros ← gtk-rs 0.18 ← tauri/muda on Linux):
+  # unmaintained, not a vulnerability; controlled by Tauri's Linux stack.
+  { id = "RUSTSEC-2024-0370", reason = "unmaintained build-time dep of Tauri's gtk-rs stack; no alternative" },
+  # zvariant / zvariant_derive / zbus_names (zbus 5 ← keyring Secret Service store and
+  # tauri-plugin-opener on Linux): unmaintained as standalone crates since their merge into
+  # zbus 6; no upstream release of keyring/opener on zbus 6 yet. Not vulnerabilities.
+  { id = "RUSTSEC-2026-0370", reason = "zvariant merged into zbus 6; waiting for keyring/opener to upgrade" },
+  { id = "RUSTSEC-2026-0371", reason = "zbus_names merged into zbus 6; waiting for keyring/opener to upgrade" },
+  { id = "RUSTSEC-2026-0372", reason = "zvariant_derive merged into zbus 6; waiting for keyring/opener to upgrade" },
+  # glib 0.18 (Tauri's gtk-rs stack on Linux): unsound VariantStrIter iterator impls; we do not
+  # use that API. Reported by cargo-audit and, with `unsound = "all"` above, by cargo-deny too.
+  { id = "RUSTSEC-2024-0429", reason = "glib 0.18 VariantStrIter unsound; Tauri Linux stack, API unused" },
+]
+# The ignore lists in this file and src-tauri/.cargo/audit.toml must stay identical.
+
+[licenses]
+# Permissive licenses plus MPL-2.0 (file-level copyleft; used by transitive tauri/html
+# dependencies, unmodified). No GPL/AGPL/LGPL-only crates.
+allow = [
+  "MIT",
+  "MIT-0",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "Unicode-3.0",
+  "CC0-1.0",
+  "0BSD",
+  "Unlicense",
+  "MPL-2.0",
+]
+confidence-threshold = 0.8
+exceptions = []
+
+[licenses.private]
+# Our own crate is `publish = false` (license MIT OR Apache-2.0, both allowed above); private crates are skipped.
+ignore = true
+registries = []
+
+[bans]
+# The Tauri/russh tree legitimately contains duplicate major versions (windows-sys, etc.).
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = false
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+allow = []
+deny = [
+  # §2.1: the aws-lc-rs backend fails to build on Windows dev machines; russh must use `ring`.
+  { name = "aws-lc-sys", reason = "russh is built with the ring backend (§2.1)" },
+  { name = "aws-lc-rs", reason = "russh is built with the ring backend (§2.1)" },
+  # §9.1: the WebView must not get shell/fs plugins. tauri-plugin-fs is only allowed as the
+  # internal dependency of tauri-plugin-dialog (never registered, no permissions granted).
+  { name = "tauri-plugin-shell", reason = "no shell plugin (§9.1)" },
+  { name = "tauri-plugin-fs", wrappers = ["tauri-plugin-dialog"], reason = "no fs plugin (§9.1)" },
+  # the RUSTSEC-2023-0071 acceptance rests on rsa 0.10's constant-time crypto-bigint
+  # backend. A resolution to rsa <= 0.9 (num-bigint-dig) must fail instead of staying silently ignored.
+  # NOTE: use `name` + `version`. cargo-deny 0.20.2 does not apply a range in the
+  # `crate = "rsa@<…"` form; it never matched in a negative test.
+  { name = "rsa", version = "<0.10.0-rc.0", reason = "num-bigint-dig backend affected by RUSTSEC-2023-0071" },
+]
+skip = []
+skip-tree = []
+
+[sources]
+# crates.io only (§11.2).
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

@@ -1,0 +1,555 @@
+# Release (§11.3). Push a tag `v*` (it must equal v<package.json version>) to build installers for
+# Windows x64 + ARM64, macOS (Apple Silicon only) and Linux x64, check them, and create a DRAFT GitHub Release. Nothing
+# is ever published automatically: a maintainer reviews the draft and publishes it by hand.
+#
+# MANDATORY ORDER: build -> release checks -> upload -> (all builds green) -> SHA256SUMS,
+# attestations, draft release. The job that creates the draft only runs when every build job
+# passed its checks. All actions are pinned to full commit SHAs. No caches anywhere (cache
+# poisoning must not be able to reach a release). Signing secrets live only in the protected
+# `release` environment (required reviewers); every signing step is skipped when its secrets are
+# absent, so unsigned builds still work.
+#
+# Updater (§9.8, §11.3): the frontend is built in its own step WITHOUT any secret; the Tauri
+# build then runs with `beforeBuildCommand` emptied and is the only step that sees
+# TAURI_SIGNING_PRIVATE_KEY / _PASSWORD. With the key, the build also produces signed updater
+# artifacts (NSIS .exe, .app.tar.gz, AppImage) and `updater-manifest` (no
+# secrets, contents: read) assembles `latest.json` for the draft. Users only see an update after a
+# maintainer PUBLISHES the draft: `update-channels.yml` then writes the channel files.
+# Windows ships NSIS only (x64 and ARM64): one installer type per updater key, per-user install.
+# Pre-release tags (vX.Y.Z-experimental.N) build AppImage-only on Linux and create a draft marked as a pre-release.
+#
+# Gates before anything is built: the tag's commit must be on `main` and have a green CI run (`verify`).
+# Release notes are the CHANGELOG section of the version, when it exists (`notes`).
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  TAURI_LINUX_DEPS: >-
+    libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev
+    libayatana-appindicator3-dev librsvg2-dev patchelf
+  # Keep in sync with src-tauri/rust-toolchain.toml and the other workflows (§11.2).
+  RUST_TOOLCHAIN: 1.99.1
+
+jobs:
+  # The tag must point at a commit of `main` whose CI run (push event) succeeded, so a broken or
+  # side-branch tag cannot produce a draft release.
+  verify:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read # read the CI run of the commit
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: The tagged commit is on main
+        run: |
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD; then
+            echo "::error::$GITHUB_REF_NAME ($GITHUB_SHA) is not a commit of main"; exit 1
+          fi
+
+      - name: CI passed for the tagged commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          n="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&event=push&status=success&per_page=1" --jq .total_count)"
+          if [ "$n" -lt 1 ]; then
+            echo "::error::no successful CI run (push to main) for $GITHUB_SHA: wait for CI before tagging"; exit 1
+          fi
+
+  build:
+    name: build (${{ matrix.name }})
+    needs: verify
+    timeout-minutes: 90
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - name: windows-x64
+            platform: windows-2025
+            args: "--bundles nsis"
+            rust-targets: ""
+          # Native ARM64 runner (no cross-compilation: ring needs special toolchains for it).
+          - name: windows-arm64
+            platform: windows-11-arm
+            args: "--bundles nsis"
+            rust-targets: ""
+          - name: linux-x64
+            platform: ubuntu-22.04
+            args: ""
+            rust-targets: ""
+          - name: macos-arm64
+            platform: macos-15 # arm64
+            args: "--target aarch64-apple-darwin"
+            rust-targets: aarch64-apple-darwin
+    runs-on: ${{ matrix.platform }}
+    environment: release
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Tag matches the package.json version
+        shell: bash
+        run: |
+          v="$(node -p "require('./package.json').version")"
+          if [ "$GITHUB_REF_NAME" != "v$v" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match package.json version v$v"; exit 1
+          fi
+          c="$(sed -n 's/^version = "\(.*\)"$/\1/p' src-tauri/Cargo.toml | head -n 1)"
+          if [ "$c" != "$v" ]; then
+            echo "::error::src-tauri/Cargo.toml version ($c) differs from package.json ($v)"; exit 1
+          fi
+
+      - name: Release artifacts never select MockBackend
+        shell: bash
+        run: |
+          if [ -n "${VITE_BACKEND:-}" ]; then
+            echo "::error::VITE_BACKEND must not be set when building release artifacts"; exit 1
+          fi
+
+      - name: Install Tauri Linux prerequisites
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          # shellcheck disable=SC2086 # word splitting of the package list is intended
+          sudo apt-get install -y --no-install-recommends $TAURI_LINUX_DEPS
+
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master (2026-10)
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ${{ matrix.rust-targets }}
+
+      # no runner, home or registry paths in panic locations of the shipped binaries, and a
+      # fixed timestamp for tools that embed one. Build scripts see the same flags, which is harmless.
+      - name: Reproducibility settings
+        shell: bash
+        run: |
+          home="$HOME"
+          if [ "$RUNNER_OS" = "Windows" ]; then home="$USERPROFILE"; fi
+          flags="--remap-path-prefix=$GITHUB_WORKSPACE=/build --remap-path-prefix=$home/.cargo=/cargo --remap-path-prefix=$home/.rustup=/rustup"
+          echo "RUSTFLAGS=$flags" >> "$GITHUB_ENV"
+          echo "SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)" >> "$GITHUB_ENV"
+
+      # No `cache:` and no rust-cache here (§11.3).
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.22.1
+          package-manager-cache: false # never cache in a release job, even if packageManager is added
+
+      # Install scripts of dev dependencies (@swc/core postinstall, optional fsevents) are not
+      # needed to build the app, so none of them runs in the signing environment (§11.4).
+      - name: npm ci (no lifecycle scripts)
+        run: npm ci --ignore-scripts
+
+      - name: Cargo.lock is up to date
+        run: cargo fetch --locked --manifest-path src-tauri/Cargo.toml
+
+      # the frontend (and every devDependency it runs) is built here, before any secret is in
+      # the environment of a step or in GITHUB_ENV. The Tauri build below does not rebuild it.
+      - name: Build the frontend (no secrets in this step)
+        run: npm run build
+
+      # Updater signing (§9.8): only the presence of the key is evaluated here; the key itself is
+      # passed to the Tauri build step alone. The official repository must sign updates; a fork
+      # without the key builds without updater artifacts.
+      - name: Detect the updater signing key
+        id: updaterkey
+        shell: bash
+        env:
+          HAVE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+        run: |
+          echo "enabled=$HAVE_KEY" >> "$GITHUB_OUTPUT"
+          if [ "$HAVE_KEY" != "true" ]; then
+            if [ "$GITHUB_REPOSITORY" = "shellfin-app/shellfin" ]; then
+              echo "::error::TAURI_SIGNING_PRIVATE_KEY is missing: releases of the official repository must ship signed updates"; exit 1
+            fi
+            echo "::warning::TAURI_SIGNING_PRIVATE_KEY not set: building without updater artifacts (no latest.json)"
+          fi
+
+      # Release-only Tauri config: no beforeBuildCommand (built above), updater artifacts when the
+      # key exists. Pre-release versions: AppImage only on Linux.
+      - name: Release build configuration
+        shell: bash
+        env:
+          UPDATER: ${{ steps.updaterkey.outputs.enabled }}
+          TARGET_NAME: ${{ matrix.name }}
+        run: |
+          conf="$RUNNER_TEMP/release.conf.json"
+          if [ "$RUNNER_OS" = "Windows" ]; then conf="$(cygpath -m "$conf")"; fi
+          node -e '
+            const [out, updater] = process.argv.slice(1);
+            require("fs").writeFileSync(out, JSON.stringify({
+              build: { beforeBuildCommand: "" },
+              bundle: { createUpdaterArtifacts: updater === "true" },
+            }));
+          ' "$conf" "$UPDATER"
+          args="--config $conf"
+          case "$GITHUB_REF_NAME" in
+            *-*)
+              case "$TARGET_NAME" in
+                linux-x64) args="$args --bundles appimage" ;;
+              esac ;;
+          esac
+          echo "RELEASE_ARGS=$args" >> "$GITHUB_ENV"
+          echo "release build arguments: $args"
+
+      # macOS: Developer ID signing + notarization, only when ALL secrets exist. tauri-action /
+      # Tauri read these variables. Without them the app is signed AD HOC (identity "-"): an
+      # unsigned arm64 bundle is reported by Gatekeeper as "damaged" with no way to open it, an
+      # ad-hoc signed one gets the normal "Open Anyway" path (README, Install).
+      - name: Configure macOS signing (optional)
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -n "$APPLE_CERTIFICATE" ] && [ -n "$APPLE_CERTIFICATE_PASSWORD" ] && [ -n "$APPLE_SIGNING_IDENTITY" ] \
+             && [ -n "$APPLE_ID" ] && [ -n "$APPLE_PASSWORD" ] && [ -n "$APPLE_TEAM_ID" ]; then
+            # Delimiter form: values may contain newlines. The certificate is base64; any line
+            # wrapping is stripped (`base64 -w0` is the documented way to create it).
+            d="ghadelim_$(openssl rand -hex 16)"
+            put() { printf '%s<<%s\n%s\n%s\n' "$1" "$d" "$2" "$d" >> "$GITHUB_ENV"; }
+            put APPLE_CERTIFICATE "$(printf '%s' "$APPLE_CERTIFICATE" | tr -d '\r\n ')"
+            put APPLE_CERTIFICATE_PASSWORD "$APPLE_CERTIFICATE_PASSWORD"
+            put APPLE_SIGNING_IDENTITY "$APPLE_SIGNING_IDENTITY"
+            put APPLE_ID "$APPLE_ID"
+            put APPLE_PASSWORD "$APPLE_PASSWORD"
+            put APPLE_TEAM_ID "$APPLE_TEAM_ID"
+            echo "macOS signing + notarization: enabled"
+          else
+            echo "::warning::APPLE_* secrets incomplete or missing: building an AD-HOC signed, un-notarized macOS app"
+            echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
+          fi
+
+      # Windows: Authenticode through Azure Artifact (Trusted) Signing, only when all secrets
+      # exist. Three steps so that the third-party CLI is compiled with NO secrets in its
+      # environment: (1) detect, (2) install, (3) configure (the only one that sees the secrets).
+      - name: Detect Windows signing secrets (optional)
+        if: runner.os == 'Windows'
+        id: winsign
+        shell: bash
+        env:
+          HAVE_ALL: ${{ secrets.AZURE_CLIENT_ID != '' && secrets.AZURE_CLIENT_SECRET != '' && secrets.AZURE_TENANT_ID != '' && secrets.AZURE_SIGNING_ENDPOINT != '' && secrets.AZURE_SIGNING_ACCOUNT != '' && secrets.AZURE_SIGNING_PROFILE != '' }}
+        run: |
+          echo "enabled=$HAVE_ALL" >> "$GITHUB_OUTPUT"
+          if [ "$HAVE_ALL" != "true" ]; then
+            echo "::warning::AZURE_* secrets incomplete or missing: building UNSIGNED Windows installers"
+          fi
+
+      # 0.11.0 (2026-05) rather than the newest release; the binary is `artifact-signing-cli`.
+      - name: Install the signing CLI (no secrets in this step)
+        if: steps.winsign.outputs.enabled == 'true'
+        run: cargo install --locked artifact-signing-cli@0.11.0
+
+      - name: Configure Windows signing
+        if: steps.winsign.outputs.enabled == 'true'
+        shell: bash
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SIGNING_ENDPOINT: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          AZURE_SIGNING_ACCOUNT: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          AZURE_SIGNING_PROFILE: ${{ secrets.AZURE_SIGNING_PROFILE }}
+        run: |
+          conf="$(cygpath -m "$RUNNER_TEMP")/signing.conf.json"
+          node -e '
+            const [out, endpoint, account, profile] = process.argv.slice(1);
+            require("fs").writeFileSync(out, JSON.stringify({ bundle: { windows: { signCommand: {
+              cmd: "artifact-signing-cli",
+              args: ["-e", endpoint, "-a", account, "-c", profile, "-d", "Shellfin", "%1"],
+            } } } }));
+          ' "$conf" "$AZURE_SIGNING_ENDPOINT" "$AZURE_SIGNING_ACCOUNT" "$AZURE_SIGNING_PROFILE"
+          d="ghadelim_$(openssl rand -hex 16)"
+          put() { printf '%s<<%s\n%s\n%s\n' "$1" "$d" "$2" "$d" >> "$GITHUB_ENV"; }
+          put AZURE_CLIENT_ID "$AZURE_CLIENT_ID"
+          put AZURE_CLIENT_SECRET "$AZURE_CLIENT_SECRET"
+          put AZURE_TENANT_ID "$AZURE_TENANT_ID"
+          put SIGN_ARGS "--config $conf"
+          echo "Windows signing: enabled"
+
+      # No tagName/releaseId: tauri-action only builds; it does not upload anything.
+      # The updater signing key is in the environment of this step only (unused when the
+      # release configuration above did not enable updater artifacts).
+      - uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # action-v1.0.0
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          args: ${{ matrix.args }} ${{ env.RELEASE_ARGS }} ${{ env.SIGN_ARGS }} -- --locked
+          uploadWorkflowArtifacts: false
+
+      # ---- release checks: everything below must pass before anything is uploaded -------------
+      - name: Release binaries are built without the e2e feature
+        shell: bash
+        env:
+          BUILD_ARGS: ${{ matrix.args }}
+        run: |
+          case " $BUILD_ARGS " in *e2e*) echo "::error::e2e in the release build arguments"; exit 1;; esac
+          bins="$(find src-tauri/target -type f \( -iname shellfin -o -iname shellfin.exe \) -path '*/release/*' -not -path '*/deps/*')"
+          if [ -z "$bins" ]; then echo "::error::no release binary found"; exit 1; fi
+          while IFS= read -r b; do
+            if grep -q -a -F SHELLFIN_E2E_ROOT "$b"; then
+              echo "::error file=$b::release binary contains the e2e marker"; exit 1
+            fi
+            echo "ok (no e2e marker): $b"
+          done <<< "$bins"
+
+      - name: Embedded frontend contains no MockBackend marker
+        shell: bash
+        run: |
+          test -f dist/index.html
+          if grep -rIl '__shellfin_mock_backend__' dist; then
+            echo "::error::MockBackend marker found in the frontend embedded into release artifacts"; exit 1
+          fi
+
+      # Last step of the job: reached only when every check above passed.
+      - name: Upload installers (after the release checks)
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: installers-${{ matrix.name }}
+          path: |
+            src-tauri/target/**/release/bundle/nsis/*.exe
+            src-tauri/target/**/release/bundle/nsis/*.exe.sig
+            src-tauri/target/**/release/bundle/dmg/*.dmg
+            src-tauri/target/**/release/bundle/macos/*.app.tar.gz
+            src-tauri/target/**/release/bundle/macos/*.app.tar.gz.sig
+            src-tauri/target/**/release/bundle/appimage/*.AppImage
+            src-tauri/target/**/release/bundle/appimage/*.AppImage.sig
+            src-tauri/target/**/release/bundle/deb/*.deb
+            src-tauri/target/**/release/bundle/rpm/*.rpm
+          if-no-files-found: error
+
+  # Assembles latest.json from the signed updater artifacts (§9.8). Runs repository code (the
+  # manifest script) but holds no secret and only reads; the draft-release job runs no repository
+  # code. Skipped (with a warning) when the build had no updater key (forks).
+  updater-manifest:
+    needs: build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      enabled: ${{ steps.sigs.outputs.enabled }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.22.1
+          package-manager-cache: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: installers
+          pattern: installers-*
+
+      - name: Updater artifacts present?
+        id: sigs
+        shell: bash
+        run: |
+          if find installers -type f -name '*.sig' | grep -q .; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::no updater signatures in the build output: the release has no latest.json"
+          fi
+
+      # Exactly one signed artifact per platform, each .sig made with the key of
+      # plugins.updater.pubkey for this version and file (scripts/updater-manifest.mjs).
+      - name: Assemble latest.json
+        if: steps.sigs.outputs.enabled == 'true'
+        run: >-
+          node scripts/updater-manifest.mjs assemble --dir installers --repo "$GITHUB_REPOSITORY"
+          --tag "$GITHUB_REF_NAME" --conf src-tauri/tauri.conf.json --changelog CHANGELOG.md
+          --out latest.json
+
+      - name: Upload latest.json
+        if: steps.sigs.outputs.enabled == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: updater-manifest
+          path: latest.json
+          if-no-files-found: error
+
+  # Release notes (the CHANGELOG section of the version) and the SBOMs (CycloneDX, Rust and npm
+  # production dependencies). Repository code and downloaded tools run here, so this job has no
+  # secret and a read-only token; the draft-release job runs no repository code.
+  notes-sbom:
+    needs: verify
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master (2026-10)
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.22.1
+          package-manager-cache: false
+
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+        with:
+          tool: cargo-cyclonedx@0.5.9
+
+      - name: Release notes from the CHANGELOG
+        run: |
+          mkdir -p out/sbom
+          node scripts/updater-manifest.mjs notes --changelog CHANGELOG.md --tag "$GITHUB_REF_NAME" --out out/release-notes.md
+
+      - name: SBOMs
+        run: |
+          cargo cyclonedx --manifest-path src-tauri/Cargo.toml --format json --spec-version 1.5 --override-filename shellfin-rust.cdx
+          mv src-tauri/shellfin-rust.cdx.json out/sbom/
+          npm ci --ignore-scripts
+          npm sbom --omit=dev --sbom-format=cyclonedx --sbom-type=application > out/sbom/shellfin-npm.cdx.json
+          ls -l out out/sbom
+
+      - name: Upload notes and SBOMs
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: notes-sbom
+          path: out
+          if-no-files-found: error
+
+  # Runs only if EVERY build job (and so every release check) succeeded.
+  draft-release:
+    needs: [build, updater-manifest, notes-sbom]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    environment: release
+    permissions:
+      contents: write # create the draft release
+      id-token: write # build provenance (Sigstore OIDC)
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: installers
+          pattern: installers-*
+
+      - name: Download latest.json
+        if: needs.updater-manifest.outputs.enabled == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: updater-manifest
+          path: manifest
+
+      - name: Download release notes and SBOMs
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: notes-sbom
+          path: notes-sbom
+
+      - name: Collect installers and verify the set
+        shell: bash
+        env:
+          UPDATER: ${{ needs.updater-manifest.outputs.enabled }}
+        run: |
+          mkdir release
+          while IFS= read -r -d '' f; do
+            if [ -e "release/$(basename "$f")" ]; then
+              echo "::error::duplicate artifact name: $(basename "$f")"; exit 1
+            fi
+            cp -- "$f" release/
+          done < <(find installers -type f \( -name '*.exe' -o -name '*.dmg' -o -name '*.app.tar.gz' \
+            -o -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' -o -name '*.sig' \) -print0)
+          if [ "$UPDATER" = "true" ]; then
+            cp -- manifest/latest.json release/latest.json
+          fi
+          # The SBOMs are release files too: SHA256SUMS and the attestation cover them.
+          cp -- notes-sbom/sbom/*.cdx.json release/
+          ls -l release
+          # Pre-release tags build AppImage-only on Linux. Windows ships NSIS only (no .msi).
+          case "$GITHUB_REF_NAME" in
+            *-*) required="exe dmg AppImage" ;;
+            *) required="exe dmg AppImage deb rpm" ;;
+          esac
+          if ls release/*.msi > /dev/null 2>&1; then
+            echo "::error::an .msi was built: Windows ships NSIS only"; exit 1
+          fi
+          for ext in $required; do
+            if ! ls release/*."$ext" > /dev/null 2>&1; then
+              echo "::error::no .$ext installer in the build output"; exit 1
+            fi
+          done
+          if [ "$(find release -maxdepth 1 -type f -name '*.dmg' | wc -l)" -ne 1 ]; then
+            echo "::error::expected exactly one .dmg file (Apple Silicon)"; exit 1
+          fi
+
+      - name: SHA256SUMS
+        shell: bash
+        working-directory: release
+        run: |
+          sha256sum -- * | sort -k2 > SHA256SUMS
+          cat SHA256SUMS
+
+      # Optional: detached GPG signature of the checksums (SHA256SUMS.asc) when a key is configured.
+      - name: Sign SHA256SUMS with GPG (optional)
+        shell: bash
+        working-directory: release
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          if [ -z "$GPG_PRIVATE_KEY" ]; then
+            echo "GPG_PRIVATE_KEY not set: SHA256SUMS is not GPG-signed (attestations still cover every file)"; exit 0
+          fi
+          export GNUPGHOME="$RUNNER_TEMP/gnupg"
+          mkdir -m 700 "$GNUPGHOME"
+          printf '%s\n' "$GPG_PRIVATE_KEY" | gpg --batch --quiet --import
+          printf '%s' "$GPG_PASSPHRASE" | gpg --batch --pinentry-mode loopback --passphrase-fd 0 \
+            --armor --detach-sign --output SHA256SUMS.asc SHA256SUMS
+          gpg --batch --verify SHA256SUMS.asc SHA256SUMS
+          rm -rf "$GNUPGHOME"
+
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: release/*
+
+      # DRAFT only: a maintainer reviews it and publishes by hand. Never `--draft=false`. A draft
+      # reaches no user: the update channels are written only when it is published
+      # (update-channels.yml). Pre-release tags (vX.Y.Z-experimental.N) are marked as pre-releases.
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pre=()
+          case "$GITHUB_REF_NAME" in *-*) pre=(--prerelease) ;; esac
+          # The CHANGELOG section of the version when there is one; otherwise generated notes.
+          notes=(--generate-notes)
+          if [ -s notes-sbom/release-notes.md ]; then notes=(--notes-file notes-sbom/release-notes.md); fi
+          gh release create "$GITHUB_REF_NAME" release/* \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --draft "${pre[@]}" \
+            --title "Shellfin ${GITHUB_REF_NAME#v}" "${notes[@]}"

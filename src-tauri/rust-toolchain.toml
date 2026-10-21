@@ -1,0 +1,7 @@
+# The exact compiler that CI and the release builds use (docs/ARCHITECTURE.md §11.2). Dependabot cannot bump this file:
+# update it on purpose, together with `toolchain:` of every dtolnay/rust-toolchain step in .github/workflows. The
+# promised MSRV (`rust-version` in Cargo.toml) is checked separately by the `msrv` CI job.
+[toolchain]
+channel = "1.99.1"
+profile = "minimal"
+components = ["rustfmt", "clippy"]

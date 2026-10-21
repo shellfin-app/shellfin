@@ -1,0 +1,11 @@
+.keys-section { display: flex; flex-direction: column; gap: 8px; }
+.keys-section h3 { margin: 0; }
+.keys-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.keys-item {
+  display: flex; flex-direction: column; gap: 4px; padding: 10px 12px;
+  border: 1px solid var(--border); border-radius: var(--radius);
+}
+.keys-item__path { overflow-wrap: anywhere; }
+.keys-item__meta { display: flex; gap: 12px; font-size: calc(12px * var(--ui-scale, 1)); color: var(--text-muted); overflow-wrap: anywhere; }
+.keys-item__actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 2px; }
+.keys-item__actions .button { height: 28px; padding: 0 8px; font-size: calc(12px * var(--ui-scale, 1)); }

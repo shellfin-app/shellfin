@@ -1,0 +1,24 @@
+# PAM stack for sshd in the Shellfin integration-test image (Debian's stock auth stack plus a
+# TOTP step for tester2fa only).
+#
+# Every user: pam_unix password (via common-auth). Only tester2fa additionally needs a TOTP code
+# from pam_google_authenticator (secret in ~tester2fa/.google_authenticator).
+#
+# Known OpenSSH + Linux-PAM behaviour (also on real Debian servers): after a FAILED `password`-
+# method attempt, a later SUCCESSFUL keyboard-interactive login on the same connection is dropped
+# ("pam_setcred(): Permission denied"): sshd's pam_setcred() replays the cached module results of
+# the last pam_authenticate() on the monitor's handle (the failed password), while kbd-int ran in
+# a forked PAM child. Tests must not mix the two methods in that order (the app's §5.6 order tries
+# keyboard-interactive before password, so it does not).
+@include common-auth
+auth [success=done default=ignore] pam_succeed_if.so user notin tester2fa quiet
+auth required pam_google_authenticator.so
+
+account required pam_nologin.so
+@include common-account
+
+session required pam_loginuid.so
+session optional pam_keyinit.so force revoke
+@include common-session
+session required pam_limits.so
+@include common-password

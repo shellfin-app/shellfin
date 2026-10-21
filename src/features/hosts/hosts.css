@@ -1,0 +1,118 @@
+.bookmarks-panel { display: flex; flex-direction: column; min-height: 0; flex: 1 1 auto; }
+
+.panel-header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 12px 6px 16px;
+}
+
+.panel-header__actions { display: flex; align-items: center; gap: 2px; flex: none; margin-left: auto; }
+
+.bookmarks-panel__list {
+  padding: 0 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  overflow: auto;
+  min-height: 0;
+}
+
+.bookmarks-panel__hint {
+  margin: auto 0 0;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+  font-size: calc(12px * var(--ui-scale, 1));
+  line-height: 18px;
+  color: var(--text-muted);
+}
+
+.host-group + .host-group { margin-top: 4px; }
+
+.host-group__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: var(--h-row);
+  padding: 0 12px 0 10px;
+  border-radius: var(--radius-sm);
+  font-size: calc(12px * var(--ui-scale, 1));
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.host-group__header:hover { background: var(--hover); }
+.host-group__count { margin-left: auto; }
+.host-group__empty { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 4px 12px 8px 28px; font-size: calc(12px * var(--ui-scale, 1)); color: var(--text-muted); }
+.host-group__empty p { margin: 0; }
+
+/* Highlight A, "neutral layers": the bookmark color tints the whole row (--row-tint) and the
+   state is a white overlay (--layer-*) on top of it, so every color keeps its tint in every state. No stripes,
+   glows or outlines for state; the only outline is the keyboard focus ring. */
+.host-row {
+  --row-base: var(--panel);
+  --row-layer: transparent;
+  position: relative;
+  display: flex;
+  align-items: center;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(var(--row-layer), var(--row-layer)), var(--row-base);
+}
+.host-row--colored { --row-base: color-mix(in srgb, var(--row-color) var(--row-tint), var(--panel)); }
+.host-row:hover { --row-layer: var(--layer-hover); }
+.host-row:hover .host-row__address { color: var(--row-addr-hover); }
+.host-row--selected { --row-layer: var(--layer-sel-blur); }
+.bookmarks-panel__list:focus-within .host-row--selected { --row-layer: var(--layer-sel-focus); }
+.host-row--selected .host-row__name { color: var(--text-bright); }
+.host-row--selected .host-row__address { color: var(--row-addr-selected); }
+/* Connected: no background of its own; brighter, heavier name (the status dot is filled, not hollow). */
+.host-row--active .host-row__name { color: var(--text-bright); font-weight: 500; }
+.host-row__main:focus-visible, .host-group__header:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; box-shadow: none; }
+.host-row__main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: var(--h-row);
+  padding: 0 12px 0 20px;
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+  text-align: left;
+}
+.host-row__name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.host-row__address {
+  flex: 1 1 0;
+  min-width: 0;
+  text-align: right;
+  padding-left: 8px;
+  font-size: calc(11px * var(--ui-scale, 1));
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* The row actions sit after the address (the address shrinks instead of being hidden); keyboard users have F2, Delete and the context menu. */
+.host-row__actions { display: none; flex: none; gap: 2px; padding-right: 4px; }
+.host-row:hover .host-row__actions, .host-row:focus-within .host-row__actions { display: flex; }
+
+/* Narrow sidebar: the address goes first; below ~240 px it is only a tooltip. */
+.sidebar { container-type: inline-size; }
+@container (max-width: 240px) { .host-row__address { display: none; } }
+
+.host-group__header bdi { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.bookmarks-panel__list { overflow-x: hidden; }
+.bookmarks-panel__hint { overflow-wrap: anywhere; }
+
+/* Bookmark color: the row tint (above) plus the square ColorMark; the name is in the title and aria-label. */
+
+/* Pointer drag and drop (HTML5 DnD is unavailable on Windows). */
+.bookmarks-panel__list { position: relative; }
+.bookmarks-panel__list--dragging, .bookmarks-panel__list--dragging * { cursor: grabbing !important; user-select: none; }
+.host-row--dragging, .host-group__header--dragging { opacity: .45; }
+.drop-line { position: absolute; left: 6px; right: 6px; height: 2px; margin-top: -1px; border-radius: 1px; background: var(--accent); pointer-events: none; z-index: 2; }
+.drag-ghost {
+  position: fixed; z-index: 60; max-width: 240px; padding: 3px 10px; pointer-events: none;
+  background: var(--selected); border: 1px solid var(--accent); border-radius: var(--radius-sm);
+  font-size: calc(12px * var(--ui-scale, 1)); color: var(--text-bright); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}

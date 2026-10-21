@@ -1,0 +1,31 @@
+# cargo-about configuration (third-party licence notices, docs/ARCHITECTURE.md §11.6).
+# `npm run notices` runs `cargo about generate` with this file and `about.hbs`; the result is merged with the npm
+# production dependencies into `THIRD_PARTY_NOTICES.txt`, which ships in the installers.
+
+# The licences below mirror the allow-list of ../deny.toml. A new licence must be added to both files on purpose.
+accepted = [
+  "MIT",
+  "MIT-0",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "Unicode-3.0",
+  "CC0-1.0",
+  "0BSD",
+  "Unlicense",
+  "MPL-2.0",
+]
+
+# Exactly the targets that ship (same list as ../deny.toml): Windows x64 + ARM64, Linux x64, macOS Apple Silicon.
+targets = [
+  "x86_64-pc-windows-msvc",
+  "aarch64-pc-windows-msvc",
+  "x86_64-unknown-linux-gnu",
+  "aarch64-apple-darwin",
+]
+
+# Build scripts and proc macros run on the build machine only; their code is not part of the binary.
+ignore-build-dependencies = true
+ignore-dev-dependencies = true

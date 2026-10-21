@@ -1,0 +1,93 @@
+/* Global reset + base. index.html contains no <style>; the pre-paint background comes from here (§8.5). */
+*, *::before, *::after { box-sizing: border-box; }
+
+/* The app root never scrolls; inner panes own their scrolling. */
+html, body, #root { height: 100%; overflow: hidden; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: var(--fs-ui);
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+a { color: var(--link); }
+a:hover { color: var(--link-hover); }
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+button:disabled { cursor: default; }
+
+input { font: inherit; color: inherit; }
+
+h1, h2, h3 { margin: 0; }
+
+.mono { font-family: var(--font-mono); }
+
+.sec {
+  font-size: calc(11px * var(--ui-scale, 1));
+  font-weight: 600;
+  letter-spacing: .06em;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+
+/* Visible keyboard focus everywhere (mouse clicks do not show it). */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  border-radius: var(--radius-sm);
+}
+input:focus-visible { outline: none; }
+
+/* Screen-reader-only text. */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden;
+  clip-path: inset(50%); white-space: nowrap; border: 0;
+}
+
+/* Thin dark scrollbars (WebView2 / WebKit). */
+* { scrollbar-width: thin; scrollbar-color: var(--border-input) transparent; }
+
+/* ---- notices, error states ---- */
+.notices {
+  position: fixed; right: 16px; bottom: 40px; z-index: 50;
+  display: flex; flex-direction: column; gap: 8px; max-width: 420px;
+}
+.notice {
+  display: flex; align-items: center; gap: 8px; padding: 8px 8px 8px 12px;
+  background: var(--danger-bg); border: 1px solid var(--danger-border); border-radius: var(--radius);
+  color: var(--text-bright);
+}
+.notice--error { border-left: 3px solid var(--danger); }
+.notice--warning { background: var(--warn-bg); border-color: var(--warn); border-left-width: 3px; }
+.notice--warning > svg { color: var(--warn); }
+.notice--success { background: var(--accent-bg); border-color: var(--ok); border-left-width: 3px; }
+.notice--success > svg { color: var(--ok); }
+.notice--info { background: var(--panel); border-color: var(--border-strong); border-left: 3px solid var(--link); }
+.notice--error > svg { color: var(--danger); }
+.notice__text { flex: 1; }
+.error-boundary, .boot-error {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 12px; padding: 24px; color: var(--text-muted);
+}
+.boot-error { max-width: 520px; margin: 72px auto; }
+.boot-error__detail { margin: 0; font-size: calc(12px * var(--ui-scale, 1)); }
+
+/* UI chrome is not selectable; text a user may want to copy (and editors) is. */
+body { user-select: none; -webkit-user-select: none; }
+input, textarea, [contenteditable="true"], .cm-editor, .selectable, .dialog__body, .notice__text,
+.session-error, .session-banner__text, .facts__value, .terminal-paste-preview {
+  user-select: text;
+  -webkit-user-select: text;
+}
+img, a { -webkit-user-drag: none; }

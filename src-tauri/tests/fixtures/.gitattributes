@@ -1,0 +1,2 @@
+# Test fixtures are byte-exact (keys, configs): never convert line endings.
+* -text

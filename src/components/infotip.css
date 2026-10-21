@@ -1,0 +1,21 @@
+/* (?) tooltip for settings (components/InfoTip.tsx). Colours are tokens, sizes follow the UI scale. */
+.infotip { position: relative; display: inline-flex; align-items: center; flex: 0 0 auto; }
+.infotip__button {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: calc(20px * var(--ui-scale, 1)); height: calc(20px * var(--ui-scale, 1)); padding: 0;
+  border: 0; border-radius: 50%; background: transparent; color: var(--text-muted); cursor: help;
+}
+.infotip__button:hover, .infotip__button:focus-visible { color: var(--text-bright); background: var(--hover); }
+.infotip__button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.infotip__pop {
+  position: absolute; z-index: 20; top: calc(100% + 6px); left: -6px;
+  width: max-content; max-width: min(calc(280px * var(--ui-scale, 1)), 60vw);
+  padding: 8px 10px; border: 1px solid var(--border-strong); border-radius: var(--radius);
+  background: var(--chrome); color: var(--text); box-shadow: 0 6px 18px rgba(0, 0, 0, .3);
+  font-size: calc(12px * var(--ui-scale, 1)); font-weight: 400; line-height: 1.4; text-transform: none; letter-spacing: 0;
+  white-space: normal; pointer-events: none;
+}
+/* Closed tips take no layout space: a hidden but laid-out popover widened the settings scroll area (horizontal scroll). */
+.infotip__pop:not(.infotip__pop--open) { display: none; }
+/* Near the right edge of the scroll area the tip grows leftwards so it never widens the area. */
+.infotip__pop--end { left: auto; right: -6px; }

@@ -1,0 +1,5 @@
+# windows-11-arm is a GitHub-hosted runner (free for public repositories), but older actionlint
+# releases don't know the label yet.
+self-hosted-runner:
+  labels:
+    - windows-11-arm

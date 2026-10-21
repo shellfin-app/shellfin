@@ -1,0 +1,119 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Shellfin",
+  "version": "../package.json",
+  "identifier": "app.shellfin.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:5173",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "main",
+        "create": false,
+        "title": "Shellfin",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 960,
+        "minHeight": 600,
+        "center": true,
+        "dragDropEnabled": true
+      }
+    ],
+    "security": {
+      "freezePrototype": true,
+      "capabilities": [
+        "main"
+      ],
+      "csp": {
+        "default-src": "'self'",
+        "script-src": "'self'",
+        "style-src": "'self' 'unsafe-inline'",
+        "img-src": "'self' data:",
+        "font-src": "'self' data:",
+        "connect-src": "ipc: http://ipc.localhost",
+        "object-src": "'none'",
+        "base-uri": "'none'",
+        "form-action": "'none'",
+        "frame-src": "'none'",
+        "worker-src": "'none'"
+      },
+      "dangerousDisableAssetCspModification": [
+        "style-src"
+      ]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis", "app", "dmg", "appimage", "deb", "rpm"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "publisher": "The Shellfin Authors",
+    "copyright": "Copyright (c) The Shellfin Authors",
+    "category": "DeveloperTool",
+    "shortDescription": "Cross-platform SSH client with terminals, SFTP file tree and editor",
+    "longDescription": "Shellfin is a cross-platform SSH client. It combines multiple terminals, an SFTP file tree and a built-in text editor in one window, reads your OpenSSH config and known_hosts, and keeps secrets in the OS keychain.",
+    "homepage": "https://shellfin.app",
+    "license": "MIT OR Apache-2.0",
+    "licenseFile": "installer/LICENSE.txt",
+    "resources": {
+      "../THIRD_PARTY_NOTICES.txt": "THIRD_PARTY_NOTICES.txt"
+    },
+    "windows": {
+      "allowDowngrades": false,
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "compression": "lzma"
+      }
+    },
+    "macOS": {
+      "minimumSystemVersion": "11.0"
+    },
+    "linux": {
+      "deb": {
+        "section": "net",
+        "priority": "optional",
+        "depends": [
+          "libwebkit2gtk-4.1-0",
+          "libgtk-3-0"
+        ]
+      },
+      "rpm": {
+        "release": "1",
+        "epoch": 0,
+        "depends": [
+          "webkit2gtk4.1",
+          "gtk3"
+        ]
+      },
+      "appimage": {
+        "bundleMediaFramework": false
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDU1OTI0MEE5MTk4M0MyNzYKUldSMndvTVpxVUNTVmJsMmdrNkFEWWduTEd1L1ZEb0paSTBmL2lna3VuU2lhSWdGWjgxdWVkMEoK",
+      "endpoints": [
+        "https://github.com/shellfin-app/shellfin/releases/download/updater/stable.json",
+        "https://github.com/shellfin-app/shellfin/releases/download/updater/experimental.json"
+      ],
+      "requireSignedVersion": true,
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  }
+}

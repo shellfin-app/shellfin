@@ -1,0 +1,82 @@
+// Every app command of §4.2, in contract order. This file is `include!`d by `build.rs` (ACL app
+// manifest, §9.1) and by `commands/mod.rs`; tests assert that the invoke handler, the generated
+// ACL manifest and `capabilities/main.json` all match this list exactly.
+// Plain `//` comments only: an included file must not contain inner doc comments.
+
+pub const COMMAND_NAMES: &[&str] = &[
+    // app
+    "app_frontend_ready",
+    "app_quit_ack",
+    "app_quit_cancel",
+    "app_quit",
+    "app_open_logs_dir",
+    "app_reveal_path",
+    "app_open_external",
+    "env_info",
+    "agent_status",
+    "keys_list",
+    "keys_read_public",
+    "dialog_pick_identity_file",
+    // hosts & storage
+    "ssh_config_reload",
+    "bookmarks_get",
+    "bookmark_save",
+    "bookmark_delete",
+    "bookmark_copy_from_ssh_config",
+    "bookmark_set_password",
+    "group_save",
+    "group_delete",
+    "bookmark_move",
+    "group_move",
+    "recents_get",
+    "recents_clear",
+    "bookmarks_export",
+    "bookmarks_import",
+    "settings_get",
+    "settings_update",
+    "settings_reset",
+    "notifications_set_texts",
+    // sessions
+    "session_open",
+    "session_answer_prompt",
+    "session_reconnect_now",
+    "session_disconnect",
+    "session_close",
+    "session_probe_all",
+    // terminals
+    "term_open",
+    "term_write",
+    "term_resize",
+    "term_ack",
+    "term_restart",
+    "term_close",
+    // sftp
+    "sftp_realpath",
+    "sftp_list",
+    "sftp_stat",
+    "sftp_read_text",
+    "sftp_write_text",
+    "sftp_create_file",
+    "sftp_mkdir",
+    "sftp_rename",
+    "sftp_delete",
+    // transfers
+    "transfer_download",
+    "transfer_upload_pick",
+    "transfer_upload_dropped",
+    "transfer_retry",
+    "transfer_cancel",
+    // window chrome
+    "window_minimize",
+    "window_toggle_maximize",
+    "window_toggle_fullscreen",
+    "window_close",
+    "window_start_dragging",
+    "app_save_text_file",
+    "menu_set_labels",
+    // updates
+    "update_check",
+    "update_install",
+    "update_cancel",
+    "update_skip_version",
+];

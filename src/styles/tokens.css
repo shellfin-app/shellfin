@@ -1,0 +1,168 @@
+/* Design tokens — "A · Graphite" (dark, default) and "A · Neutral" (light). docs/ARCHITECTURE.md §8.5.
+   - The dark set is the default on :root. `html[data-theme="light"]` switches to the light set; src/lib/theme.ts sets it
+     from `appearance.theme` (and follows prefers-color-scheme for "system").
+   - `html[data-accent="…"]` picks `appearance.accent` (teal is the default and needs no attribute).
+   - `html[data-term-tone]` (only set for a custom terminal background) re-skins the terminal panel with the matching set,
+     so its tabs and find bar stay readable on that background.
+   Every colour that depends on the theme lives here; component CSS only uses var(--…). */
+
+/* ---- dark set (also the tone set for a dark terminal background) ---- */
+:root,
+:root[data-term-tone="dark"] .terminal-panel {
+  --bg: #14161B;          --panel: #171A20;        --chrome: #0F1115;       --backdrop: #0B0C0F;
+  --border: #262A33;      --border-input: #2B303A; --border-subtle: #1F232B;
+  --text: #D7DCE4;        --text-bright: #F2F4F8;  --text-muted: #9AA2B1;   --text-secondary: #A9B0BD;
+  --text-dim: #6B7385;    --text-gutter: #7A8191;
+  --hover: #1E222A;       --selected: #222731;     --tab-active: #1B1E25;   --seg-active: #262B35;
+  --ok: #4ADE80;          --warn: #E5C07B;         --danger: #F87171;       --link: #8AB4F8;
+  --warn-bg: #2E2717;     --danger-bg: #3A1F22;    --danger-border: #3A2A2E;
+  --syn-keyword: #8AB4F8; --syn-string: #C3E88D;   --syn-number: #F7A072;   --syn-comment: #7D8597; --syn-purple: #C792EA;
+
+  /* Bookmark color palette (8 names + none) */
+  --bm-red: #F87171;    --bm-orange: #F7A072; --bm-yellow: #E5C07B; --bm-green: #4ADE80;
+  --bm-teal: #4FD1C5;   --bm-blue: #8AB4F8;   --bm-purple: #C792EA; --bm-gray: #9AA2B1;
+
+  /* Additional values taken from the mockups (not in §8.5) */
+  --border-strong: #3A4150;   /* quick-connect field border */
+  --link-hover: #B3CDFB;
+  --code-fg: #C9CED8;         /* terminal text */
+  --selection-bg: #2A2F3A;
+  --selection-outline: #3A4150;
+  --focus-ring: 0 0 0 2px var(--chrome), 0 0 0 4px var(--accent);
+
+  /* Highlight A (bookmark rows, activity bar): color tint plus neutral state layers (white on dark, black on light) */
+  --row-tint: 10%;                         /* bookmark color share in the row background */
+  --layer-hover: rgba(255, 255, 255, .04);
+  --layer-sel-blur: rgba(255, 255, 255, .07);
+  --layer-sel-focus: rgba(255, 255, 255, .12);
+  --row-addr-hover: #A6AEBC;               /* address text steps up on lighter backgrounds (>= 4.5:1) */
+  --row-addr-selected: #BCC3CF;
+  --act-hover: rgba(255, 255, 255, .05);
+  --act-active: rgba(255, 255, 255, .10);
+
+  /* Theme-dependent bits that used to be hard-coded in component CSS */
+  --active-line: #1E222A;                  /* editor current line and its gutter */
+  --folder: #E5C07B;                       /* folder icons in the file tree */
+  --status-ring: #9AA2B1;                  /* hollow "idle" status dot */
+  --scrim: rgba(11, 12, 15, .72);          /* modal backdrop */
+  --scrim-soft: rgba(15, 17, 21, .55);     /* reconnect overlay */
+  --shadow-dialog: 0 24px 60px rgba(0, 0, 0, .5);
+  --shadow-card: 0 20px 50px rgba(0, 0, 0, .5);
+  --shadow-pop: 0 10px 28px rgba(0, 0, 0, .45);
+  --shadow-find: 0 6px 18px rgba(0, 0, 0, .35);
+  --swatch-edge: rgba(0, 0, 0, .35);       /* inner edge of colour swatches */
+  --bell-flash: rgba(201, 206, 216, .16);
+  --diff-add: rgba(138, 180, 248, .10);
+
+  color-scheme: dark;
+}
+
+/* ---- root-only tokens: accent (teal), terminal background, sizes ---- */
+:root {
+  --accent: #4FD1C5;      --accent-fg: #0F1115;    --accent-ring: rgba(79, 209, 197, .15);   --accent-bg: #16302E;
+  --term-bg: #0F1115;     /* terminal background; src/lib/theme.ts overrides it for a custom colour */
+  --ui-scale: 1;          /* appearance.uiFontSize / 13, applied to UI text only (not terminal or editor) */
+  --font-ui: "Inter", system-ui, sans-serif;  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --fs-ui: calc(13px * var(--ui-scale)); --fs-mono: calc(12.5px * var(--ui-scale)); --fs-small: calc(11.5px * var(--ui-scale));
+  --radius: 8px; --radius-sm: 6px;
+  --h-titlebar: 44px; --w-activity: 52px; --h-tabs: 38px; --h-status: 26px; --h-row: 28px;
+}
+
+/* ---- accents, dark theme (existing palette; teal is the default above) ---- */
+:root[data-accent="blue"]   { --accent: #8AB4F8; --accent-ring: rgba(138, 180, 248, .15); --accent-bg: #1A2740; }
+:root[data-accent="purple"] { --accent: #C792EA; --accent-ring: rgba(199, 146, 234, .15); --accent-bg: #2A2038; }
+:root[data-accent="orange"] { --accent: #F7A072; --accent-ring: rgba(247, 160, 114, .15); --accent-bg: #33231A; }
+:root[data-accent="green"]  { --accent: #4ADE80; --accent-ring: rgba(74, 222, 128, .15);  --accent-bg: #16301F; }
+:root[data-accent="pink"]   { --accent: #F29BC4; --accent-ring: rgba(242, 155, 196, .15); --accent-bg: #36202B; }
+
+/* ---- light set, variant A "Neutral" (also the tone set for a light terminal background) ---- */
+:root[data-theme="light"],
+:root[data-term-tone="light"] .terminal-panel {
+  --bg: #FFFFFF;          --panel: #F6F7F9;        --chrome: #EEF0F3;       --backdrop: #DFE3E9;
+  --border: #D9DDE3;      --border-input: #CDD2DA; --border-subtle: #E6E9ED;
+  --text: #1F2329;        --text-bright: #0B0D10;  --text-muted: #5C6370;   --text-secondary: #4A515C;
+  --text-dim: #848B96;    --text-gutter: #6E7581;
+  --hover: #ECEEF1;       --selected: #DDDEE0;     --tab-active: #FFFFFF;   --seg-active: #FFFFFF;
+  --ok: #14753A;          --warn: #A15C00;        --danger: #C62828;       --link: #1F5FBF;
+  --warn-bg: #FFF4DC;     --danger-bg: #FDECEC;    --danger-border: #F0C4C4;
+  --syn-keyword: #1F5FBF; --syn-string: #3D7A1F;   --syn-number: #B4530F;   --syn-comment: #656C78; --syn-purple: #8A3FB8;
+
+  --bm-red: #DC2626;    --bm-orange: #EA580C; --bm-yellow: #BF8003; --bm-green: #16A34A;
+  --bm-teal: #0D9488;   --bm-blue: #2563EB;   --bm-purple: #9333EA; --bm-gray: #6B7280;
+
+  --border-strong: #B8BFC9;
+  --link-hover: #174A94;
+  --code-fg: #2B3038;
+  --selection-bg: #CFDDF3;
+  --selection-outline: #A9BEE3;
+  --focus-ring: 0 0 0 2px var(--chrome), 0 0 0 4px var(--accent);
+
+  --row-tint: 10%;
+  --layer-hover: rgba(0, 0, 0, .04);
+  --layer-sel-blur: rgba(0, 0, 0, .06);
+  --layer-sel-focus: rgba(0, 0, 0, .10);
+  --row-addr-hover: #535A66;
+  --row-addr-selected: #4A515C;
+  --act-hover: rgba(0, 0, 0, .05);
+  --act-active: rgba(0, 0, 0, .09);
+
+  --active-line: #F3F5F8;
+  --folder: #B7791F;
+  --status-ring: #848B96;
+  --scrim: rgba(24, 28, 36, .45);
+  --scrim-soft: rgba(238, 240, 243, .65);
+  --shadow-dialog: 0 24px 60px rgba(16, 24, 40, .22);
+  --shadow-card: 0 20px 50px rgba(16, 24, 40, .20);
+  --shadow-pop: 0 10px 28px rgba(16, 24, 40, .18);
+  --shadow-find: 0 6px 18px rgba(16, 24, 40, .16);
+  --swatch-edge: rgba(0, 0, 0, .18);
+  --bell-flash: rgba(31, 35, 41, .12);
+  --diff-add: rgba(31, 95, 191, .10);
+
+  color-scheme: light;
+}
+
+:root[data-theme="light"] {
+  --accent: #0B7A70;      --accent-fg: #FFFFFF;    --accent-ring: rgba(11, 122, 112, .18);   --accent-bg: #E6F4F2;
+  --term-bg: #FFFFFF;
+}
+
+/* ---- accents, light theme (each >= 4.5:1 on #FFFFFF, panel and chrome; white text on them also >= 4.5:1) ---- */
+:root[data-theme="light"][data-accent="blue"]   { --accent: #1F5FBF; --accent-ring: rgba(31, 95, 191, .18);  --accent-bg: #E4ECF9; }
+:root[data-theme="light"][data-accent="purple"] { --accent: #7E3FB5; --accent-ring: rgba(126, 63, 181, .18); --accent-bg: #EFE6F7; }
+:root[data-theme="light"][data-accent="orange"] { --accent: #A94A0B; --accent-ring: rgba(169, 74, 11, .18);  --accent-bg: #F8E9DD; }
+:root[data-theme="light"][data-accent="green"]  { --accent: #13763A; --accent-ring: rgba(19, 118, 58, .18);  --accent-bg: #E0F1E6; }
+:root[data-theme="light"][data-accent="pink"]   { --accent: #BE185D; --accent-ring: rgba(190, 24, 93, .18);  --accent-bg: #FAE4EE; }
+
+/* ---- accent inside a terminal panel whose background tone differs from the theme (custom terminal background) ----
+   The tone sets above swap the surface and text colours of `.terminal-panel`; the accent must follow the tone too,
+   or a dark-theme accent lands on a light terminal background (teal on white is 1.9:1) and vice versa. */
+:root[data-term-tone="dark"] .terminal-panel {
+  --accent: #4FD1C5; --accent-fg: #0F1115; --accent-ring: rgba(79, 209, 197, .15); --accent-bg: #16302E;
+}
+:root[data-term-tone="dark"][data-accent="blue"] .terminal-panel   { --accent: #8AB4F8; --accent-ring: rgba(138, 180, 248, .15); --accent-bg: #1A2740; }
+:root[data-term-tone="dark"][data-accent="purple"] .terminal-panel { --accent: #C792EA; --accent-ring: rgba(199, 146, 234, .15); --accent-bg: #2A2038; }
+:root[data-term-tone="dark"][data-accent="orange"] .terminal-panel { --accent: #F7A072; --accent-ring: rgba(247, 160, 114, .15); --accent-bg: #33231A; }
+:root[data-term-tone="dark"][data-accent="green"] .terminal-panel  { --accent: #4ADE80; --accent-ring: rgba(74, 222, 128, .15);  --accent-bg: #16301F; }
+:root[data-term-tone="dark"][data-accent="pink"] .terminal-panel   { --accent: #F29BC4; --accent-ring: rgba(242, 155, 196, .15); --accent-bg: #36202B; }
+:root[data-term-tone="light"] .terminal-panel {
+  --accent: #0B7A70; --accent-fg: #FFFFFF; --accent-ring: rgba(11, 122, 112, .18); --accent-bg: #E6F4F2;
+}
+:root[data-term-tone="light"][data-accent="blue"] .terminal-panel   { --accent: #1F5FBF; --accent-ring: rgba(31, 95, 191, .18);  --accent-bg: #E4ECF9; }
+:root[data-term-tone="light"][data-accent="purple"] .terminal-panel { --accent: #7E3FB5; --accent-ring: rgba(126, 63, 181, .18); --accent-bg: #EFE6F7; }
+:root[data-term-tone="light"][data-accent="orange"] .terminal-panel { --accent: #A94A0B; --accent-ring: rgba(169, 74, 11, .18);  --accent-bg: #F8E9DD; }
+:root[data-term-tone="light"][data-accent="green"] .terminal-panel  { --accent: #13763A; --accent-ring: rgba(19, 118, 58, .18);  --accent-bg: #E0F1E6; }
+:root[data-term-tone="light"][data-accent="pink"] .terminal-panel   { --accent: #BE185D; --accent-ring: rgba(190, 24, 93, .18);  --accent-bg: #FAE4EE; }
+
+/* ---- reduce motion (src/lib/theme.ts sets data-motion="reduce" for "on", or for "system" when the OS asks) ---- */
+:root[data-motion="reduce"] *,
+:root[data-motion="reduce"] *::before,
+:root[data-motion="reduce"] *::after {
+  transition: none !important;
+  animation-delay: 0s !important;
+  animation-iteration-count: 1 !important;
+  animation-duration: .001s !important;
+  scroll-behavior: auto !important;
+}
+/* Spinners are the one animation that carries meaning: they turn slowly instead of freezing. */
+:root[data-motion="reduce"] .spin { animation: spin 3s linear infinite !important; }

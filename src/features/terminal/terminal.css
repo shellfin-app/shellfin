@@ -1,0 +1,120 @@
+.terminal-panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  color: var(--text); /* re-evaluated under a tone set (html[data-term-tone]) */
+  background: var(--term-bg); /* matches the terminal background (theme default or the custom colour) */
+}
+
+.terminal-panel__bar {
+  flex: none;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--border-subtle);
+  overflow-x: auto;
+}
+.terminal-panel__title { padding: 0 10px 0 6px; white-space: nowrap; }
+.terminal-panel__spacer { flex: 1; }
+/* terminal.hideMousePointerWhileTyping: shown again by the next mouse move. */
+.terminal-host--typing, .terminal-host--typing * { cursor: none !important; }
+.terminal-panel__tabs { display: flex; align-items: center; gap: 2px; }
+
+.terminal-tab {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.terminal-tab--active { background: var(--hover); color: var(--text-bright); }
+.terminal-tab__main {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 4px 0 10px;
+  border-radius: var(--radius-sm);
+}
+.terminal-tab--active .terminal-tab__main svg { color: var(--accent); }
+.terminal-tab__close { margin-right: 4px; }
+
+.terminal-panel__body { flex: 1; min-height: 0; padding: 10px 0 0 16px; }
+.xterm-view { height: 100%; width: 100%; overflow: hidden; }
+.terminal-host { height: 100%; width: 100%; }
+.terminal-host .xterm { height: 100%; }
+/* Visual bell (setting): a brief flash over the pane; pointer-events none so it never blocks input. */
+.terminal-host { position: relative; }
+.terminal-host--bell::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 5;
+  background: var(--bell-flash); box-shadow: inset 0 0 0 2px var(--accent);
+}
+.terminal-host .xterm-viewport { background-color: var(--term-bg) !important; }
+
+.terminal-panel__body { position: relative; }
+.terminal-tab--ended .terminal-tab__main { color: var(--text-muted); } /* text: --text-dim is for icons only (3:1) */
+.terminal-tab__rename {
+  height: 22px;
+  width: 140px;
+  margin-left: 8px;
+  padding: 0 6px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--chrome);
+  color: var(--text-bright);
+  font-size: calc(12px * var(--ui-scale, 1));
+  outline: none;
+}
+.terminal-panel__empty {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  color: var(--text-muted);
+  font-size: calc(13px * var(--ui-scale, 1));
+}
+.terminal-find {
+  position: absolute;
+  top: 6px;
+  right: 18px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  border: 1px solid var(--border-input);
+  border-radius: var(--radius);
+  background: var(--panel);
+  box-shadow: var(--shadow-find);
+}
+.terminal-find__input { width: 200px; height: 26px; font-size: calc(12px * var(--ui-scale, 1)); }
+.terminal-find__toggle {
+  height: 26px;
+  min-width: 28px;
+  padding: 0 6px;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font: calc(12px * var(--ui-scale, 1)) var(--font-mono, monospace);
+}
+.terminal-find__toggle:hover { color: var(--text-bright); background: var(--hover); }
+.terminal-find__toggle--on { color: var(--accent); background: var(--accent-bg); }
+.terminal-find__up svg { transform: rotate(180deg); }
+.terminal-find__status { min-width: 64px; font-size: calc(12px * var(--ui-scale, 1)); color: var(--warn); }
+.terminal-paste-preview {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  max-height: 140px;
+  overflow: auto;
+  white-space: pre;
+  border: 1px solid var(--border-input);
+  border-radius: var(--radius-sm);
+  background: var(--chrome);
+  color: var(--text);
+  font-size: calc(12px * var(--ui-scale, 1));
+}

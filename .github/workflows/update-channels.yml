@@ -1,0 +1,109 @@
+# Update channels (§9.8, §11.3). The app reads its updates from a permanent GitHub release with the tag
+# `updater` (a pre-release, never "latest"; title "Update channels — do not delete"):
+#   .../releases/download/updater/stable.json        <- every stable release
+#   .../releases/download/updater/experimental.json  <- every release, including pre-releases
+# This workflow copies the `latest.json` of a release into the channel files when a maintainer
+# PUBLISHES that release (never for a draft, so a draft never reaches users), or when it is run by hand
+# for an already published tag. A stable release (no SemVer pre-release part and not marked as a
+# pre-release) writes both files; a pre-release writes experimental.json only. A channel file is only
+# replaced by a SemVer-greater version, so republishing an old release cannot downgrade anyone.
+# It needs no signing secret: the manifest only references the already signed artifacts.
+name: Update channels
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Published release tag, e.g. v0.2.0 or v0.3.0-experimental.1"
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: update-channels
+  cancel-in-progress: false
+
+jobs:
+  channels:
+    # The `updater` release itself is never a source.
+    if: github.event_name == 'workflow_dispatch' || github.event.release.tag_name != 'updater'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: write # read the release, create/upload to the `updater` release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.22.1
+          package-manager-cache: false
+
+      - name: Resolve the published release
+        id: release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.release.tag_name }}
+        run: |
+          if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::not a release tag: $TAG"; exit 1
+          fi
+          info="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease)"
+          if [ "$(jq -r .isDraft <<< "$info")" != "false" ]; then
+            echo "::error::$TAG is a draft: channels are only updated from published releases"; exit 1
+          fi
+          {
+            echo "tag=$TAG"
+            echo "prerelease=$(jq -r .isPrerelease <<< "$info")"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Download the release manifest and the current channel files
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern latest.json --dir release-manifest
+          mkdir -p current
+          if gh release view updater --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            for f in stable.json experimental.json; do
+              gh release download updater --repo "$GITHUB_REPOSITORY" --pattern "$f" --dir current || true
+            done
+          fi
+          ls -l release-manifest current
+
+      # Which files to write, and never a downgrade (scripts/updater-manifest.mjs `channels`).
+      - name: Decide the channel files
+        shell: bash
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+          PRERELEASE: ${{ steps.release.outputs.prerelease }}
+        run: |
+          node scripts/updater-manifest.mjs channels --manifest release-manifest/latest.json --tag "$TAG" \
+            --prerelease "$PRERELEASE" --current current --out channels | tee channels.txt
+
+      - name: Publish the channel files
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if [ ! -s channels.txt ]; then
+            echo "Nothing to update: the channels already hold the same or a newer version than $TAG."; exit 0
+          fi
+          if ! gh release view updater --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release create updater --repo "$GITHUB_REPOSITORY" --target "$DEFAULT_BRANCH" \
+              --prerelease --latest=false --title "Update channels — do not delete" \
+              --notes "Holds stable.json and experimental.json, the update manifests read by Shellfin. Written by the Update channels workflow; do not delete or edit by hand."
+          fi
+          while IFS= read -r f; do
+            gh release upload updater "channels/$f" --repo "$GITHUB_REPOSITORY" --clobber
+            echo "updated $f -> $TAG"
+          done < channels.txt

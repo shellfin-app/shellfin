@@ -1,0 +1,30 @@
+# Shellfin integration-test sshd (src-tauri/tests/sshd). Test-only; never use in production.
+Port 22
+LogLevel VERBOSE
+PermitRootLogin no
+PubkeyAuthentication yes
+PasswordAuthentication yes
+KbdInteractiveAuthentication yes
+UsePAM yes
+AllowTcpForwarding yes
+X11Forwarding no
+PrintMotd no
+Banner /etc/ssh/banner.txt
+AcceptEnv LANG LC_*
+Subsystem sftp /usr/lib/openssh/sftp-server
+# The suite runs its tests in parallel, and several connections sit at a prompt (unauthenticated)
+# at once. The default 10:30:100 randomly drops connections past 10 ("past MaxStartups").
+MaxStartups 200:30:400
+
+# 2FA user: a key AND keyboard-interactive (PAM: pam_unix password + google-authenticator TOTP).
+Match User tester2fa
+    AuthenticationMethods publickey,keyboard-interactive
+
+# Low failure budget (server MaxAuthTries < 6 → client re-dial path, §5.6).
+Match User tester3
+    MaxAuthTries 3
+
+# SFTP-only account: every exec/subsystem request runs internal-sftp (the identity probe
+# must not wait for stdin).
+Match User tester-sftponly
+    ForceCommand internal-sftp

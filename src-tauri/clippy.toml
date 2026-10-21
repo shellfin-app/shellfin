@@ -1,0 +1,4 @@
+# §3: no child processes anywhere in the backend.
+disallowed-methods = [
+  { path = "std::process::Command::new", reason = "Shellfin never spawns processes (§3)" },
+]

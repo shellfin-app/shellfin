@@ -1,0 +1,139 @@
+# Homebrew tap (docs/ARCHITECTURE.md §11.3). When a maintainer PUBLISHES a release (never for a draft), this renders
+# the cask of that release and pushes it to the separate repository `shellfin-app/homebrew-tap`:
+#   brew install --cask shellfin-app/tap/shellfin               <- every stable release
+#   brew install --cask shellfin-app/tap/shellfin@experimental  <- every pre-release
+# The cask's sha256 comes from the release's SHA256SUMS, whose build-provenance attestation is verified first; the
+# DMG is never downloaded. A cask is only replaced by a SemVer-greater version (no downgrade). The token
+# `HOMEBREW_TAP_TOKEN` (fine-grained, contents:write on the tap repository only) is a secret of the `release`
+# environment and is exposed to the one step that pushes. Without it (forks, or before the tap exists) the workflow
+# ends with a notice. Run it by hand for an already published tag with "Run workflow" on the tag's ref (the `release`
+# environment only accepts `v*` tags).
+name: Homebrew tap
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Published release tag, e.g. v0.2.0 or v0.3.0-experimental.1"
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: homebrew-tap
+  cancel-in-progress: false
+
+env:
+  TAP_REPO: shellfin-app/homebrew-tap
+
+jobs:
+  cask:
+    # The permanent `updater` release is never a source; only the official repository publishes a tap.
+    if: github.repository == 'shellfin-app/shellfin' && (github.event_name == 'workflow_dispatch' || github.event.release.tag_name != 'updater')
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    environment: release
+    permissions:
+      contents: read # read the release
+      attestations: read # verify the attestation of SHA256SUMS
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.22.1
+          package-manager-cache: false
+
+      - name: Is the tap token available?
+        id: token
+        shell: bash
+        env:
+          HAVE_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
+        run: |
+          echo "enabled=$HAVE_TOKEN" >> "$GITHUB_OUTPUT"
+          if [ "$HAVE_TOKEN" != "true" ]; then
+            echo "::notice::HOMEBREW_TAP_TOKEN is not set: the Homebrew cask is not published"
+          fi
+
+      - name: Resolve the published release
+        id: release
+        if: steps.token.outputs.enabled == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.release.tag_name }}
+        run: |
+          if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::not a release tag: $TAG"; exit 1
+          fi
+          info="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease)"
+          if [ "$(jq -r .isDraft <<< "$info")" != "false" ]; then
+            echo "::error::$TAG is a draft: the tap is only updated from published releases"; exit 1
+          fi
+          {
+            echo "tag=$TAG"
+            echo "prerelease=$(jq -r .isPrerelease <<< "$info")"
+          } >> "$GITHUB_OUTPUT"
+
+      # The attestation proves SHA256SUMS was produced by this repository's release workflow.
+      - name: Download SHA256SUMS and verify its attestation
+        if: steps.token.outputs.enabled == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern SHA256SUMS --dir dl
+          gh attestation verify dl/SHA256SUMS --repo "$GITHUB_REPOSITORY"
+
+      - name: Render the cask
+        id: render
+        if: steps.token.outputs.enabled == 'true'
+        shell: bash
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+          PRERELEASE: ${{ steps.release.outputs.prerelease }}
+        run: |
+          mkdir out
+          read -r token file < <(node scripts/homebrew-cask.mjs render --repo "$GITHUB_REPOSITORY" --tag "$TAG" \
+            --prerelease "$PRERELEASE" --sums dl/SHA256SUMS --conf src-tauri/tauri.conf.json --out out/cask.rb)
+          echo "file=$file" >> "$GITHUB_OUTPUT"
+          echo "rendered $token ($file)"
+          cat out/cask.rb
+
+      # The only step that sees the tap token. The Contents API creates the initial commit of an empty repository
+      # too, so the tap needs nothing but to exist.
+      - name: Push the cask to the tap
+        if: steps.token.outputs.enabled == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAG: ${{ steps.release.outputs.tag }}
+          CASK_FILE: ${{ steps.render.outputs.file }}
+        run: |
+          if ! gh api "repos/$TAP_REPO" --jq .full_name > /dev/null; then
+            echo "::error::$TAP_REPO is not reachable with HOMEBREW_TAP_TOKEN: create the public repository and give the token contents:write on it"; exit 1
+          fi
+          put() { # path, local file, commit message
+            local sha args
+            sha="$(gh api "repos/$TAP_REPO/contents/$1" --jq .sha 2> /dev/null || true)"
+            args=(-f "message=$3" -f "content=$(base64 -w0 < "$2")")
+            if [ -n "$sha" ]; then args+=(-f "sha=$sha"); fi
+            gh api -X PUT "repos/$TAP_REPO/contents/$1" "${args[@]}" > /dev/null
+          }
+          # Never downgrade: write only a SemVer-greater version than the cask in the tap.
+          gh api "repos/$TAP_REPO/contents/Casks/$CASK_FILE" --jq .content 2> /dev/null | base64 -d > current.rb || : > current.rb
+          if [ "$(node scripts/homebrew-cask.mjs newer --cask current.rb --tag "$TAG")" != "yes" ]; then
+            echo "Nothing to update: the tap already holds the same or a newer $CASK_FILE than $TAG."; exit 0
+          fi
+          if ! gh api "repos/$TAP_REPO/contents/README.md" --jq .sha > /dev/null 2>&1; then
+            node scripts/homebrew-cask.mjs readme > out/README.md
+            put README.md out/README.md "Add README"
+          fi
+          put "Casks/$CASK_FILE" out/cask.rb "${CASK_FILE%.rb} ${TAG#v}"
+          echo "updated Casks/$CASK_FILE -> $TAG"

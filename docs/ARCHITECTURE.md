@@ -1,0 +1,1403 @@
+# Shellfin — Architecture
+
+| | |
+|---|---|
+| Status | Reference for the **v1** implementation (v0.1.0). Decisions are binding; change them only via a PR to this file, together with the code. |
+| App id | `app.shellfin.desktop` · product name **Shellfin** |
+| Platforms | Windows x64 and ARM64, Linux x64, macOS Apple Silicon (arm64). No 32-bit Windows, no Intel Macs. |
+| Stack | Tauri 2 · Rust (edition 2024, MSRV 1.90) · React 19 + TypeScript + Vite · xterm.js · CodeMirror 6 |
+| UI language | **English (default and fallback) and Ukrainian (`uk`)**, switchable in Settings > General (default: system language); every user-facing string goes through i18n (§8.2). Further locales are added as locale files only. Ukrainian terminology: `docs/i18n-glossary-uk.md`. |
+| Design | Dark IDE layout ("Graphite"): title bar with in-app menu bar and connection tabs, activity bar, sidebar (bookmarks + file tree), editor area, terminal panel, status bar. Tokens in `src/styles/tokens.css` (§8.5). |
+
+Conventions: **MUST/SHOULD** are normative. Rust identifiers are given with full paths the first time they appear. The generated TypeScript in `src/ipc/bindings/` is the source of truth for wire types (§4.1); this document describes behaviour and rules. For a quick orientation start with `AGENTS.md` at the repository root.
+
+---
+
+## Table of contents
+
+1. Overview, components, process & thread model
+2. Technology & crate selection (pinned versions, verified API reference)
+3. Rust module layout
+4. IPC contract (commands, channels, events, types, errors)
+5. Connection lifecycle (resolution, ProxyJump, host keys, agent, auth, keepalive, reconnect)
+6. SFTP & editor
+7. Bookmarks, settings & local storage
+8. Frontend architecture (incl. i18n)
+9. Security
+10. Testing strategy
+11. Build, distribution & supply chain
+12. Status and roadmap
+13. Risks & open questions
+- Appendix — Manual test checklist
+
+---
+
+## 1. Overview
+
+### 1.1 Scope of v1
+
+In scope:
+- SSH connections (direct and through any number of `ProxyJump` hops), multiple simultaneous connections as top-level tabs.
+- Authentication: public key files (incl. encrypted keys, RSA with SHA-2 signatures), ssh-agent (Windows OpenSSH agent pipe, any agent pipe/socket named by `SSH_AUTH_SOCK`/`IdentityAgent` — this is how Pageant ≥ 0.75 is used, via `pageant --openssh-config`; Unix `SSH_AUTH_SOCK`), password, keyboard-interactive (incl. 2FA). Every agent endpoint is owner-verified (§5.5).
+- Host key verification against OpenSSH `known_hosts` with an interactive "unknown host" prompt, hard failure on changed/revoked keys, on `@cert-authority`-managed hosts, and on a key change during reconnect.
+- Several terminals per connection (tabs). Split panes: v1.1.
+- Remote file tree over SFTP (lazy, virtualized), built-in text editor (CodeMirror 6) with safe saving (atomic replace + conflict detection), basic file ops (new file/folder, rename, move, delete of files and empty folders), multi-file upload (picker and OS drag & drop) and download, 1 to 64 concurrent transfers per session (`transfers.maxConcurrent`, default 3), optional bandwidth limits (global and per bookmark), permission hints derived from the remote identity.
+- Hosts from `~/.ssh/config` (incl. `Include`, wildcards, `Host *` defaults, negation, first-match-wins, subset of `Match`) shown read-only; own bookmarks (CRUD, groups, tags, colour, drag-and-drop ordering); passwords optionally in the OS keychain, bound to the destination.
+- Auto-reconnect that keeps editor buffers and terminal scrollback; manual disconnect/reconnect (`session_disconnect`, `session_reconnect_now`); live bookmark edits applied to open sessions where possible.
+- Frameless window with an in-app menu bar (native menu on macOS), a command palette backed by one action registry (§8.7), a Keys dialog, a Settings dialog (appearance with dark/light themes and accents, terminal, editor, files, transfers, connection, general with notifications, startup restore and update channels; §8.10-§8.12).
+- Signed self-update from a stable or an experimental channel (§9.8), English and Ukrainian UI (§8.2), OS notifications for dropped connections and finished transfers (§5.8, §6.6), bookmark import/export (§7.7).
+
+Out of scope for v1: port forwarding UI (activity icon hidden), split panes/editors, `ProxyCommand`, host certificates (CA-managed hosts fail closed, §5.3), FIDO/`-sk` keys, GSSAPI, X11/agent forwarding, Pageant auto-discovery without `IdentityAgent` (§5.5), recursive directory transfer and recursive delete, remote file search, multiple windows, sudo-save, Windows 11 Snap Layouts on the custom maximize button. (The native macOS menu is relabelled in the UI language, §8.2.3.)
+
+### 1.2 Component diagram
+
+```
+┌──────────────────────────────── WebView (React, TS) ────────────────────────────────┐
+│  App shell (TitleBar · ActivityBar · Sidebar · EditorArea · TerminalPanel · Status)  │
+│  ├─ features/hosts      ├─ features/files    ├─ features/editor (CodeMirror 6)       │
+│  ├─ features/session    ├─ features/terminal (xterm.js registry)                     │
+│  ├─ state/ (Zustand)    ├─ i18n/ (i18next, en JSON)   ├─ lib/serverText.ts (sanitize) │
+│  └─ ipc/  Backend interface ── TauriBackend (invoke / Channel / listen)              │
+│                          └──── MockBackend  (browser-only dev & tests)              │
+└───────────────▲──────────────────────────┬──────────────────────────────────────────┘
+   Channel<SessionEvent>, Channel<bytes|TermEvent>,      invoke(cmd, args) → Result<T, AppError>
+   Channel<TransferEvent>, emit("ssh-config:changed",    (ACL-checked commands, §9.1;
+   "recents:changed", "app:quit-requested", "drop:*")     navigation locked to the app origin)
+┌───────────────┴──────────────────────────▼──────────────────────────────────────────┐
+│ Rust backend (Tauri 2 core, tokio multi-thread runtime, panic = unwind)              │
+│  commands/*  (thin #[tauri::command] wrappers, DTO mapping, AppError)                │
+│  ┌───────────────────┐   ┌──────────────┐  ┌───────────────┐  ┌──────────────────┐   │
+│  │ session::Manager  │──▶│ ssh::connect │─▶│ ssh::auth     │  │ ssh::prompt      │   │
+│  │  Session (super-  │   │  dial, hops, │  │ key/agent/pw/ │◀▶│ PromptBroker     │   │
+│  │  visor task)      │   │  handler     │  │ kbd-int       │  │ (UI round trip)  │   │
+│  │  ├ terminal::*    │   └──────┬───────┘  └──────┬────────┘  └──────────────────┘   │
+│  │  ├ sftp::*        │          │ russh 0.64.1    │ ssh::agent (owner-verified pipe/  │
+│  │  └ stats          │          │ (ring)          │ socket → AgentClient::connect)    │
+│  └───────────────────┘   ┌──────▼────────┐  ┌──────────────┐  ┌───────────────────┐   │
+│  watcher (notify) ──────▶│ known_hosts   │  │ sshconfig    │  │ storage (JSON,    │   │
+│                          │ (own parser + │  │ (own parser) │  │ atomic, 0600)     │   │
+│                          │  own writer)  │  └──────┬───────┘  │ secrets (keyring) │   │
+│                          └───────┬───────┘         │          └───────────────────┘   │
+│                    platform::{local_path, file_trust (DACL / mode checks)}            │
+└───────┬───────────────────────────┬────────────────────────────┬─────────────────────┘
+        │ TCP / direct-tcpip        │ ~/.ssh/*, /etc/ssh/*,      │ app config dir (0700),
+        ▼                           ▼ %ProgramData%\ssh (trusted │ OS keychain, log dir
+   SSH servers (jump hops → target)   only), agent pipe/socket   ▼
+```
+
+### 1.3 Process & thread model
+
+- **One OS process**, one main window (label `main`, created in `setup` so navigation handlers can be attached, §9.1). The WebView renders UI only; all SSH, SFTP, file-system and keychain work happens in Rust.
+- **Runtime:** Tauri's tokio multi-thread runtime (`tauri::async_runtime`). Commands are `async fn`. russh spawns one protocol task per connection/hop (`connect_stream` returns a `Handle`).
+- **Per session** (one connection tab):
+  - 1 *supervisor task* — owns the lifecycle state machine (§5.8), receives `SupervisorCmd` over an `mpsc`, awaits all child tasks; a child `JoinError::is_panic()` is converted into `internal` for **this session only**.
+  - N russh session loops (one per hop).
+  - 1 *stats ticker* (1 Hz).
+  - per terminal: 1 *reader task* that **never stops draining** `ChannelReadHalf::wait()` (§4.5); writes go directly from `term_write`.
+  - 1 `RawSftpSession` (opened before `Connected`, §6.1); SFTP commands await requests in the command future.
+  - per transfer: 1 task with a cancel flag (`tokio::sync::watch`).
+- **Blocking work** goes to `tauri::async_runtime::spawn_blocking`: keychain (synchronous `keyring`), key decryption (bcrypt-pbkdf ≈ 1 s), all local file I/O through `platform::local_path` (small, but may hit slow disks), Win32 security queries. Native dialogs use the callback API + `oneshot`.
+- **Locks:** registries are `std::sync::RwLock<HashMap<..>>`, never held across `.await`; awaited per-session state uses `tokio::sync::Mutex`. known_hosts writes are serialized by a process-wide `std::sync::Mutex` + `File::lock()` (§5.3).
+- **Panics:** `panic = "unwind"` in all profiles; a panic hook logs `location` only (never the payload); core dumps disabled on Unix (§9.6).
+- **Quit:** every quit path (window close button, Cmd+Q / app menu Quit, OS shutdown) goes through one flow (§8.9): Rust prevents the exit, emits `app:quit-requested`, the frontend acknowledges, confirms dirty buffers and calls `app_quit(lastDirs)` (or `app_quit_cancel`); the backend disconnects all sessions within 500 ms and calls `AppHandle::exit(0)`. A hung frontend cannot block quitting: after 3 s without ack, a **repeated** close/quit request force-quits (never a silent timer).
+
+---
+
+## 2. Technology & crate selection
+
+### 2.1 Decisions at a glance
+
+| Concern | Decision | Reason |
+|---|---|---|
+| SSH | `russh =0.64.1`, **`default-features = false, features = ["ring", "rsa", "flate2"]`** | Pure-Rust async client. The default `aws-lc-rs` backend needs NASM/CMake and fails to build with MSVC on Windows (`aws-lc-sys`), and is banned in `deny.toml`; `ring` builds everywhere. |
+| SFTP | `russh-sftp =3.0.1` via **`RawSftpSession`** | `SftpSession` hides the raw session, so `posix-rename@openssh.com` would be unreachable; `RawSftpSession::extended()` exposes it. |
+| ssh_config | **Own parser** (`sshconfig`) | §2.4. |
+| known_hosts | **Own parser, matcher and writer** (`known_hosts`) | russh's checker aborts on `@revoked`/`@cert-authority`, has no wildcard/negation/multi-file support; russh's `learn_known_hosts_path` always writes `[host]:port` (wrong for `HostKeyAlias`), creates dirs/files with default modes and writes the host verbatim (source-verified) — not used. |
+| Agent | russh `AgentClient::connect(stream)` over a stream **we** open and owner-verify (Windows: owner of the **pipe object** via `GetSecurityInfo(handle, SE_KERNEL_OBJECT)`, works non-elevated for SYSTEM-owned pipes; Unix: tokio `UnixStream::peer_cred()`) | russh/pageant constructors do not check the endpoint owner; a process-token check cannot open LocalSystem processes from a non-elevated app. |
+| Windows security APIs | `windows-sys =0.61.2` (Win32 Foundation/Security/Authorization/Storage_FileSystem/System_Threading) | Pipe owner check, file owner + DACL check on handles, `GetDriveTypeW`, `GetFinalPathNameByHandleW`, current-user SID. |
+| WebView2 hardening | `webview2-com =0.39.1`, `windows-core =0.62.2` (Windows only; same versions as tauri/wry in the tree) | Tauri exposes neither the context-menu/accelerator/zoom settings nor the permission handler (§9.1). |
+| Unix APIs | `libc =0.2.191` | `getuid`, `prctl(PR_SET_DUMPABLE)`, `setrlimit(RLIMIT_CORE)`, `O_NONBLOCK`. (No process-wide `umask` change — it would be inherited by opener children and make downloads 0600.) |
+| URLs | `url =2.5.8` (already in the tree via tauri) | Parse/re-serialize external links; IDNA → punycode host for the native confirm. |
+| Secrets | `keyring =4.2.0` (feature `v1`) | Credential Manager / Keychain / Secret Service (zbus); no plaintext fallback. |
+| App data | Tauri `app.path().app_config_dir()` / `app_log_dir()` | Respects the bundle identifier; permissions tightened by us (§7.1). |
+| Errors | `thiserror =2.0.21` + serializable `AppError` (code + params) | i18n-friendly (§4.3). |
+| Logging | `tracing =0.1.44`, `tracing-subscriber =0.3.23` (`env-filter`, `fmt`), `tracing-appender =0.2.5` (daily, `max_log_files(7)`) | `log`→`tracing` bridge captures russh. |
+| File watching | `notify-debouncer-mini =0.7.0` (re-exports `notify 8.2.0`) | §7.5. |
+| Text encodings | `encoding_rs =0.8.42` | Non-UTF-8 files. |
+| Include globs | `glob =0.3.4` | Alphabetical order (as OpenSSH); `**` rejected (§7.4). |
+| Hashing / HMAC / RNG | `ring =0.17.14` (already in tree) | SHA-256 etags, HMAC-SHA1 hashed known_hosts, `SystemRandom` salts. |
+| Base64 | `base64 =0.23.1` | known_hosts. |
+| TS bindings | `ts-rs =12.0.1` with `TS_RS_LARGE_INT = "number"` | Generated `src/ipc/bindings/` is the wire contract (§4.1). |
+| Editor | **CodeMirror 6** | "Simple editor"; modular, no workers, offline chunks via Vite, per-buffer `EditorState`. Monaco: ~100 MB unpacked, needs workers. |
+| State | Zustand 5 + immer middleware, **plain objects/arrays only** in state (no `Map`/`Set`) | Works outside React; avoids immer `enableMapSet`. |
+| i18n | i18next 26 + react-i18next 17; extraction/lint with **i18next-cli** | §8.2. |
+
+### 2.2 Rust dependencies
+
+`src-tauri/Cargo.toml` is authoritative. Every dependency is pinned with `=` (russh is 0.x), `Cargo.lock` is committed and all builds use `--locked`. Notable choices:
+
+- `russh` with `default-features = false, features = ["ring", "rsa", "flate2"]`, `russh-sftp`, `tauri` plus `tauri-plugin-dialog`, `tauri-plugin-opener`, `tauri-plugin-notification` (OS notifications, §6.6/§5.8) and `tauri-plugin-single-instance` (a second launch focuses the running window, §7.1; it adds no new crates to the tree), all used **Rust-side only** (no JS permissions; the capability grants no `notification:` or `single-instance:` permission). `tauri-plugin-fs` arrives only as a dependency of the dialog plugin and is never registered; `tauri-plugin-shell` and `aws-lc-*` are banned in `deny.toml`.
+- `tauri-plugin-updater` with `default-features = false, features = ["rustls-tls", "system-proxy"]`: signed self-update (§9.8), **Rust-side only** (no `updater:` permission; the ACL test forbids the prefix). TLS is rustls with the `ring` provider (no OpenSSL, no aws-lc); `zip` is off (only v1-compatible updater bundles use it). It brings `reqwest`'s rustls stack, `minisign-verify` and `tar`/`flate2` (macOS `.app.tar.gz`).
+- `ring` (hashing, HMAC, RNG), `zeroize` (secrets), `keyring` (feature `v1`), `encoding_rs`, `glob`, `notify-debouncer-mini`, `url`, `base64`, `uuid`, `ts-rs`.
+- Platform: `windows-sys`, `webview2-com`, `windows-core` on Windows; `libc` on Unix.
+- Cargo features: `it` (integration tests against the Docker sshd, §10.2) and `e2e` (test-only redirect of all user state, §9.7; never in release builds).
+- Release profile: `codegen-units = 1`, `lto`, `opt-level = 3`, `strip`, and **`panic = "unwind"`** (supervisors rely on it, §9.6).
+- Lints: `clippy::unwrap_used`, `expect_used` and `disallowed_methods` (`std::process::Command`, configured in `src-tauri/clippy.toml`) are denied; `indexing_slicing` is denied in `ssh/`, `sftp/`, `sshconfig/`, `known_hosts/`. The crate allows `clippy::result_large_err` because `AppError` exceeds clippy's 128-byte threshold and boxing it would change the documented struct.
+- `src-tauri/.cargo/config.toml` sets `TS_RS_EXPORT_DIR=../src/ipc/bindings` and `TS_RS_LARGE_INT=number` (`i64`/`u64` become `number`). **Run cargo from `src-tauri/`** so these apply.
+- Advisories without a fix are ignored with a justification in `deny.toml` and `src-tauri/.cargo/audit.toml` (kept identical). RUSTSEC-2023-0071 (rsa timing, via russh's `rsa` feature) is accepted only for `rsa 0.10` (constant-time bigint arithmetic, one signature per auth attempt); `deny.toml` bans older rsa versions and CI asserts that exactly one `rsa 0.10.x` is in the tree. Drop the ignore when russh ships a fixed rsa.
+- `lib.rs` has a `compile_error!` for optimised builds without tauri's `custom-protocol` (they would load `devUrl` with full IPC and no CSP). Release builds are made with `tauri build`.
+
+### 2.3 Verified russh / russh-sftp / Tauri API reference
+
+API facts below were verified against the exact pinned versions (compiled, and exercised against OpenSSH in the Docker fixture, §10.2). Re-check them when upgrading russh.
+
+**Client & handler** (`russh::client`)
+- `Config { keepalive_interval: Option<Duration>, keepalive_max: usize, inactivity_timeout, nodelay: bool, preferred: russh::Preferred, window_size (2 MiB default), channel_buffer_size (100), .. }`, `Default` (keepalive off, `keepalive_max: 3`, `nodelay: false`).
+- `connect_stream<H, R>(Arc<Config>, R, H) -> Result<Handle<H>, H::Error>`, `R: AsyncRead + AsyncWrite + Unpin + Send + 'static`. We dial TCP ourselves (`tokio::net::lookup_host` + `TcpStream::connect` with timeout + `set_nodelay(true)`).
+- `trait Handler { type Error: From<russh::Error> + Send + Debug; async fn check_server_key(&mut self, &PublicKeyOrCertificate) -> Result<bool, _>; auth_banner; disconnected(DisconnectReason<E>); server_channel_open_{forwarded_tcpip, forwarded_streamlocal, agent_forward, session, direct_tcpip, direct_streamlocal, x11}(.., reply: ChannelOpenHandle, ..); should_accept_unknown_server_channel; server_channel_open_unknown; adjust_window(..) -> u32; .. }`.
+  - **Default `server_channel_open_*` impls call `reply.accept()`** (source-verified) → our `ClientHandler` overrides all seven with `reply.reject(russh::ChannelOpenFailure::AdministrativelyProhibited).await`; `should_accept_unknown_server_channel` stays `false`.
+  - `check_server_key` is called only on the **initial** kex (re-key does not re-check; §13) and may `.await` (UI prompt). `Ok(false)` → `russh::Error::UnknownKey`.
+  - Dead peer: `disconnected(Error(KeepaliveTimeout))`, readers end, `Handle` (a `Future`) yields `Err(KeepaliveTimeout)` after ≈ interval × (max + 1).
+- **Flow control fact:** on `CHANNEL_DATA` russh first re-opens the SSH window (`adjust_window_size`, target = `Config::window_size`), then delivers with `chan.send(..).await` into a bounded mpsc (`channel_buffer_size`) (source-verified `client/encrypted.rs`). There is **no per-channel backpressure**; a consumer that stops reading blocks the whole session loop (all channels, keepalives). `Handler::adjust_window` only changes an unused target. ⇒ readers must always drain (§4.5).
+- `Handle<H>`: `authenticate_none`, `authenticate_password`, `authenticate_publickey(user, PrivateKeyWithHashAlg)`, `authenticate_publickey_with(user, ssh_key::PublicKey, Option<HashAlg>, &mut impl Signer) -> Result<AuthResult, S::Error>` (agent; `S::Error = AgentAuthError`, mapped separately), `authenticate_keyboard_interactive_start(user, Option<String>)` / `_respond(Vec<String>)`, `best_supported_rsa_hash() -> Result<Option<Option<HashAlg>>, _>` **(run: `Some(Some(Sha512))`)**, `channel_open_session()`, `channel_open_direct_tcpip(host, port: u32, orig_addr, orig_port: u32)`, `send_ping()`, `disconnect(..)`, `is_closed()`. Auth takes `&mut self`; channels `&self` → authenticate, then `Arc`.
+- `AuthResult::Success | Failure { remaining_methods: MethodSet, partial_success }`; `KeyboardInteractiveAuthResponse::{Success, Failure{..}, InfoRequest{ name, instructions, prompts: Vec<Prompt{ prompt, echo }> }}`. **Never call `authenticate_*` after `Success`** (hangs).
+- `russh::Preferred::DEFAULT.key` ends with `Algorithm::Rsa { hash: None }` (SHA-1 host-key signatures); we build `preferred.key` without it (, §5.2). `host_key_certificates` is empty by default.
+
+**Keys** (`russh::keys`)
+- `decode_secret_key(pem, Option<&str>)`: OpenSSH, PKCS#8 (plain/encrypted), PKCS#1 RSA (plain or AES-128-CBC), SEC1, PuTTY `.ppk`. Encrypted w/o password → `Error::KeyIsEncrypted`; wrong password → `Error::SshKey(ssh_key::Error::Crypto)`.
+- `ssh_key::PrivateKey::from_openssh(pem)` parses an encrypted key without decrypting: `.is_encrypted()`, `.public_key()` (fingerprint before decryption).
+- `PrivateKeyWithHashAlg::new(Arc<PrivateKey>, Option<HashAlg>)`; RSA + `None` = SHA-1, rejected by OpenSSH ≥ 8.8.
+- `parse_public_key_base64`, `load_public_key`, `PublicKey::fingerprint(HashAlg::Sha256)` → `SHA256:<base64>`; `ssh_key::PublicKey::from_openssh("type b64")`.
+- Ed25519/RSA/DSA private keys zeroize on drop (source).
+
+**Agent** (`russh::keys::agent`)
+- `client::AgentClient::connect(stream)` (generic, any `AsyncRead + AsyncWrite + Unpin`) — used with our verified `tokio::net::windows::named_pipe::NamedPipeClient` / `tokio::net::UnixStream`. Also available but **not used**: `connect_named_pipe`, `connect_pageant`, `connect_uds`, `connect_env` (no owner check).
+- `request_identities() -> Vec<AgentIdentity>` (`PublicKey{key,comment} | Certificate{..}`, `.public_key()`, `.comment()`), `add_identity(&PrivateKey, &[Constraint::KeyLifetime{seconds}])`, `remove_identity(&PublicKey)`; `AgentClient<S>: russh::Signer`. Facts: russh's `add_identity` sends an **empty comment** (keys show no comment in `ssh-add -l`; accepted); the Windows OpenSSH agent answers `Agent failure` to any constrained add (`KeyLifetime`) and persists unconstrained keys in the registry (§5.5).
+
+**Channels** (`russh::Channel<russh::client::Msg>`)
+- `request_pty(want_reply, term, cols, rows, px_w, px_h, &[(russh::Pty, u32)])`, `request_shell`, `exec(want_reply, cmd)`, `request_subsystem(true, "sftp")`, `window_change`, `data_bytes`, `eof`, `close`, `wait() -> Option<ChannelMsg>`, `split() -> (ChannelReadHalf, ChannelWriteHalf<Msg>)`, `into_stream()`.
+- `ChannelMsg::{Data{data: Bytes}, ExtendedData{data, ext}, Eof, Close, ExitStatus{exit_status}, ExitSignal{signal_name, ..}, Success, Failure, WindowAdjusted{..}, ..}` (`#[non_exhaustive]`); raw bytes preserved.
+
+**SFTP** (`russh_sftp::client::RawSftpSession`, methods `&self`)
+- `new(stream)`, `init() -> Version{version, extensions}` (OpenSSH 10.3: `posix-rename@openssh.com`, `fsync@openssh.com`, `limits@openssh.com`, …), `set_timeout(secs)`, `set_limits` (`&mut`, before `Arc`), `limits()`.
+- `realpath, stat, lstat, fstat, setstat, fsetstat, opendir, readdir (until Status Eof), open(path, OpenFlags, FileAttributes) -> Handle{handle}, read(handle, off, len) (Status Eof at end), write, close, fsync, mkdir, rmdir, remove, rename, readlink, symlink, extended(name, Vec<u8>) -> Packet`.
+- `FileAttributes { size, uid, gid, permissions, atime, mtime: Option<u32>, .. }`; `OpenFlags::{READ, WRITE, CREATE, TRUNCATE, EXCLUDE, APPEND}`. SFTP v3 has one `UIDGID` and one `ACMODTIME` flag: if either member is `Some`, russh-sftp serializes **both** and substitutes `0` for a `None` member (source, `protocol/file_attrs.rs`) ⇒ **rule: `uid`/`gid` and `atime`/`mtime` are always set as pairs** (§6.4).
+- `rename` over existing → `Failure`; `extended("posix-rename@openssh.com", HardlinkExtension{oldpath,newpath}.try_into()?)` replaces atomically.
+- Errors: `client::error::Error::{Status(Status{status_code, error_message, ..}), IO, Timeout, Limited, UnexpectedPacket, UnexpectedBehavior}`. Incoming packets capped at 256 KiB. Names/handles decoded lossily (`from_utf8_lossy`) → §6.2.
+
+**Tauri**
+- `tauri::ipc::Channel<InvokeResponseBody>`: `Raw(Vec<u8>)` → JS `ArrayBuffer`, `Json(String)` → object; JS reorders by index; channel fetch bypasses the ACL.
+- `tauri_build::AppManifest::new().commands(&[..])` → ACL on app commands, autogenerated `allow-<command-with-dashes>`.
+- `tauri::WindowEvent::{DragDrop(DragDropEvent::{Enter{paths,position}, Over{position}, Drop{paths,position}, Leave}), CloseRequested{api}}`; `RunEvent::ExitRequested{code: Option<i32>, api}` with `api.prevent_exit()` (code `None` = user-initiated, `Some` = `AppHandle::exit`); `AppHandle::exit(i32)`.
+- `WebviewWindowBuilder::from_config(..)` + `.on_navigation(Fn(&Url) -> bool)` + `.on_new_window(Fn(Url, NewWindowFeatures) -> NewWindowResponse)` with `NewWindowResponse::Deny`; window config `"create": false`.
+- `app.security.dangerousDisableAssetCspModification` accepts a list of directives (`DisabledCspModificationKind::List`).
+- Dialog: `app.dialog().file().set_title(..).add_filter(name, &[..]).pick_file(cb)` / `save_file(cb)`, `FilePath::into_path()`. Opener: `app.opener().open_url(..)`, `reveal_item_in_dir(path)`.
+
+**Std / platform**: `std::fs::File::lock()/try_lock()/unlock()` (Rust ≥ 1.89; on Windows the handle **must be opened with `read(true)`** — append-only handles fail with `Access is denied`); `OpenOptions::create_new(true)` → `AlreadyExists`; NTFS ADS write via `"<path>:Zone.Identifier"`; tokio `UnixStream::peer_cred() -> UCred{uid, ..}` (source). Windows (non-elevated): `GetSecurityInfo(pipe_handle, SE_KERNEL_OBJECT, OWNER|DACL)` returns the owner for SYSTEM-service pipes (`\\.\pipe\lsass`, `\\.\pipe\ntsvcs` → `S-1-5-32-544`; `\\.\pipe\eventlog` → `S-1-5-19`) and for our own pipe (current user SID); `GetSecurityInfo(file_handle, SE_FILE_OBJECT, ..)`; `GetFinalPathNameByHandleW` → `\\?\C:\…`; `GetDriveTypeW("C:\\") = 3` (FIXED). `std::path::Path::components()` yields `Prefix::Disk`/`VerbatimDisk` + `RootDir` only for real drive paths; `\??\UNC\…`, `\??\C:\…`, `\foo`, `C:foo`, `\\srv\…`, `//srv/…`, `\\.\pipe\…`, `\\?\UNC\…` all fail that test.
+
+### 2.4 ssh_config parser evaluation (why our own)
+
+| Requirement | russh-config 0.58 | ssh2-config 0.9 | Own parser |
+|---|---|---|---|
+| `Include` (globs, relative, inside `Host`, cycle/depth limit) | ✗ | ✔ | ✔ (+ no `**`, 256-file cap) |
+| Options before first `Host` | ✗ (`HostNotFound`) | ✔ | ✔ |
+| `Keyword=value`, tabs, quotes, **trailing `# comment`** | ✗ | partial | ✔ |
+| Host patterns `*`, `?`, `!` | ✔ | ✔ | ✔ |
+| Case-insensitive host matching | ✗ | ✗ | ✔ |
+| First-obtained-value-wins; `IdentityFile` accumulates | ✔/✔ | ✔/✔ | ✔ |
+| `Match` blocks | ✗ | ✗ (lines after `Match` attributed to previous `Host`) | ✔ subset + warning |
+| Source file:line per host | ✗ | ✗ | ✔ |
+| File trust checks (owner/permissions) | ✗ | ✗ | ✔ (§7.4.1) |
+
+### 2.5 Frontend packages
+
+`package.json` uses **exact versions** (no `^`/`~`); `package-lock.json` is committed; CI uses `npm ci`. Keep scaffold React/Vite and `typescript 6.0.3` (`typescript-eslint 8.72` requires `<6.1`). **Supported Node: 24 LTS, pinned to 24.22.1** (the security release of 2026-10-21): `engines.node` is `>=24.22.1`, `.nvmrc` and every CI `node-version` say `24.22.1`. Raise all of them together when a newer 24.x security release is adopted.
+
+| Package | Version | Use |
+|---|---|---|
+| `@tauri-apps/api` / `@tauri-apps/cli` | 2.12.4 / 2.12.3 | IPC, events |
+| `@xterm/xterm` | 6.0.0 | terminal |
+| `@xterm/addon-fit` · `addon-webgl` · `addon-unicode11` · `addon-search` | 0.11.0 · 0.19.0 · 0.9.0 · 0.16.0 | sizing, GPU renderer, widths, find. (`addon-web-links` dropped: OSC 8 and plain-URL links both go through the `linkHandler`/link provider in §8.6; `addon-clipboard` MUST NOT be used.) |
+| `@codemirror/state` · `view` · `commands` · `language` · `search` · `legacy-modes` | 6.7.6 · 6.43.15 · 6.11.1 · 6.13.1 · 6.7.2 · 6.5.5 | editor (languages are loaded per parser, §8.1) |
+| `zustand` · `immer` | 5.0.15 · 11.2.3 | state |
+| `i18next` · `react-i18next` | 26.5.3 · 17.1.0 | i18n |
+| `cmdk` | 1.1.1 | palette |
+| `react-resizable-panels` | 4.14.7 | `Group` / `Panel` / `Separator` (v4 names) |
+| `@tanstack/react-virtual` | 3.14.21 | large lists |
+| `@fontsource/inter` · `@fontsource/jetbrains-mono` | 5.3.0 · 5.3.0 | local fonts |
+| dev: `vitest` · `jsdom` · `@testing-library/react` · `@testing-library/user-event` | 5.0.5 · 30.1.3 · 16.3.3 · 14.6.8 | tests |
+| dev: `eslint` · `typescript-eslint` · `eslint-plugin-react-hooks` · `eslint-plugin-i18next` · `i18next-cli` | 10.13.0 · 8.72.0 · 7.1.1 · 6.1.5 · 1.77.0 | lint, no hard-coded strings, key extraction (`i18next-parser` is deprecated in favour of `i18next-cli`) |
+
+`@tauri-apps/plugin-opener` (scaffold) is removed from `package.json`.
+
+---
+
+## 3. Rust module layout (`src-tauri/src/`)
+
+```
+main.rs                  windows_subsystem attr; calls shellfin_lib::run()
+lib.rs                   Builder: plugins (dialog, opener, notification, updater; all Rust-side only), manage(AppState), invoke_handler![..]; setup(): process hardening,
+                         logging, main window built from config with navigation lock + WebView2 hardening + guard script
+                         (§9.1); on_window_event: DragDrop → DropRegistry, CloseRequested → quit flow; RunEvent::ExitRequested
+                         → quit flow (§8.9); macOS native menu
+app_state.rs             AppState { paths (platform::Paths), quit (QuitState), stores, ssh_config, approvals
+                         (known_hosts::TrustOnceApprovals), sessions, drops (DropRegistry), startup_warnings (store problems
+                         for AppBootstrap.warnings), notifications (notify::NotificationHub), updates (updater::UpdateState) } —
+                         prompts live in each session's PromptBroker; TransferRegistry is owned by SessionManager so
+                         session_close/quit cancel a session's transfers before the connection closes
+notify.rs                OS notifications: NotificationHub (texts from `notifications_set_texts`, switches from settings, window
+                         focus cache), shown through tauri-plugin-notification from Rust only (§5.8, §6.6)
+app_menu.rs              macOS native menu: one data table (MENUS), built and installed on macOS only; custom items
+                         forward their id as the `menu:action` event, system roles do not
+quit.rs                  QuitState machine + glue (§8.9)
+updater.rs               signed self-update (§9.8): guard, channel endpoint, schedule, notes, install via the quit flow
+window.rs                navigation lock, WebView2 settings and permission policy, guard script, window state events
+external_link.rs         URL validation/normalisation and dialog-text sanitising for app_open_external (§9.4)
+e2e.rs                   test-only user-state redirect (feature `e2e`, §9.7)
+error.rs                 AppError { kind: ErrorCode, detail }, ErrorCode + enums (§4.3), map_russh/map_sftp/map_io…
+ipc/dto.rs               ALL DTOs (#[derive(TS)] + Serialize for outbound, Deserialize for inbound); ts-rs export
+ipc/secret.rs            Secret<T>: Deserialize-only, manual `impl TS` (= T), zeroize, Debug "***"
+commands/                thin #[tauri::command] wrappers: app, hosts, settings, session, terminal, sftp, transfer, update, window;
+                         names.rs = the single command list include!d by build.rs (ACL manifest) and commands/mod.rs
+platform/
+  mod.rs                 Paths (home, user/system ssh paths, agent pipe), local user name, harden_process()
+  local_path.rs          validate_local_path(path, source) + open_local(path, kind) — the ONLY way to open local files (§9.4);
+                         runs the trust check on the opened handle
+  file_trust.rs          check_handle(handle_or_fd, FileKind) — per-file-type policy table (§7.4.1)
+  win_security.rs        Win32 helpers: current user SID, GetSecurityInfo on handles (files, pipes), GetNamedSecurityInfoW
+                         for directory chains, ACE scan, drive type, final path
+logging.rs               tracing init; panic hook (location only); redaction helpers
+sshconfig/               lexer, parser (Include: glob without `**`, depth ≤ 16, ≤ 256 files, trust check per file), pattern,
+                         resolve (first-wins, Match), tokens (%-tokens, ${ENV}), hosts (aliases, warnings), validate
+                         (valid_hostname), service (trusted source + cache owner), mod (Cache, reload)
+known_hosts/             parse (tolerant), verify (verdicts incl. CaManaged), write (own learn(): validation, hashing,
+                         0600/O_EXCL, lock), mod (TrustOnceApprovals, lookup name, preferred_host_key_algs)
+storage/                 file.rs (atomic, 0600, quarantine), bookmarks (validate-on-load, password binding, order, colour;
+                         bookmarks/io.rs = export and hostile-input import, §7.7), settings (defaults, clamp on load/update),
+                         recents (also `openAtQuit` and `skippedUpdateVersion`), migrations
+secrets.rs               keyring wrapper (spawn_blocking), account naming
+watcher.rs               ssh config watcher (§7.5)
+ssh/                     target (Target → ResolvedTarget), handler (host key, banner, disconnected, reject server-initiated
+                         channels), connect (dial, hops, Preferred), auth (§5.6), keys (identity discovery/load/decrypt,
+                         read_public), agent (owner-verified connect, list, add/remove), identity (remote uid/gids probe),
+                         prompt (PromptBroker), shellquote (POSIX/PowerShell quoting for local hints, octal-escaped `cd`
+                         wrapper for "Open terminal here", §4.5), mod
+session/                 manager (registry, find_terminal, apply_bookmark), session (supervisor, state machine, reconnect,
+                         host-key pins, per-hop HopSecrets), live (live bookmark values + needsReconnect), stats
+terminal/                mod (Terminal, reader and pump tasks, resize, cwd exec), flow (pure flow-control state, no I/O)
+sftp/                    client (RawSftpSession wrapper, capped listing), text, save, transfer (+ retry, cleanup), path
+                         (remote POSIX paths), names (local filename sanitising), drops (DropRegistry), throttle
+                         (bandwidth limiter)
+```
+
+Rules: `commands/*` only parse args, call a service, map errors. Services do not depend on Tauri types except `tauri::ipc::Channel`, wrapped in small `EventSink` traits so tests can use in-memory sinks. No `std::process::Command` anywhere (`clippy::disallowed_methods`).
+
+---
+
+## 4. IPC contract
+
+### 4.1 Conventions
+
+- Command names = Rust fn names (`snake_case`); JS passes **camelCase** argument keys (Tauri default); DTOs use `#[serde(rename_all = "camelCase")]` (per struct and per enum variant); enums are tagged (`type`, `kind`, `phase`, `method`, `code`) with camelCase values. Every literal union is a **named Rust enum** (no inline string unions).
+- Every command returns `Result<T, AppError>`; JS receives a rejected promise with an `AppError`; the TS wrapper `call<T>()` re-throws `IpcError extends Error { error: AppError }`.
+- IDs are opaque UUID v4 strings. Timestamps are Unix **ms** (`*Ms`) except SFTP `mtime` (Unix **s**). `i64`/`u64` serialize as JSON numbers and are typed `number` (`TS_RS_LARGE_INT = "number"`).
+- Optional fields (`?` in TS) use `#[serde(skip_serializing_if = "Option::is_none")] #[ts(optional)]`; nullable fields (`T | null`) are plain `Option<T>`.
+- **Direction rule:** outbound DTOs derive `Serialize`; inbound DTOs derive `Deserialize`; types containing `Secret<T>` are **inbound-only** (`Secret` has no `Serialize` impl, so the compiler rejects any outbound use).
+- Bytes: backend→frontend via `Channel` raw (`ArrayBuffer`); frontend→backend only for `term_write`, as the **raw request body** (`Uint8Array`, no JSON) with the terminal id in the `shellfin-term-id` header (§4.5).
+- Streams: `tauri::ipc::Channel` for per-session/terminal/transfer streams; global events only for app-wide notifications (§4.2).
+- **Contract source:** the DTOs in Rust generate `src/ipc/bindings/*.ts` (ts-rs; `npm run bindings`). Never edit the generated files; after changing a DTO regenerate and commit them. CI fails if `cargo test` regenerates bindings that differ from git. `src/ipc/types.ts` is a pure re-export list.
+- **Handler ⇔ ACL ⇔ frontend:** `commands/names.rs` is the single list of command names. `build.rs` turns it into the ACL manifest, a Rust test asserts that the invoke handler, the generated permissions and `capabilities/main.json` match it exactly, and `tauriBackend.test.ts` asserts the frontend wrapper covers the same set (argument keys are a hand-written table there).
+
+### 4.2 Commands and events
+
+| Command | Args (JS) | Returns | Notable errors |
+|---|---|---|---|
+| **App** ||||
+| `app_frontend_ready` | – | `AppBootstrap` | – (warnings inside) |
+| `app_quit_ack` | – | `void` (frontend received `app:quit-requested` and shows/handles it) | – |
+| `app_quit_cancel` | – | `void` (user cancelled; quit state reset) | – |
+| `app_quit` | `lastDirs: Record<string, string \| null>` (sessionId → tree root) | `void` (process exits) | – |
+| `app_open_logs_dir` | – | `void` | `io{op:"revealPath"}` |
+| `app_reveal_path` | `kind: RevealKind` (`"sshConfig" \| "knownHosts"`) | `void` | `io{op:"revealPath"}` |
+| `app_open_external` | `url: string, confirmTitle: string, confirmBody: string` | `boolean` (opened) | `invalidArgument{field:"url"}` (non-http(s)); backend shows a **native** confirm (§9.4): URL first (re-serialized, punycode host), frontend texts sanitized and ≤ 200 chars; while one confirm is open further calls return `false` immediately |
+| `env_info` | – | `EnvInfo` | – |
+| `agent_status` | – | `AgentStatus` | – |
+| `keys_list` | – | `LocalKeyInfo[]` | – |
+| `keys_read_public` | `path` (must equal a path from the current `keys_list` candidates) | `string` | `keyLoadFailed` (reads `<path>.pub` through the trust check, ≤ 16 KiB; else derives the public key from the private file without decrypting; an encrypted key without a usable `.pub` gives `notFound`) |
+| `dialog_pick_identity_file` | `title: string, filterName: string` | `string \| null` | – (filter only on Windows; dialog starts in `~/.ssh`) |
+| `app_save_text_file` | `suggestedName, contents, dialogTitle` | `SaveTextOutcome` | `invalidArgument{field:"contents"}` (> 64 MiB); native Save dialog, default folder Downloads, `sanitize_local_name` (fallback `output.txt`), atomic write 0600 on Unix; returns only the base name |
+| **Hosts & storage** ||||
+| `ssh_config_reload` | – | `SshConfigSnapshot` | – (missing file → empty snapshot) |
+| `bookmarks_get` | – | `BookmarksDto` | – |
+| `bookmark_save` | `input: BookmarkInput` | `Bookmark` | `invalidArgument{field}`, `invalidHostname{value}`, `notFound{what:"bookmark"}`, `storageReadOnly` |
+| `bookmark_delete` | `id` | `void` | `notFound` (also deletes the keychain entry and its recents entry, clears `proxyJump` references to it, then emits `recents:changed`; pruning recents is best-effort, a failure is logged and the delete result is still returned so the keychain cleanup always runs) |
+| `bookmark_copy_from_ssh_config` | `alias` | `Bookmark` | `notFound{what:"sshConfigHost"}` |
+| `bookmark_set_password` | `id, password: string \| null` | `Bookmark` | `keyringUnavailable`, `keyringError`, `secretStorageDisabled` (a password while `connection.rememberPasswords` is off; `null` always forgets) |
+| `group_save` / `group_delete` | `input: GroupInput` / `id` | `Group` / `void` | `invalidArgument` (deleting a group never deletes bookmarks: they are appended to the ungrouped list in their old order. The UI's "Move bookmarks to…" another group is done client-side with `bookmark_move` per bookmark before `group_delete`) |
+| `bookmark_move` / `group_move` | `id, groupId: string \| null, index` / `id, index` | `BookmarksDto` | `notFound`, `storageReadOnly` (index is clamped; one write) |
+| `recents_get` | – | `RecentEntry[]` | – |
+| `recents_clear` | – | `RecentEntry[]` (empty) | `storageReadOnly` (empties `recents.json`, emits `recents:changed`) |
+| `bookmarks_export` | `format: "json" \| "sshConfig", dialogTitle` | `BookmarksExportResult{saved, fileName, count, skipped[]}` | `io{writeLocalFile}` (native Save dialog in the backend; atomic write, 0600 on Unix; never any secret; §7.7) |
+| `bookmarks_import` | `strategy: "skip" \| "replace" \| "duplicate", dialogTitle` | `BookmarksImportResult{picked, added, replaced, skipped, invalid[], bookmarks, startupCommandsStripped}` | `importInvalidFile{reason}`, `storageReadOnly`, `localNotFound`, `localPermissionDenied`, `io{readLocalFile}` (native Open dialog, `OsChosen` read capped at 5 MiB, strict schema, one atomic write; §7.7) |
+| `settings_get` / `settings_update` | – / `settings: Settings` | `Settings` | `invalidArgument{field}` (values outside ranges are rejected; on load they are clamped). Applied live: transfer limits, gate and timestamps, log level, and `connection.readSshConfig` (a change re-parses or empties the config and emits `ssh-config:changed`) |
+| `settings_reset` | – | `Settings` | `storageReadOnly` (writes `default_settings()` through the normal atomic update path, applies it to running sessions like `settings_update`; no settings-changed event) |
+| `notifications_set_texts` | `texts: NotificationTexts` | `void` | `invalidArgument{field:"texts.<key>"}` (each 1–200 chars, not blank, no control chars; replaces the whole set; English fallback until the first call; §5.8, §6.6) |
+| **Sessions** ||||
+| `session_open` | `req: OpenSessionRequest, events: Channel<SessionEvent>` | `string` (sessionId; returns immediately) | `notFound`, `invalidHostSpec`, `invalidHostname`, `proxyJumpCycle`, `proxyJumpTooDeep`, `proxyCommandUnsupported` |
+| `session_answer_prompt` | `sessionId, promptId, answer: PromptAnswer` | `void` | `promptNotFound` |
+| `session_reconnect_now` | `sessionId` | `void` | `sessionNotFound` (ignored while an attempt is running; reuses the session's resolved target, so changed host/auth need close + reopen) |
+| `session_disconnect` | `sessionId` | `void` | `sessionNotFound` (drops the connection but keeps the session, its tab and buffers: transfers cancelled, terminals marked lost, prompts cancelled, agent keys removed; ends in `disconnected{userRequested, canRetry:true}`, never auto-reconnects. During an automatic reconnect it ends the attempt (the dropped attempt's prompt is withdrawn and its agent keys removed), both while waiting for the next try and during a try; a first connect or manual retry ignores it, the UI closes those) |
+| `session_close` | `sessionId, lastDir: string \| null` | `void` | – (idempotent; records recents) |
+| `session_probe_all` | – | `void` | – (returns at once; rate-limited in the backend, see §5.7) |
+| **Terminals** ||||
+| `term_open` | `sessionId, size: TermSize, cwd: string \| null, output: Channel<TermMessage>, cwdFallback?: boolean` | `string` (termId) | `notConnected`, `channelOpenFailed`, `invalidArgument{field:"cwd"}` (non-POSIX session or path with NUL/C0 controls, §4.5; never with `cwdFallback: true`, which falls back to home) |
+| `term_write` | raw body = the input bytes; header `shellfin-term-id: <termId>` (≤ 64 bytes). **Synchronous command** | `void` | `terminalNotFound`, `notConnected`, `invalidArgument{field:"data"}` (over 1 MiB, or a JSON fallback body that is not an array of bytes), `invalidArgument{field:"termId"}` (header missing or bad) |
+| `term_resize` | `termId, size: TermSize`. **Synchronous command** | `void` | `terminalNotFound` |
+| `term_ack` | `termId, bytes: number` | `void` | – |
+| `term_restart` | `termId` | `void` | `notConnected` |
+| `term_close` | `termId` | `void` | – |
+| **SFTP** ||||
+| `sftp_realpath` | `sessionId, path` | `string` | `remoteNotFound` |
+| `sftp_list` | `sessionId, path` | `DirListing` | `remoteNotFound`, `permissionDenied`, `notADirectory`, `sftpUnavailable`, `timeout{op:"listing"}` |
+| `sftp_stat` | `sessionId, path` | `FileEntry` | `remoteNotFound` |
+| `sftp_read_text` | `sessionId, path, encoding: string \| null` | `TextDocument` | `fileTooLarge`, `fileIsBinary`, `decodeFailed`, `unsupportedEncoding`, `isADirectory`, `notARegularFile` |
+| `sftp_write_text` | `sessionId, req: SaveRequest` | `SaveResult` | `remoteChanged`, `permissionDenied`, `encodingUnmappable`, `notConnected` |
+| `sftp_create_file` / `sftp_mkdir` | `sessionId, path` | `FileEntry` | `remoteExists` |
+| `sftp_rename` | `sessionId, from, to` | `FileEntry` | `remoteExists` (never overwrites) |
+| `sftp_delete` | `sessionId, path` | `void` | `directoryNotEmpty` |
+| **Transfers** ||||
+| `transfer_download` | `sessionId, remotePath, dialogTitle, progress: Channel<TransferEvent>` | `string \| null` | `isADirectory`, `notARegularFile` (checked before the Save dialog opens; never ends with `skipped`: the Save dialog confirmed the target, so `onConflict` does not apply) |
+| `transfer_upload_pick` | `sessionId, remoteDir, dialogTitle, overwrite: boolean, progress` | `string[]` | – (per-file failures via `failed` events) |
+| `transfer_upload_dropped` | `sessionId, dropId, remoteDir, overwrite: boolean, progress` | `string[]` | `dropExpired` |
+| `transfer_retry` | `transferId, overwrite: boolean, progress` | `string` (new transferId) | `notFound{what:"transfer"}` |
+| `transfer_cancel` | `transferId` | `void` | – (on a failed transfer: forgets it) |
+| **Window** (custom title bar; the capability has no `core:window:*`) ||||
+| `window_minimize`, `window_toggle_maximize`, `window_toggle_fullscreen`, `window_close`, `window_start_dragging` | – | `void` | – (`window_close` enters the quit flow, §8.9) |
+| `menu_set_labels` | `labels: Record<string,string>` | `void` | `invalidArgument{field:"labels.<key>"}`; keys = menu item ids + `menu.*` titles, unknown keys ignored, 1..=80 chars, no control chars; macOS rebuilds the native menu, other OSes no-op |
+| **Updates** (§9.8; the capability has no `updater:` permission) ||||
+| `update_check` | – | `UpdateCheckOutcome` (`{status:"upToDate"}` \| `{status:"available", update: UpdateInfo}`) | `updatesDisabled` (dev/debug/`e2e` build or no HTTPS endpoint for the channel), `updateCheckFailed`, `updateInProgress`. Manual check of `general.updateChannel`, also when `general.autoUpdate` is off; reports a skipped version too; remembers the update for `update_install` |
+| `update_install` | `version, progress: Channel<UpdateProgress>` | `void` (after `ready`; the quit flow has been requested) | `updateNotFound` (`version` is not the update last reported), `updateInProgress`, `updateManualOnly` (Linux .deb/.rpm), `updateDownloadFailed`, `updateVerifyFailed` (minisign signature or signed version wrong; nothing installed), `cancelled` (`update_cancel`). Progress: `downloading{downloaded,total}` (at most one per 256 KiB plus the last), then `ready`; the verified bytes stay in memory until the end of the quit flow |
+| `update_cancel` | – | `void` | – (stops a running download; drops a staged update) |
+| `update_skip_version` | `version` | `void` | `invalidArgument{field:"version"}` (not `[0-9][0-9A-Za-z.+-]{0,63}`), `storageReadOnly`; stored in `recents.json` (`skippedUpdateVersion`, no version bump); automatic checks stop announcing exactly that version, manual checks still report it |
+
+Total: 67 commands, each with its own `allow-*` permission.
+
+Global events (`app.emit` → `listen`):
+
+| Event | Payload | When |
+|---|---|---|
+| `ssh-config:changed` | `SshConfigSnapshot` | watcher reload produced a different snapshot |
+| `recents:changed` | `RecentEntry[]` | after a session first reaches `connected` and after `session_close` |
+| `app:quit-requested` | `{}` | any quit path (§8.9); re-emitted (to refocus the dialog) on repeated close requests |
+| `drop:hover` | `{ positionX: number, positionY: number }` (logical px) | OS drag Enter/Over |
+| `drop:leave` | `{}` | drag left/cancelled |
+| `drop:files` | `{ dropId: string, entries: DropEntry[], positionX, positionY }` | OS drop (after the paths were stat'ed off the UI thread); `DropEntry = { name: string, isDir: boolean }`; paths stay in Rust |
+| `window:state` | `WindowState` | maximize / fullscreen / focus changed (deduplicated); `AppBootstrap.window` carries the initial state |
+| `menu:action` | `{ id: string }` | macOS native menu item (custom items only; ids are the table in `app_menu.rs`) |
+| `update:available` | `UpdateInfo` | an automatic check (15 s after startup, then every 24 h, only with `general.autoUpdate`) found a version that is not the skipped one |
+| `update:install-failed` | `AppError` (`updateInstallFailed`) | installing the staged update at the end of the quit flow failed; the quit state is back to `idle` and the app stays open (its sessions are already closed) |
+
+**Behavioural rules of the commands** (beyond the tables):
+
+- Unknown ids: `session_answer_prompt` → `promptNotFound` (also for an unknown session); SFTP commands and `term_open` → `sessionNotFound{sessionId}`; terminal commands → `terminalNotFound`; `term_ack` and `term_close` ignore unknown ids. `notConnected` means the session has no live connection, including requests in flight when the connection was lost.
+- Remote paths must be absolute, free of NUL and ≤ 4096 bytes (`invalidArgument{field: path|req.path|from|to|remoteDir|remotePath}`). Operations on a file (read/write/create/mkdir/rename/delete/transfers) also refuse paths containing U+FFFD, because the lossily decoded name differs from the server's; `sftp_list`, `sftp_stat`, `sftp_realpath` accept them.
+- Session events arrive over a `Channel` and, like terminal output and transfer events, can arrive before the invoke that triggered them resolves (Tauri does not order Channel messages against invoke responses).
+- Probe sessions (`probeOnly`) report `connected` then `closed` and are not recorded in recents. `canRetry` is `false` only for the host-key codes (`hostKeyChanged`, `hostKeyRevoked`, `hostKeyCaManaged`, `hostKeyMismatchOnReconnect`).
+- A password saved during authentication flips the bookmark's `passwordSaved` before `state:connected` is emitted; no event announces it (the frontend refetches `bookmarks_get` on `connected`). `Prompt.password.canRemember` is true only for password-auth bookmarks and ssh-config/jump hosts, and only when the OS keychain is available and `connection.rememberPasswords` is on (off also ignores a `remember` answer that raced the switch and makes `bookmark_set_password(id, <password>)` fail with `secretStorageDisabled`; passwords saved earlier are still used and can still be forgotten); drafts and quick connects never offer it.
+- A connection lost during authentication withdraws the open prompt (`promptClosed{connectionLost}`) and re-dials **once** with the cached answers; a second loss ends in `disconnected{error: disconnected{reason}}`, never `tooManyAuthFailures`. A panicking supervisor emits `disconnected{error: internal, canRetry:false}` then `closed` and the session is removed.
+- `settings_update` re-applies the global bandwidth limits to open sessions; bookmark overrides are captured at `session_open`. `bookmark_save` also calls `SessionManager::apply_bookmark` for open sessions of that bookmark (§7.6).
+- Dialog-opening commands take their texts from the frontend (`dialogTitle`, `confirmTitle`/`confirmBody`) so the backend never authors prose (§8.2.2).
+
+### 4.3 Error model
+
+`AppError { kind: ErrorCode (flattened), detail?: string }` (`error.rs`) is outbound-only (`Serialize`, `Clone`, `TS`). `ErrorCode` is a camelCase tagged enum: `{"code":"hostKeyChanged","params":{…},"detail":"…"}`; unit variants carry no `params`. `detail` is English developer text for logs and "Copy details" and may contain server text, so it is never primary UI text. The UI renders `t("errors.<code>", params)` (§8.2.2). The authoritative list is `src/ipc/bindings/ErrorCode.ts`; the families are:
+
+| Family | Codes |
+|---|---|
+| generic | `internal`, `cancelled`, `promptTimeout`, `promptNotFound`, `storageReadOnly`, `storageCorrupt{file, quarantinedAs}` (file **names**, not paths), `keyringUnavailable`, `keyringError`, `secretStorageDisabled`, `invalidArgument{field}`, `notFound{what, id}`, `io{op, path}`, `importInvalidFile{reason}` |
+| resolution | `invalidHostSpec`, `invalidHostname`, `proxyJumpCycle`, `proxyJumpTooDeep`, `proxyCommandUnsupported` |
+| network | `dnsFailed`, `connectRefused`, `connectTimeout{host, port, seconds}`, `networkUnreachable`, `jumpChannelFailed`, `kexFailed`, `protocolError` |
+| host keys | `hostKeyUnknownStrict`, `hostKeyRejected`, `hostKeyChanged{host, port, keyType, fingerprint, knownHostsFile, line, removeHint, removeHintShell}`, `hostKeyRevoked`, `hostKeyCaManaged`, `hostKeyMismatchOnReconnect` |
+| auth | `authFailed{user, host, tried, serverMethods}`, `keyLoadFailed{path, reason}`, `passphraseIncorrect`, `agentUnavailable`, `agentUntrusted`, `agentNoIdentities`, `agentConstraintUnsupported`, `tooManyAuthFailures` |
+| session | `disconnected{reason, message}`, `sessionNotFound`, `notConnected`, `terminalNotFound`, `channelOpenFailed{reason}`; session warnings (`SessionEvent::warning`): `knownHostsIgnored{file}` (a known_hosts file exists but was ignored: untrusted owner or permissions, over 4 MiB, unreadable; §5.3) |
+| sftp | `sftpUnavailable`, `remoteNotFound`, `permissionDenied`, `remoteExists`, `notADirectory`, `isADirectory`, `notARegularFile{path}` (a FIFO, socket or device where a regular file is needed; §6.3), `directoryNotEmpty`, `fileIsBinary`, `remoteChanged{path, size, mtime, target?}`, `fileTooLarge`, `decodeFailed`, `encodingUnmappable`, `unsupportedEncoding`, `sftpFailure{path, status}`, `timeout{op}` |
+| transfers | `localNotFound`, `localPermissionDenied`, `localIsADirectory`, `dropExpired` (a FIFO, socket or device chosen as upload source is `notARegularFile`) |
+
+Enum params: `EntityKind` (`bookmark|group|sshConfigHost|transfer`), `IoOp`, `TimeoutOp`, `KeyLoadReason`, `DisconnectKind` (`keepaliveTimeout|connectionReset|serverClosed|networkError|jumpHostLost|userRequested`), `AuthMethodKind` (`none|publickey|agent|password|keyboardInteractive`). Stable tokens: `channelOpenFailed.reason` ∈ `administrativelyProhibited|connectFailed|unknownChannelType|resourceShortage|other|ptyRejected|shellRejected|closed|timeout`; `sftpFailure.status` ∈ `eof|failure|badMessage|opUnsupported|io|limited|notRegularFile` (the server's message goes into `detail` only).
+
+`hostKeyChanged.removeHint` is a complete, backend-built `ssh-keygen -R <lookup-name> -f <file>` command quoted for the local shell (`removeHintShell` = `powershell` on Windows, `posix` elsewhere). It is `null` when a value contains characters that cannot be shown safely (controls, bidi/zero-width/invisible code points, `\` for POSIX). The UI shows it verbatim, never builds or edits it, and hides hints over 2048 characters.
+
+Mapping rules (`error.rs`): `ConnectionRefused → connectRefused`; our timeout → `connectTimeout`; `HostUnreachable|NetworkUnreachable → networkUnreachable`; `lookup_host` failure → `dnsFailed`; `russh::Error::UnknownKey` is replaced by the verdict the handler stored; `KeepaliveTimeout → disconnected{keepaliveTimeout}`; `IO(ConnectionReset|BrokenPipe|UnexpectedEof) → disconnected{connectionReset}`; `ReceivedDisconnect → disconnected{serverClosed, message}` (message = server text, displayed via `displayServerText`); direct-tcpip `ChannelOpenFailure → jumpChannelFailed`; `AgentAuthError → agentUnavailable` (with detail); SFTP `NoSuchFile → remoteNotFound`, `PermissionDenied → permissionDenied`, `Failure` on mkdir/rename/create → stat target: exists → `remoteExists` else `sftpFailure`; `Error::Timeout → timeout{sftpRequest}`.
+
+### 4.4 Shared types
+
+All DTOs live in `ipc/dto.rs` (`#[derive(TS)]`, `#[ts(export)]`, `rename_all = "camelCase"`, one generated file per Rust type). `src/ipc/types.ts` is a pure `export type * from "./bindings/<Name>"` list; `types.test.ts` fails when it drifts from `bindings/`. `TermMessage = ArrayBuffer | TermEvent` cannot be expressed by ts-rs and lives in `src/ipc/backend.ts`. Enums are tagged (`type`, `kind`, `phase`, `method`, `code`). Highlights (see the bindings for exact shapes):
+
+| Area | Types and notable semantics |
+|---|---|
+| App | `AppBootstrap{appVersion, platform, settings, sshConfig, bookmarks, recents, warnings, window, restoreBookmarkIds}` (`restoreBookmarkIds`: with `general.onStartup = "restore"` the bookmarks open at the last quit that still exist, in opening order; else `[]`; §7.3), `NotificationTexts` (inbound, `notifications_set_texts`), `EnvInfo` (`sshConfig.exists`), `AgentStatus`, `LocalKeyInfo`, `WindowState{maximized, fullscreen, focused}`, `SaveTextOutcome{saved, fileName}` (the chosen path is never returned) |
+| ssh config | `SshConfigSnapshot`, `SshConfigHost`, `ConfigWarning{location}` + code/params |
+| Bookmarks | `Bookmark`/`BookmarkInput`: `auth` (`auto|key|password|agent`; `passwordSaved` is backend-owned), `proxyJump: JumpRef`, `color: BookmarkColor` (red, orange, yellow, green, teal, blue, purple, gray; unknown stored values load as none), `order` (dense per group, read-only; changed only via `bookmark_move`/`group_move`), per-bookmark `uploadLimitKiBps`/`downloadLimitKiBps` (`null` = global, `0` = unlimited, 1–1 048 576); `confirmConnect` (UI only), `startupCommand: string | null` (≤ 1024 chars, one line, no control characters or U+2028/2029, blank = null, stored verbatim, `Debug`-masked `SensitiveText`, never logged, never imported; the frontend writes it to the first terminal of a user-initiated connect), `notes: string | null` (≤ 4000 chars, LF/CR/tab only as controls); invalid stored values load as null without dropping the bookmark; `BookmarkInput` takes all three as optional. `Group`, `GroupInput` (its `order` is ignored), `BookmarksDto{bookmarks, groups, readOnly}`, `RecentEntry` |
+| Settings | `Settings{version, locale, terminal, editor, connection, files, ui, transfers, general, advanced, appearance}`. Ranges are enforced on update and clamped on load: terminal font 8–32, scrollback 10–1 000 000, `terminal.fontFamily: string | null` (null = bundled JetBrains Mono; ≤ 200 bytes, ASCII letters/digits/space/`- _ ' " ,`, at least one alphanumeric, else `invalidArgument{terminal.fontFamily}`; missing or invalid stored value loads as null, no schema bump); editor font 8–32, tab size 1–8, `maxFileSizeMiB` 1–256 (default 5; the backend read and save cap); keepalive interval 5–300 s (default 15), count 1–10 (default 3), connect timeout 3–120 s (default 15), prompt timeout 30–110 s (default 110), reconnect attempts 0–10 (default 5); `transfers.uploadLimitKiBps`/`downloadLimitKiBps` 0–1 048 576 (0 = unlimited); `ui.*` sizes finite and 0–10000; `locale` is `"system"` or a BCP-47-like tag. **Further fields** (the file version stays 1; every field has a serde default, so older files and older-frontend payloads still load, and the merge-over-defaults on load fills the rest): `general.confirmCloseWithTerminals` (true); `terminal.cursorStyle` `block|bar|underline` (block), `terminal.lineHeight` 1.0–2.0 (1.2), `terminal.bell` `off|visual` (off), `terminal.rightClick` `menu|paste` (menu); `editor.fontFamily` `string | null` (same validator as the terminal one, `invalidArgument{editor.fontFamily}`), `editor.lineNumbers` (true), `highlightActiveLine` (true), `indentWithTabs` (false), `trimTrailingWhitespace` (false), `insertFinalNewline` (false); `files.foldersFirst` (true), `files.confirmDelete` (true); `transfers.maxConcurrent` 1–64 (3; sizes the per-session transfer gate for transfers started afterwards), `transfers.onConflict` `ask|overwrite|skip` (ask; uploads only, §6.6); `advanced.logLevel` `info|debug` (info; applied live through a reloadable `EnvFilter`, `debug` raises only the app's own targets, dependencies stay at `warn`). An unknown enum string in the file is a wrong type (quarantine + defaults). **Behaviour and appearance** (same rules: serde defaults, numbers clamped and invalid strings reset on load): `general.confirmQuit` `always|withConnections|never`, `general.onStartup` `welcome|restore` (§7.3), `general.notifyOnDisconnect` (§5.8); new section `appearance` (`theme` `dark|light|system`, `accent` (6 names), `uiFontSize` 12–16, `reduceMotion` `system|on|off`); `terminal.bell` gains `sound`; `terminal.letterSpacing` 0–5, `minimumContrastRatio` 1–21 (finite), `scrollSensitivity` 1–10, `wordSeparators` ≤ 64 printable ASCII, `background` `null` or exactly `#RRGGBB`, `termType` `xterm-256color|xterm|vt100` (the PTY `TERM`, §4.5), `newTerminalCwd` `home|currentFolder` (§4.5), `onExit`, `mouseReporting`, `hideMousePointerWhileTyping`, `multilinePasteWarning`, `openTerminalOnConnect`, `altIsMeta`; editor `fontLigatures` (default false; §8.12), `detectIndentation`, `newFileEol` `lf|crlf`, `autoCloseBrackets` (default off), `bracketMatching`, `showWhitespace`, `codeFolding`; files `doubleClick`, `sizeUnits`, `dateFormat`, `showPermissions`, `autoRefresh` ∈ {0, 5, 10, 30, 60} s; `connection.defaultUser` (`""` or the bookmark user rule), `connection.readSshConfig` (§7.4), `connection.rememberPasswords` (§5.6); `transfers.preserveTimestamps`, `transfers.notifyOnComplete` (§6.6). Backend-visible are only termType, onStartup, the notification switches, readSshConfig, rememberPasswords, preserveTimestamps and the changed ranges; the rest is stored for the UI. **Updates** (same rules, file version 1): `general.autoUpdate` (true; automatic checks, §9.8) and `general.updateChannel` `stable|experimental` (stable; read at every check) |
+| Sessions | `OpenSessionRequest{target, probeOnly}`; `Target = RecentTarget | draft{bookmark, password}` (draft is inbound-only). `SessionState` phases: `resolving`, `connecting{hop}`, `authenticating{hop}`, `openingChannels{hop}` (first connect only), `connected{info}`, `reconnecting{stage, hop, attempt, maxAttempts, nextAttemptAtMs, cause}`, `disconnected{error, canRetry}`, `closed`. `SessionInfo{sessionId, label, hops, auth, sftpAvailable, homeDir, startDir, remotePathStyle, remoteIdentity, limitOverrides, color}`. `SessionEvent`: `state`, `prompt`, `promptClosed{promptId, reason}`, `banner`, `stats`, `warning`, `bookmarkUpdated{label, color, limitOverrides, needsReconnect}`. `Prompt`: `hostKeyUnknown`, `passphrase`, `password`, `keyboardInteractive`; `PromptAnswer` (inbound-only): `hostKey`, `passphrase`, `password`, `useSavedPassword`, `keyboardInteractive`, `skip`, `cancel` |
+| Terminals | `TermSize`, `TermEvent`: `exit{code, signal}`, `closed{error}`, `reconnected`, `outputDropped{bytes}` |
+| SFTP | `FileEntry{name, path, kind, linkTargetKind, size, mtime (s), permissions, uid, gid, owner, group, lossyName}` (`owner`/`group`: names from the `readdir` long name, §6.2; `null` otherwise), `DirListing{path, entries, truncated}`, `Etag{size, mtime, sha256}`, `TextDocument` (+`resolvedPath` when the opened path is a symlink), `SaveRequest` (+`expectedTarget`), `SaveResult{etag, strategy, warnings}`, `TransferEvent` (`started|progress|done|failed|cancelled`) |
+
+Rust mirrors: outbound structs derive `Serialize, TS, Clone, Debug`, inbound `Deserialize, TS, Debug`. Secret-bearing inbound fields: `Target::Draft.password: Option<Secret<String>>`, `PromptAnswer::{Passphrase.passphrase, Password.password, KeyboardInteractive.responses: Vec<Secret<String>>}`, `bookmark_set_password(password: Option<Secret<String>>)`. **That list is exhaustive** (§9.2); `Secret<T>` implements `Deserialize` + manual `TS` (renders as `T`) and deliberately not `Serialize`. `SensitiveText` (`Bookmark{,Input}.startupCommand`) is not a secret (it is stored and sent back): it serializes both ways as a plain string and only masks `Debug` (`***`), so it cannot reach a log through `{:?}`.
+
+### 4.5 Terminal streaming (decision)
+
+- **Output:** `Channel<InvokeResponseBody>` per terminal; data → `Raw(bytes)`; control → `Json(TermEvent)`. JS: `msg instanceof ArrayBuffer ? term.write(new Uint8Array(msg), cb) : handle(msg)`; xterm decodes UTF-8 statefully.
+- **The reader task never stops draining** `read_half.wait()` (russh has no per-channel flow control; a paused reader would block the whole connection — §2.3). Bytes go into a per-terminal backlog (`VecDeque<Bytes>`).
+- **Structure:** per terminal one *reader* task per shell channel (never pauses; pushes into the flow state under a short `std::sync::Mutex`) and one *pump* task (sends what the flow releases). `terminal/flow.rs` is pure state with no I/O, so these rules are unit-testable without SSH. The pump is woken only when there is something to do: the first unflushed byte (starts the 4 ms timer), the buffer reaching the flush size, an ended overflow (queued `outputDropped`), or an `term_ack` that releases output held back by the in-flight limit (a randomized model test checks that the pump neither misses deliverable output nor wakes late). Terminals are owned by their session (`SessionHandle.terminals`); commands find a terminal by id across sessions.
+- **Sending to the UI:** flush the backlog to the Channel when ≥ 64 KiB is buffered or 4 ms after the first unflushed byte, **while** `unacked < 4 MiB`; messages are capped at 256 KiB. The frontend calls `term_ack(termId, n)` from `term.write(data, cb)` every ≥ 256 KiB. Control events never overtake earlier data and are not counted against the in-flight limit.
+- **Overflow:** if the backlog exceeds **8 MiB** (UI far behind, e.g. throttled background window during `yes`), the backend discards new output (keeps the oldest, whole packets only), counts dropped bytes, and once below 1 MiB again sends `TermEvent::OutputDropped{bytes}` exactly where the bytes were lost (before a following `exit`/`closed`/`reconnected`). Backlog data is copied into 64 KiB buffers so heap use stays about the payload size whatever the packet size; output that arrives before the PTY/shell replies goes into a flow with the same caps. A new shell (restart/respawn) ends an overflow and discards stale queued output. The frontend first writes `"\x18\x1b[0m"` (CAN returns xterm's parser to the ground state from any OSC/DCS/CSI state; SGR reset), then the localized dim line "[… {{size}} of output discarded — run `reset` if the display looks wrong …]". Terminal modes (alternate screen, mouse reporting) may be inconsistent after a drop; that is accepted (mirrors xterm.js's own discard behaviour). Consequences: the SSH session loop is never blocked, keepalives/probes/SFTP/other terminals stay live, memory per terminal ≤ 8 MiB + 4 MiB in flight.
+- **Input:** `term_write` takes the bytes as the **raw request body** (`InvokeBody::Raw`, no JSON number array) and the terminal id from the `shellfin-term-id` header; the frontend wrapper sends a `Uint8Array` as is (`ArrayBuffer.isView`, no copy) with `invoke(cmd, body, {headers})`. Tauri's postMessage fallback (used only when the IPC custom protocol fails) delivers a JSON number array instead; that is accepted too, every element checked to be a byte. Input comes from `onData` (TextEncoder) and `onBinary` (char codes → bytes), chunked to 64 KiB; the backend rejects more than 1 MiB per call (`invalidArgument{field:"data"}`) before copying it.
+- **Ordering:** the frontend keeps a **per-terminal queue** and issues the next `term_write` only after the previous one settled (errors are swallowed and the queue goes on; `disposeTerminal` drops it). In the backend `term_write` and `term_resize` are **synchronous commands**: Tauri parses and runs a sync command inline in invoke order, so a payload is queued before the next invoke is parsed (an async command would parse each payload in its own task, and a short write could overtake a large one). They only queue: `terminal/input.rs` runs one input task per shell channel fed by an ordered queue of writes and window-changes (bound 8 MiB per channel, then `invalidArgument{data}`; after a failed send or the end of the channel nothing more is written, so input is never spliced). Queued writes are released with `notConnected` when their channel ends, and `term_write` returns `notConnected` whenever no shell is running in that terminal. The last queued `term_resize` is the latest size.
+- **Resize:** the frontend sends `term_resize` only when the size really differs from the last one the backend knows, debounced 50 ms after `FitAddon.fit()`; the backend clamps `cols`/`rows` to 1–10000 (pixels ≤ 100000), stores the size (used by restart and respawn) and sends `window_change` if a shell is running.
+- **Open:** `request_pty(true, TERM, …, &[(VERASE,127),(IUTF8,1),(TTY_OP_ISPEED,38400),(TTY_OP_OSPEED,38400)])` with `TERM` = `settings.terminal.termType` at `term_open` (`xterm-256color` by default; restart and respawn keep the terminal's TERM), and `request_shell`/`exec` replies are awaited (a refusal gives `channelOpenFailed{ptyRejected|shellRejected}`; the whole open has a 15 s budget → `timeout`). No `setenv` requests: `TERM` travels in the PTY request only. Then `cwd == null ? request_shell(true) : exec(true, ssh::shellquote::cd_wrapper(cwd))`.
+- **`cwdFallback` (`newTerminalCwd = currentFolder`):** `term_open(…, cwdFallback: true)` never fails because of the folder. A cwd on a non-POSIX session, not absolute, with NUL/C0 controls or longer than 4096 bytes gives a plain login shell (home); otherwise `cd_wrapper_or_home`, the same fixed wrapper with `cd -- "$(printf "<P>")" 2>/dev/null;` instead of `&&`, so a folder that is gone or not enterable also starts the shell in home (the exec's start directory). The path still reaches the wire only as octal escapes (integration-tested with hostile names for bash, fish and tcsh).
+- **`cd_wrapper` ("Open terminal here"):** sshd runs an exec request as `<login shell> -c <command>`, and login shells differ (fish treats `\'` inside `'…'` as an escape; csh/tcsh reject `${VAR:-x}`; cmd/PowerShell don't know `'`). The wire command therefore contains **no path-derived shell syntax**:
+  `exec /bin/sh -c 'cd -- "$(printf "<P>")" && exec "${SHELL:-/bin/sh}" -l'`
+  where `<P>` is every byte of the UTF-8 path as a 3-digit octal escape `\NNN` (only `\` and digits). The fixed outer single-quoted string contains no `'`, no `\\`, no `\'`, so sh/bash/dash/zsh/fish/tcsh/csh all hand it unchanged to `/bin/sh`, which runs `printf` and `cd`; `exec "$SHELL" -l` then starts the user's own login shell in that directory. Verified (integration tests) for hostile and Unicode names under bash, fish and tcsh login shells. Constraints: offered only when `SessionInfo.remotePathStyle == "posix"` (backend also rejects otherwise); `cwd` must be absolute and free of NUL/C0 controls (`$(…)` would strip trailing newlines) → else `invalidArgument{field:"cwd"}`; if `cd` fails the shell is not started and the channel closes with a **non-zero** `exit` code (shell-dependent, e.g. dash exits 2).
+- **End messages** (exactly one per shell, after all of that shell's output): exit status → `exit{code, signal:null}`; exit signal → `exit{code:null, signal}` (RFC 4254 name without `SIG`, server text ≤ 64 chars); channel close without exit information → `closed{error:null}`. A lost connection produces **no** terminal message (the session's `reconnecting`/`disconnected` state covers it). `session_close` ends every terminal with `closed{error:null}` (contained supervisor panic: `closed{error: internal}`).
+- **Restart / respawn:** the tab shows a localized "[Process exited with code N] Press Enter to restart" → `term_restart`. `term_restart` works in every state except closed: a running shell is closed first (its `exit` is not reported), then a new shell starts with the stored size and `cwd`; lost connection → `notConnected`; closed terminal → `terminalNotFound`. After a reconnect every terminal whose shell was running at the loss gets a new shell (`reconnected` first, then the new output); if that fails: `closed{error}` and `term_restart` may be tried. Exited terminals are not respawned. `RecentEntry.terminalCount` = shells still running at `session_close`.
+
+---
+
+## 5. Connection lifecycle
+
+### 5.1 Target resolution
+
+`Target` → `ResolvedTarget { label, recent: RecentTarget, hops: Vec<ResolvedHop> }` (jumps first, destination last):
+
+```rust
+pub struct ResolvedHop {
+    pub label: String, pub config_alias: String,
+    pub hostname: String, pub port: u16, pub user: String,
+    pub auth: AuthPlan,                               // Auto | Key(path) | Password | Agent
+    pub identity_files: Vec<IdentityFile>,            // { path, explicit: bool }
+    pub identities_only: bool, pub identity_agent: AgentSetting,   // Default | None | Path(String) | Env(name)
+    pub add_keys_to_agent: bool,                      // only from TRUSTED user config (§7.4.1)
+    pub host_key_alias: Option<String>,
+    pub user_known_hosts: Vec<KnownHostsFile>,        // Path | Disabled (none, /dev/null, NUL)
+    pub global_known_hosts: Vec<KnownHostsFile>,
+    pub strict: StrictMode,                           // Yes | Ask | AcceptNew | No
+    pub keepalive: (Duration, usize), pub connect_timeout: Duration,
+    pub keychain: Option<KeychainRef>,                // { account, binding: PasswordBinding }
+}
+```
+Rules:
+1. `sshConfig{alias}` → `query(alias)` (§7.4); defaults: hostname = alias, user = local user, port 22.
+2. `bookmark{id}` → bookmark fields win; with `useSshConfig` (default) `query(bookmark.host)` fills empty fields (`user`, `port`, identity files, `ProxyJump`, keepalive, known-hosts settings). `auth`: `auto` = config identities + agent + interactive; `key` = only the bookmark file (still signed by the agent if the agent holds it); `agent` = agent only; `password` = password/kbd-int only.
+3. `quick{spec}` → `[user@]host[:port]` (IPv6 `[addr]:port`), then like `sshConfig`. The user part may contain `@` and `\` (UPN, `DOMAIN\alice`; the host follows the last `@`); whitespace, controls, `:`, `/`, a leading `@` and users over 255 characters are rejected. Display texts of recents are cleaned and cut to 300 characters instead of rejecting the entry, and IPv6 literals are bracketed when a `user@host` text is rebuilt.
+4. `draft{bookmark, password}` → as `bookmark`, in memory; password goes to `HopSecrets`; recorded in recents as `quick{"user@host:port"}`.
+5. **Hostname validation** (`sshconfig::validate::valid_hostname`, OpenSSH-like) for bookmark `host`, quick specs, ProxyJump specs, config `HostName` and `HostKeyAlias`. **Order (as OpenSSH):** (a) expand `HostName`'s own `%h`/`%%` (so `Host *.int` + `HostName %h.corp.example.com` works); (b) run `valid_hostname` on the **result**; (c) only then use the name in `%h` expansions inside file options. Rules: non-empty, ≤ 253 chars, no whitespace/C0/DEL, none of `, * ? ! | # @ " ' \ / % $ ; & < > ( ) [ ] { } `` ` `` (`/` and `%` would allow path traversal via `%h` in file options), no leading `-`; IPv6 only as a bracketed literal in specs. Invalid → `invalidHostname` (config entries → `ConfigWarning` and the host is not listed).
+6. **ProxyJump:** list from bookmark `proxyJump` else config (`none` = no jump). For `a,b,c`: `a` resolved recursively (its own ProxyJump honoured), `b`, `c` without their own ProxyJump (matches OpenSSH `ssh -J`). Jump `[user@]host[:port]` overrides user/port. Cycle → `proxyJumpCycle`; > 8 hops → `proxyJumpTooDeep` (`MAX_JUMPS` = 8; the resolver refuses before descending past it, so a hostile 10 000-element chain from ssh_config or bookmarks cannot exhaust the stack; the same cap applies to bookmark→bookmark `proxyJump` chains on load, save and import, §7.3); `ProxyCommand` without ProxyJump → `proxyCommandUnsupported`. All arguments of `ProxyJump` and `PreferredAuthentications` are joined before splitting on commas, so no hop is dropped (OpenSSH would reject the extra argument; joining is the safer reading).
+7. **Config query inputs:** the connection's user and port feed `Match user`, `%r` and `%p` first (OpenSSH command-line semantics); the returned `user` is still the config value. A user containing `/`, `\` or `..` is not used for matching or tokens (`%r` can end up in local paths and imported bookmarks are untrusted).
+
+### 5.2 Dialing and hop chaining
+
+```
+hop[0]: lookup_host ─fail→ dnsFailed;  per addr: timeout(connect_timeout, TcpStream::connect) → refused/timeout/unreachable
+        set_nodelay(true); connect_stream(cfg0, tcp, ClientHandler{hop 0}); authenticate(hop 0) → Arc<Handle>
+hop[i]: prev.channel_open_direct_tcpip(hostname, port, "127.0.0.1", 0) ─fail→ jumpChannelFailed
+        connect_stream(cfg_i, ch.into_stream(), ClientHandler{hop i}); authenticate(hop i)
+then:   SFTP init on the destination (§6.1) → state Connected
+```
+- russh `Config` per hop: keepalive from `ServerAliveInterval/CountMax` || settings (15 s / 3); `inactivity_timeout = None`; `nodelay = true`; `preferred.key` = `Preferred::DEFAULT.key` **minus `Rsa{hash: None}`** (no SHA-1 host signatures; re-added only if the user's trusted config has `HostKeyAlgorithms` containing `+ssh-rsa`), re-ordered so that algorithms already recorded in known_hosts for the lookup name come first. Other preferences = russh defaults (strict KEX, no SHA-1 MACs).
+- The handshake timer covers network phases only (paused while a prompt is open). `dial` has **one deadline** (`connect_timeout`, like OpenSSH `ConnectTimeout`) for the DNS lookup and all addresses together; a slow resolver gives `connectTimeout` (detail "DNS lookup timed out").
+- All hop `Handle`s live in `Connection.hops`; close order: destination first, then jumps in reverse.
+
+### 5.3 Host-key verification
+
+Lookup name per hop (OpenSSH `sshconnect.c` semantics): `HostKeyAlias` **verbatim** if set; else `hostname` if port 22; else `[hostname]:port`. Files: `user_known_hosts` (default `~/.ssh/known_hosts`, `~/.ssh/known_hosts2`) + `global_known_hosts` (Unix `/etc/ssh/ssh_known_hosts`; Windows `%ProgramData%\ssh\ssh_known_hosts`), each read through `local_path` and **only if trusted** (§7.4.1; untrusted → ignored + `untrustedFile` warning). `Disabled` files (`none`, `/dev/null`, `NUL`) are neither read nor written.
+
+```
+key = PublicKeyOrCertificate::PublicKey{key,..}  (Certificate never negotiated; if received → hostKeyRejected)
+verdict = known_hosts::verify(lookup, key, files)
+# 1. fatal verdicts first — they win over pins and trust-once (a key @revoked, CA-managed or replaced
+#    in known_hosts mid-session must not be accepted on auto-reconnect)
+if verdict == Revoked               → HostKeyRevoked, Ok(false)
+if verdict == CaManaged{file,line}  → HostKeyCaManaged, Ok(false)      (any matching @cert-authority line; no prompt)
+if verdict == Changed{file,line}    → HostKeyChanged, Ok(false)        (known_hosts now lists a different key of this type)
+# 2. reconnect pinning
+if reconnect && pins[hop] exists:                         (host-key pinning)
+    key.fingerprint == pins[hop].fingerprint → Ok(true)
+    elif verdict == Trusted → re-pin to the new key (verification knownHosts), Ok(true)   (HA/LB backends listed in known_hosts)
+    else → HostKeyMismatchOnReconnect, Ok(false)  (fatal; also blocks trust-once / auto-accepted re-prompts)
+# 3. trust-once approvals
+if TrustOnceApprovals.contains(lookup, fingerprint) → userConfirmed, Ok(true)
+# 4. normal verdict handling
+match verdict:                                   (Revoked, CaManaged, Changed already handled in step 1)
+  Trusted              → knownHosts, Ok(true)
+  Unknown{other_types} → match effective_strict (below):
+     Yes        → HostKeyUnknownStrict, Ok(false)
+     AcceptNew|No → if other_types is non-empty (the host is known under another key type): same as Ask
+                    (the prompt lists the known types); a brand-new host: if writable user file: learn() → autoAccepted, Ok(true);
+                    else autoAccepted (not learned), Ok(true)
+     Ask        → prompts.ask(HostKeyUnknown{ canRemember = writable user file exists })
+                  accept && remember → learn(); userConfirmed     accept && !remember → TrustOnce; userConfirmed
+                  reject → HostKeyRejected; cancel → Cancelled; timeout → PromptTimeout   (all Ok(false))
+on success: pins[hop] = (lookup, fingerprint, verification)
+```
+- **Ignored files and the effective strict mode.** `connect::load_known_hosts` lists every file that exists but was ignored (untrusted owner or permissions, over 4 MiB, unreadable); `connect` emits `SessionEvent::Warning{knownHostsIgnored{file}}` once per session (not on re-dials or reconnects). `handler::effective_strict` turns `accept-new`/`no` into `ask` when a user known_hosts file was ignored, or when there is nowhere to record the key although the user files were not disabled (`none`, `/dev/null`; this includes a Windows `UserKnownHostsFile` outside the profile), so a key is never silently trusted because the file that should have judged it was unreadable. An unsupported token in a `UserKnownHostsFile` argument (`%k` is supported: `HostKeyAlias`, else the alias; `%C` and `%l` are not) makes the option fall back to the defaults (`unknownToken` warning) and `HostConfig.known_hosts_unresolved` makes `accept-new`/`no` ask for that hop. `check_server_key` rejects with `hostKeyRejected` if the key cannot be serialised.
+- `known_hosts::verify` parses tolerantly (comments, tabs, `@revoked`, `@cert-authority`, hashed `|1|`, comma lists, `*`/`?`, `!`, `[host]:port`); unparsable lines are skipped and logged at `debug` (user-controlled noise); files > 4 MiB are ignored with a warning (§9.4). One leading UTF-8 BOM is stripped. The lookup name is lowercased once per check (hashed entries compare it as given) and wildcard matching works on bytes without allocating (`?` and `*` backtracking move by whole UTF-8 characters); a hostile 4 MiB file is verified in bounded time. The per-hop policy shares its file list as `Arc<[KnownHostsFile]>`, so a re-dial copies nothing. Verdict priority: Revoked > CaManaged (if any `@cert-authority` line matches the lookup and no plain entry trusts the key) > Trusted > Changed (same key type, different key) > Unknown (with `other_types`).
+- **Writing (`known_hosts::write::learn`)** — never russh's `learn_known_hosts_path`: validate the lookup (`valid_hostname`, or the `[host]:port` form built from a valid host); honour `HashKnownHosts yes` (`|1|base64(salt)|base64(HMAC-SHA1(salt, lookup))` with a 20-byte salt from `ring::rand::SystemRandom`); Unix: create the directory with 0700 if missing; a **new** file is created with `O_CREAT|O_EXCL|O_NOFOLLOW` and mode 0600; an **existing** file is opened `O_APPEND|O_NOFOLLOW` and its mode is left unchanged (it passed the owner check, §7.4.1); Windows: learning is only allowed into files under `%USERPROFILE%` (profile ACLs are user-only; other locations → `canRemember=false`); write under a process-wide mutex plus a file lock on a handle opened with `read(true).append(true)`; the wait for another process's lock is bounded (2 s, then a non-fatal `Io` error: the key is not learned); append exactly one line `<lookup> <key-type> <base64>\n` (prefixing `\n` if the file does not end with one).
+- `hostKeyChanged` UI: expected file:line, the fingerprint offered by the server, and the backend-built copyable `removeHint` (`ssh-keygen -R '<lookup>' -f '<file>'`, quoted by `ssh::shellquote` for the local shell: POSIX `'` → `'\''`, PowerShell `'` doubled, typographic quotes doubled; `null` when a value cannot be shown safely, §4.3). The same params are carried by a `hostKeyChanged` during auto-reconnect. The app never edits/removes known_hosts lines. "Try again" re-dials after the user fixed known_hosts.
+- `SessionInfo.hops[i].hostKey.verification` drives a persistent status-bar chip "Host key not verified" for `autoAccepted` hops and controls keychain auto-use (§5.6 D).
+
+### 5.4 Prompts (UI round trip)
+
+`PromptBroker::ask(session, prompt)` registers a `oneshot`, emits `SessionEvent::Prompt`, waits `promptTimeoutSecs` (default 110 s < OpenSSH `LoginGraceTime` 120 s); timeout or loss → `promptClosed` + `promptTimeout`/`disconnected`. One open prompt per session.
+
+**`HopSecrets`** (`ssh/auth.rs`; per hop, in memory, dropped on close): typed password, passphrases (per key path) and decrypted keys, kbd-int answers are **not** cached. They are replayed only to the **same pinned host key** (§5.3). If the transport dies during a prompt, the supervisor re-dials once with the cached answers; the pin guarantees it talks to the same server.
+
+### 5.5 Agent discovery and verification
+
+Endpoint order per hop: `IdentityAgent` from config (`none` disables; `SSH_AUTH_SOCK` = use that env var; `$NAME`/`${NAME}` = env var; otherwise a path, `~`/`%d` expanded) → env `SSH_AUTH_SOCK` → Windows default `\\.\pipe\openssh-ssh-agent`. Pageant is supported through its OpenSSH-compatible named pipe configured via `IdentityAgent` (`pageant --openssh-config`); the pageant crate's auto-discovery is **not** used because the endpoint owner cannot be verified through its API.
+
+`ssh::agent::connect_verified(endpoint)`:
+- **Windows (pipe):** after `~`/env expansion the endpoint must match the exact grammar `\\.\pipe\<name>` — prefix compared case-insensitively, `<name>` non-empty, containing **no `\`, no `/`, no NUL**, and not equal to `.` or `..` (names ending in `.` or a space are rejected too). The forward-slash form `//./pipe/<name>` (what OpenSSH's lexer produces and `pageant --openssh-config` prints) is accepted and normalised to `\\.\pipe\<name>` with the same name restrictions. Win32 normalises `.`/`..` inside `\\.\` device paths, so a mere prefix check is escapable (`\\.\pipe\..\UNC\host\s\x` reaches SMB); anything not matching is rejected **before** opening (prevents NTLM leaks and meaningless remote checks). Open with `tokio::net::windows::named_pipe::ClientOptions::new().open(path)`, retrying on `ERROR_PIPE_BUSY` (231) every 20 ms for up to 2 s, then `agentUnavailable` (tokio has no `WaitNamedPipe`; the retry loop is required, concurrent opens against the real agent hit `ERROR_PIPE_BUSY` often; `GENERIC_READ` includes `READ_CONTROL`) → `GetSecurityInfo(handle, SE_KERNEL_OBJECT, OWNER_SECURITY_INFORMATION)` **on that same handle**, which is then moved into `AgentClient::connect` (no re-open between check and use) → accept only if the **pipe object's owner** is the current user's SID, LocalSystem `S-1-5-18` or Administrators `S-1-5-32-544` (objects created by SYSTEM services are typically Administrators-owned; a non-admin squatter cannot set these owners without `SeRestorePrivilege`). **Any API error or NULL owner ⇒ untrusted** — never infer trust from `ERROR_ACCESS_DENIED`. Verified from a non-elevated process: our own pipe → current user SID; system-service pipes → `S-1-5-32-544`; the real Windows OpenSSH `ssh-agent` service (LocalSystem) pipe → owner `S-1-5-18`, accepted, and `request_identities` plus ed25519 / RSA-SHA-512 signing over the same handle work. If a future agent shows an owner outside the accepted set (e.g. a virtual service SID), it stays rejected until the rule is re-audited. A process-token check is not used (a non-elevated app cannot open LocalSystem processes).
+- **Unix (socket):** `tokio::net::UnixStream::connect(path)` → `peer_cred()?.uid()` must equal `libc::getuid()` or 0. Then `AgentClient::connect(stream)`.
+- Availability = verified connect **and** first `request_identities()` succeeds. Owner mismatch → `agentUntrusted` warning, agent treated as unavailable.
+- Every non-interactive agent request (connect, list, add, remove) is bounded by `AGENT_OP_TIMEOUT` (10 s), so a wedged but owner-verified agent cannot hold up authentication, close or quit. Signing has no such bound (an agent may show a confirmation dialog).
+- `add_identity` is sent only to a verified agent and **only with `Constraint::KeyLifetime{ seconds: 43200 }`; it is never retried without the constraint.** The Windows OpenSSH agent rejects constrained adds (`Agent failure`) and stores added keys **persistently** in `HKCU\Software\OpenSSH\Agent\Keys` (surviving reboots), so an unconstrained fallback could leave a decrypted key behind after a crash. On rejection nothing is added and a `warning{agentConstraintUnsupported}` session event is emitted; the decrypted key remains usable for this session via `HopSecrets`. The passphrase prompt's `addToAgentDefault` is `true` only when the hop's `AddKeysToAgent yes` comes from a **trusted user** config file (§7.4.1) **and** the agent is not the Windows OpenSSH pipe (`AgentKind::opensshPipe` ⇒ `false`; the checkbox shows a tooltip explaining that this agent keeps keys permanently). A key is added only after the server **accepted** it; added keys are recorded per session and removed on connect failure, cancel, re-dial, loss, close and supervisor panic. A key the agent already holds is not added again (so closing the session never removes the user's own copy).
+
+### 5.6 Authentication (per hop)
+
+```
+authenticate_none(user) → Success ⇒ done; Failure{remaining_methods} ⇒ server_methods
+budget = 6 attempts (OpenSSH default MaxAuthTries; "none" does not count). sshd disconnects on the failure that
+  REACHES MaxAuthTries (auth2.c: failures++ ; if failures >= max ⇒ disconnect), so the 6th failed attempt arrives
+  as a disconnect, not as Failure.
+reserve = 3 if (Password|KeyboardInteractive ∈ server_methods) && auth ∈ {auto, password} else 0
+pk_limit = budget − reserve           (3 or 6 publickey attempts)
+attempt n = 1 + failures so far. Server disconnect during attempt n:
+  n == budget (local budget used up)              ⇒ authFailed (expected exhaustion; for a password attempt the
+                                                    last prompt showed attemptsLeft = 1 — no further prompt)
+  n <  budget && ≥ 1 publickey failure && auth = auto && not yet re-dialled
+                                                  ⇒ server MaxAuthTries < 6: ONE re-dial with publickey skipped
+  otherwise                                        ⇒ tooManyAuthFailures (fatal)
+rsa_hash = best_supported_rsa_hash(): Some(Some(h)) ⇒ Some(h); Some(None) ⇒ None; None ⇒ [Some(Sha256), None] (2 tries)
+  — applied to EVERY RSA key, agent-held or file (authenticate_publickey_with takes hash_alg too)
+publickey candidates (OpenSSH pubkey_prepare order; skipped if PublicKey ∉ server_methods or auth = password):
+  1. identity files (config/bookmark order) whose public key is in the agent → sign via agent
+  2. other agent identities                         (skipped if IdentitiesOnly or auth = key)
+  3. identity files not in the agent (explicit, else defaults that exist: id_rsa, id_ecdsa, id_ed25519):
+       read via local_path (§9.4; Unix: mode & 077 ≠ 0 ⇒ keyLoadFailed{insecurePermissions}, like OpenSSH)
+       encrypted? (OpenSSH from_openssh().is_encrypted(); PEM "Proc-Type: 4,ENCRYPTED"; "BEGIN ENCRYPTED PRIVATE KEY")
+         cached passphrase ⇒ decrypt; else Prompt::Passphrase (3 local tries, lastError, attemptsLeft;
+         answer skip ⇒ next candidate; cancel ⇒ abort `cancelled`; 3 wrong ⇒ warning passphraseIncorrect, next)
+         addToAgent && agent verified ⇒ add_identity(key, [KeyLifetime 12 h]); rejected ⇒ warning
+           agentConstraintUnsupported, NO unconstrained retry (§5.5)
+       authenticate_publickey(user, PrivateKeyWithHashAlg::new(Arc::new(key), hash))
+  each rejected attempt: budget −= 1; stop publickey when pk_limit reached
+keyboard-interactive (KeyboardInteractive ∈ server_methods, auth ∈ {auto, password}; ≤ 10 rounds, ≤ 10 prompts/round
+  else authFailed):
+  0 prompts ⇒ respond([])
+  exactly 1 non-echo prompt matching ^\s*password(\s+for\s+\S+)?\s*:?\s*$ (case-insensitive) and NOT matching
+    code|otp|token|verification|passcode ⇒ handled like a password (below), prompt kind "password" with serverLabel
+  otherwise ⇒ Prompt::KeyboardInteractive (labels/instructions sanitized) ⇒ respond
+password (Password ∈ server_methods, auth ∈ {auto, password}):
+  session-cached password (same pinned key) ⇒ use
+  elif keychain entry exists && binding == (hostname, port, user) && hop verification == knownHosts ⇒ use
+  else Prompt::Password { savedPasswordAvailable = keychain entry exists && binding matches }
+       answers: password{remember} | useSavedPassword | skip | cancel; 3 attempts with lastError/attemptsLeft
+  success && remember ⇒ keychain set with binding (bookmark: passwordSaved = true)
+  useSavedPassword answer: the backend RE-CHECKS that the keychain entry exists and its binding equals the current
+  hop's (hostname, port, user); otherwise it ignores the answer and re-issues the prompt with
+  savedPasswordAvailable = false (the frontend flag is advisory only)
+Failure{partial_success:true} ⇒ continue with remaining methods (2FA).   Each failure counts against budget.
+all candidates exhausted ⇒ authFailed{tried, serverMethods}
+```
+- Keychain account: bookmark → `bookmark:<uuid>`; ssh-config host → `sshconfig:<user>@<hostname>:<port>`. The **binding** `{hostname, port, user}` is stored backend-side in `bookmarks.json` (`auth.passwordBinding`, not exposed in DTOs) or implied by the account name for config hosts; on mismatch the saved password is not used automatically.
+- `SessionInfo.auth` records the winning method (`keySource` = `~`-abbreviated path, shown with native separators on Windows, or `agent: <comment>`).
+- Details: the password try counter grows only when a *password* is rejected (the password method or a password-like kbd-int round); a failed second factor re-asks that round and does not re-ask the password. The 3 password tries are shared by the password method and password-like kbd-int rounds. Partial success does not consume the budget. Plan `agent` ignores `IdentitiesOnly`; no agent ⇒ `agentUnavailable`, empty agent ⇒ `agentNoIdentities`. In plan `key` a load failure is fatal (`keyLoadFailed`), in `auto` it is a warning event. When a kbd-int round was password-like, `password` is added to `authFailed.tried` (before `keyboardInteractive`). Password and key bytes are held in zeroizing buffers; `AuthOutcome` has a masking `Debug`. Known limitation: kbd-int answers go to russh as `Vec<String>` (ownership transferred) and cannot be zeroized after sending.
+- **Key derivation caps.** `ssh::keys` checks the cost of an encrypted key before any prompt or derivation (`kdf_refusal()` runs before the key is obtained) and refuses an excessive one as `keyLoadFailed{unsupported}`. Caps: OpenSSH bcrypt rounds ≤ 1024 (default 16, common `-a 100`); PuTTY `.ppk` v3 Argon2 memory ≤ 256 MiB, passes ≤ 1000, parallelism ≤ 64, memory × passes ≤ 16 GiB; encrypted PKCS#8 PBKDF2 iterations ≤ 10 M and scrypt `128·r·N` ≤ 256 MiB with total work ≤ 4 GiB (a minimal bounds-checked DER reader). A crafted key file therefore cannot pin a blocking thread for hours.
+- **Saved-password lookups.** Whether "Use saved password" can be offered is looked up once per authentication and cached; the secret is zeroized at once (`KeychainAccess::exists`) and read only for the auto-use or after the user chooses it (keyring has no attribute-only lookup, so that one check still reads the item, and macOS may ask once). In keyboard-interactive, a kept cached password is dropped after the second exchange that fails after a later round, and the password is asked again (PAM stacks with password plus OTP). A server that accepts `none` is reported as `AuthMethodKind::none`.
+- A saved password is bound to its destination: deleting a bookmark clears `proxyJump` references to it and the saved passwords of the bookmarks that used it as a jump (the binding includes the jump). An entry without a stored binding never matches (it is neither auto-used nor offered). Orphaned keychain entries (dropped bookmarks, `passwordSaved` without binding) are deleted once after startup on a background thread, except when the bookmark store is read-only.
+
+### 5.7 Keepalive and disconnect detection
+
+- russh keepalives: ≈ interval × (max + 1) (default 60 s).
+- `ClientHandler::disconnected` → per-hop `watch`; lost jump → `jumpHostLost`.
+- `session_probe_all` (the frontend calls it on `online`, when the window becomes visible after > 60 s hidden, and after a timer gap > 30 s while visible, i.e. system sleep; at most once per 10 s and only with a connected session): returns at once; the backend rate-limits it too: one round at a time, rounds start at least 5 s apart (`PROBE_MIN_GAP`), otherwise the call is a no-op; each connected session is pinged through all hops (5 s budget, second try 5 s later). Two consecutive timeouts ⇒ `disconnected{error: disconnected{reason: keepaliveTimeout}, canRetry:true}` (or auto-reconnect) and the old transport is closed (bounded 500 ms). Because terminal readers never pause (§4.5), a busy terminal cannot block the ping.
+- Session stats count the bytes of the outer TCP stream (all hops) at 1 Hz.
+- The ProxyJump `direct-tcpip` open is bounded by the hop's `ConnectTimeout` (`connectTimeout{host, port, seconds}`), so a frozen target cannot stall a reconnect attempt for the jump host's TCP timeout.
+- Identity probe: after auth, in parallel with SFTP init (also on reconnect), a fixed `id -u; id -G` exec fills `SessionInfo.remoteIdentity` (`{uid, gids}`; budget 2 s, output ≤ 4 KiB, EOF sent right after `exec` so forced commands that read stdin end at once). `null` for Windows OpenSSH and on every failure. It costs one session channel opened and closed per connect; a server that forbids `exec` simply yields `null`. It feeds permission hints only (§6.2).
+
+### 5.8 Session state machine
+
+```
+           session_open
+               │
+          [resolving] ──resolution error──▶ (command error; no session)
+               │
+          [connecting hop i] ⇄ [authenticating hop i]  (prompts) ── last hop ──▶ [openingChannels] (SFTP init ≤ 10 s, §6.1)
+               │ error (initial)                                                    │
+               ▼                                                                    ▼
+          [disconnected{error, canRetry}]  ◀── session_disconnect ───────     [connected] ──session_close──▶ [closed]
+               ▲          ▲                                                         │ unexpected loss
+               │          └──── reconnect_now ───────────────┐                      ▼
+               │                                             │   [reconnecting stage=waiting k/N] ──timer──▶
+               │                                             │   [reconnecting stage=connecting|authenticating, hop]
+               └── attempts exhausted / fatal ───────────────┴── success ──▶ [connected]
+probeOnly: connected ⇒ closed immediately ("Test connection").
+```
+- During auto-reconnect the phase stays **`reconnecting`** with `stage` and `hop` (the overlay stays up); prompts may appear on top.
+- Auto-reconnect: only after the session was `connected` once, if enabled, only for transport errors (`disconnected`, `connectRefused`, `connectTimeout`, `networkUnreachable`, `dnsFailed`, `jumpChannelFailed`). Fatal: `hostKey*` (incl. `hostKeyMismatchOnReconnect`), `authFailed` after user cancel, `cancelled`, `tooManyAuthFailures`.
+- Backoff 1, 2, 4, 8, 16 s (±20 % jitter from `ring::rand::SystemRandom`, cap 30 s), `maxAttempts` default 5; `reconnect.enabled`/`maxAttempts` are read when the loss happens. Attempts carry over across reconnects whose connection did not stay up for `STABLE_AFTER` (30 s), so a flapping server cannot loop forever: with none left the session goes to `disconnected` (manual retry). At most one `connection_lost` OS notification per session per 60 s. Events: `reconnecting{waiting, hop:null, attempt, maxAttempts, nextAttemptAtMs, cause}` → `reconnecting{connecting|authenticating, hop, nextAttemptAtMs:null}` per hop → `connected` or the next `waiting`; `cause` is the latest error. With reconnect disabled (or `maxAttempts: 0`) a loss ends in `disconnected{canRetry:true}` at once. A manual `session_reconnect_now` from `disconnected` uses the normal `connecting`/`authenticating` phases, not `reconnecting`. Recents are updated only on the first `connected` and on close.
+- Effects:
+  - **Terminals:** scrollback stays. During loss `term_write` → `notConnected` (ignored by the UI; overlay blocks input). After reconnect a new shell is opened for every terminal whose status was *running* (same size, same `cwd` if it was opened with one) and `reconnected` is sent first. Terminals that had **exited** before the loss are not respawned.
+  - **SFTP:** re-initialized before `connected`; in-flight requests failed with `notConnected`; the tree marks listings stale and refreshes expanded dirs.
+  - **Editor:** buffers untouched; saves requested while not connected are queued (`pendingSave`) and run after reconnect with etag checks.
+  - **Transfers:** fail with `disconnected` (`retryable: true`). A temp file (`.<name>.sshb-XXXXXX.tmp`) of a transfer interrupted by a lost connection stays on the server, because it can only be removed over that connection.
+  - **Reconnect keeps the resolved target:** a changed host/port/user/auth of the bookmark does not apply until the session is closed and reopened (`bookmarkUpdated{needsReconnect}`, §7.6).
+  - **OS notification (`general.notifyOnDisconnect`):** the supervisor reports each unexpected loss of an established connection once (`notify::Notifier::connection_lost` with the live tab label), before the reconnect attempts; not for `session_disconnect`/`session_close`, failed connects or probe sessions. `notify::NotificationHub` shows it only when the setting is on and the main window is known to be unfocused (cached from window events in `window::main_window_focused`, never a cross-thread window call), through `tauri-plugin-notification` from Rust. Texts come from the frontend (`notifications_set_texts`, `{{name}}` sanitized: no control/bidi/invisible characters, ≤ 80 chars), English fallback until then.
+- `session_close(sessionId, lastDir)`: cancels prompts; cancels transfers (`cancelled` events; `.part`/temp files removed); closes terminals (`closed`); removes agent identities added by this session; disconnects hops in reverse (bounded, like the loss paths, so a stalled transport cannot keep the tab); records recents (`lastDir` from the frontend, ignored when invalid, `terminalCount` computed by the backend); emits `closed` and `recents:changed`; drops secrets and pins.
+- **Panics and reloads.** A supervisor panic is contained: the stats ticker is an abort-on-drop guard, agent keys are removed first, the transport is disconnected (bounded), the session's transfers are told to stop, and the session ends as `disconnected{internal}` + `closed`. Stats ticks missed after a system sleep are skipped, not replayed. When the page calls `app_frontend_ready` a second time (reload, renderer restart, dev full reload), the sessions the old page opened are closed in the background like `session_close` without `lastDir` (transfers cancelled with cleanup, terminals closed, agent keys removed, recents recorded, `recents:changed`); with `general.onStartup = "restore"` the new page restores the bookmarks anyway.
+
+---
+
+## 6. SFTP & editor
+
+### 6.1 SFTP session (eager)
+
+- Opened **after auth and before `connected`** (and after every reconnect): `channel_open_session` → `request_subsystem(true, "sftp")` → `RawSftpSession::new(stream)` → `init()` (≤ 10 s); `limits()` + `set_limits()` if advertised; `set_timeout(30)`; record `posix_rename`, `fsync`, `limits`. Then `homeDir = realpath(".")`, `startDir` = bookmark `startDir` validated by `stat` (fallback home + `warning`).
+- Failure/timeout → `sftpAvailable = false`, `homeDir = null` (terminals still work; the tree shows a localized notice).
+- The channel stream is wrapped in a counting adapter feeding `stats`.
+
+### 6.2 Listing (lazy tree, bounded)
+
+- `sftp_list`: `opendir` → `readdir` until `Eof` → `close`; stops at **100 000 entries or a 48 MiB memory budget** (`LIST_MAX_BYTES`) and at `LIST_TIMEOUT` (60 s total) the entries read so far are returned with `truncated: true` (`timeout{listing}` only when nothing arrived; symlink-target `stat`s are skipped past the deadline). A server that answers every READDIR with an empty NAME packet, or never answers, cannot hold the listing past that deadline. The budget charges, per entry, the Rust strings (`name` + full `path`), their exact JSON-escaped length and 256 bytes of struct overhead; `truncated: true` ⇔ an entry was left out (exactly the cap ⇒ `false`). A normal 100 000-entry folder still fits completely, while a hostile folder (millions of tiny or control-character names) peaks at tens of MiB instead of GiB (`tests/listing_memory.rs` measures this with a counting allocator). Entries whose name is empty, `.`, `..` or contains `/` or NUL are dropped (a hostile server could otherwise redirect `path`). Symlinks are `stat`ed (≤ 8 concurrent, first 1 000 only, within the listing budget; others `linkTargetKind: null`; a broken link has `linkTargetKind: "other"`). `opendir` on a file gives `notADirectory` (OpenSSH reports `noSuchFile`; the backend stats to tell them apart). `lossyName` = the name contains U+FFFD; such entries are listed (warning icon) but every operation on them is disabled. **Owner and group names (`files.showPermissions`):** SFTP v3 has no names in the attributes, so `FileEntry.owner`/`group` are parsed from the `readdir` long name, and only when it is consistent with the attributes (10-char mode token, numeric link count, the size column equal to `attrs.size`); a name is ≤ 32 chars without whitespace, control, bidi or invisible characters, and a purely numeric token is "no name". Otherwise (and for `sftp_stat` and operation results, which have no long name) they are `null` and the UI shows `uid`/`gid`. The names are charged to the listing budget.
+- **Permission hints (advisory only):** with `SessionInfo.remoteIdentity` and `FileEntry.permissions/uid/gid` the UI (`lib/permissions.ts`) marks files and folders the account probably cannot write or enter. Hints only warn: Rename, Move, Delete and New file/folder stay enabled with a warning tooltip and the dialogs say "will probably fail"; the server decides. Gaps by design: ACLs and read-only mounts are invisible, symlinks get no hint, unknown ids or modes give no hint. The tree root is only known through its parent's listing, which is fetched in the background; if that fails the hint stays "unknown", never "allowed".
+- Frontend sorts (dirs first, `Intl.Collator(locale, {numeric: true, sensitivity: "base"})`), hides dotfiles if `showHidden = false`, caches listings per session (`Record<path, {listing, fetchedAtMs, stale}>`), refreshes on expand (> 30 s old), on demand and after own mutations.
+- Remote paths only through `sftp/path.rs` / `src/lib/remotePath.ts`.
+
+### 6.3 Reading text files
+
+1. `stat` (following links, `client::ensure_regular`): dir → `isADirectory`; a FIFO, socket or device → `notARegularFile{path}` (it could block the SFTP server or never end; attributes without a file type are allowed). The same check guards the download (before the Save dialog opens, and again in the task), the conflict read of a save and the target of an upload. Size > `maxFileSizeMiB` (1–256, default 5, read live from the settings at every call) → `fileTooLarge` (UI offers Download).
+2. Pipelined reads (≤ 8 outstanding, chunk = min(32 KiB, `limits.max_read_len`)), stop at `Eof`, never beyond limit + 1 byte.
+   A symlink is resolved once and the resolved file is read; `TextDocument.resolvedPath` (only for symlinks) is exactly what was read.
+3. Decode: BOM sniff (a BOM wins over an explicit `encoding`) → explicit `encoding` (`encoding_rs::Encoding::for_label`, so labels resolve like in browsers: `iso-8859-1`/`latin1` become `windows-1252`; `replacement` or unknown → `unsupportedEncoding`; malformed → `decodeFailed`) → binary check (NUL in the first 8000 bytes ⇒ `fileIsBinary`; skipped with a BOM or an explicit encoding, so UTF-16 files can be reopened) → strict UTF-8 → else `decodeFailed{encoding:"utf-8"}` (UI "Reopen with encoding…": windows-1251, koi8-u, iso-8859-1, windows-1252, utf-16le, utf-16be). `TextDocument.encoding` is the lower-case WHATWG name.
+4. EOL: dominant of `\r\n`/`\n`/`\r` (ties → lf), `mixedEol`; text normalized to `\n`.
+5. `etag = { size, mtime, sha256(raw) }`.
+
+### 6.4 Saving (atomic, conflict-safe, ownership-preserving)
+
+```
+target = path; if lstat(target) is symlink ⇒ target = realpath(target)
+          expectedTarget set && target ≠ expectedTarget && !force ⇒ remoteChanged{.., target}   (link was re-pointed)
+cur = stat(target)    (NoSuchFile && expected == null ⇒ new file: open CREATE|EXCLUDE|WRITE, write, close, done;
+                       NoSuchFile && expected set ⇒ remoteChanged{size:0, mtime:0} unless force, which recreates it;
+                       file exists && expected == null && !force ⇒ remoteChanged{size, mtime})
+conflict: expected && !force ⇒ if cur.size ≤ limit: read it and compare sha256 with expected.sha256 — ALWAYS, also when size and
+          mtime are unchanged (SFTP v3 mtimes have 1 s resolution, so a same-second, same-size edit would otherwise slip through);
+          equal ⇒ no conflict (a touch or same-content rewrite), else remoteChanged   (read errors such as
+          notConnected/permissionDenied pass through; a larger file with other size/mtime is a conflict without a read)
+          with `expected` set and no `expectedTarget`, the comparison is made against `path` itself (a regular file swapped
+          for a link conflicts; a buffer opened through a link that saves without `expectedTarget` gets remoteChanged)
+bytes = encode(text "\n"→eol, encoding, hasBom)  (unmappable ⇒ encodingUnmappable)
+perms = cur.permissions & 0o7777
+tmp = dir/.<name ≤ 200 B>.sshb-<6 random [a-z0-9]>.tmp
+choose strategy:
+  open(tmp, CREATE|EXCLUDE|WRITE, {permissions: perms}) — PermissionDenied ⇒ InPlace
+  t = fstat(handle)
+  t.uid ≠ cur.uid ⇒ close, remove(tmp) ⇒ InPlace                       (ownership would change)
+  t.gid ≠ cur.gid ⇒ fsetstat(handle, FileAttributes{ uid: Some(t.uid), gid: Some(cur.gid), ..empty })
+                   (uid/gid always as a pair — russh-sftp sends uid 0 for a missing member, §2.3);
+                   failure ⇒ close, remove(tmp) ⇒ InPlace
+Atomic:   pipelined writes; fsetstat(handle, {permissions: perms}) BEFORE close; fsync if supported; close
+          fstat(handle) BEFORE close ⇒ the new etag (size = bytes written; if fstat fails a post-save stat is used only when
+          its size matches, else mtime 0)
+          save without force: lstat(target) right before the rename must still be the file the save started from
+          (`same_file`), else remoteChanged and the temp is removed (the remaining window is between that lstat and the
+          rename: SFTP v3 has no compare-and-swap rename)
+          posix_rename ? extended("posix-rename@openssh.com", tmp, target)
+                       : RenameFallback: rename(target, bak = dir/.<name ≤ 200 B>.sshb-<6 random>.bak); rename(tmp, target); remove(bak)
+InPlace:  open(target, WRITE only); fstat(handle) must be the resolved regular file (uid, gid, mode, size, mtime equal to
+          `cur`, else remoteChanged and nothing is written); truncate through the handle; write; fsync?; close
+          (owner, group, ACLs, xattrs, hardlinks kept). Only regular files are written (`notARegularFile`).
+any error: best-effort remove(tmp) and, in RenameFallback, restore/remove bak; propagate mapped error
+new = stat(target) ⇒ SaveResult{ etag{size, mtime, sha256(bytes)}, strategy, warnings }
+```
+- The temp name keeps at most 200 bytes of the file name and a collision is retried up to 3 times. The temp file's mode is checked with `fstat` and fixed before any data is written (a server that ignores OPEN's `permissions` would otherwise expose a 0600 file's content); if that early `fsetstat(permissions)` or the ownership `fsetstat` fails, the save is done in place instead. The final `fsetstat(permissions)` before close is different: if it fails the save fails and the temp file is removed (no silent mode change). After the ownership `fsetstat` the temp file is `fstat`ed again; if uid/gid are not as requested the save is done in place; if the server reports no uid/gid the ownership step is skipped. `SaveResult.warnings` can carry `sftpFailure` for a rename-fallback backup that could not be removed. The fallback backup name is random and length-capped, so a stale or read-only old backup never blocks a save; a disconnect between the two renames of the fallback leaves the original only as the backup file.
+- The in-place identity check accepts only the very file that was resolved (same uid, gid, mode, size and mtime), and every step of a save or transfer that can stall (write, local read, close, finish) races the transfer's cancel signal.
+- `sftp_write_text` refuses text over `editor.maxFileSizeMiB` (before and after encoding) with `fileTooLarge`.
+- Other file operations: `sftp_delete` removes files and symlinks (`remove`, never the target) and **empty** directories (`rmdir`; `directoryNotEmpty` otherwise; never recursive; `/` is refused; the emptiness probe reads at most 1000 READDIR packets within the listing deadline, and either limit counts as "not empty"). `sftp_rename` checks the destination first (`remoteExists`, because SFTP v3 servers other than OpenSSH may overwrite); a missing destination folder gives `remoteNotFound{path: that folder}`. `sftp_create_file` creates mode 0644 (minus umask), `sftp_mkdir` uses the server default.
+- **Documented limitation:** the Atomic strategy does not preserve POSIX ACLs, extended attributes or SELinux labels (SFTP v3 cannot read them). Settings has no switch in v1; files where this matters can be detected only by the user → open question 5 (§13).
+- Conflict dialog: **Overwrite** (`force:true`) / **Reload from server** / **Cancel**. SHA-256 avoids false conflicts from mtime-only changes (1 s resolution).
+
+### 6.5 Editor model (frontend)
+
+- One `EditorView` per editor group; per-buffer `EditorState` in `bufferRegistry` (outside Zustand); tab switch swaps states (undo history per buffer).
+- `BufferMeta { id: "${sessionId}:${path}", sessionId, path, name, language, encoding, hasBom, eol, mixedEol, etag, dirty, status, pendingSave, error, … }` in Zustand. `dirty` = the live document differs from the last loaded/saved document (CodeMirror `Text.eq` against a baseline kept in the buffer registry; typing sets it at once, a 150 ms debounced check clears it after an undo back to the saved text); `metaDirty` covers encoding/EOL changes.
+- Saving: `saveBuffer` (Mod+S, tab menu, close prompt) opens the conflict dialog on `remoteChanged`; the quit and close-connection dialogs use the strict `saveAllBuffers`, which stops at the first buffer that is not saved. A save requested while not connected sets `pendingSave` and runs after the next `connected` (a changed file ends in the conflict dialog). Closing a dirty tab asks Save / Don't save / Cancel.
+- Extensions: line numbers, history, folding, bracket matching, selection matches, `drawSelection`, search panel, indent (tabSize), optional wrap, token theme, language via `LanguageDescription.matchFilename` (lazy local chunk) + shebang fallback, read-only compartment. The Tab key is not bound to indentation (keyboard-trap rule; indent with Mod+] / Mod+[). Search panel, fold gutter and announcements are translated through `EditorState.phrases` (`lib/cmPhrases.ts`, `editor.cm.*`). Font size follows `settings.editor.fontSize`; tab size and word wrap are compartments applied to all open buffers.
+- Status bar: `Ln, Col`, language, encoding (click → reopen/save with encoding), EOL (click toggles, marks dirty). Breadcrumb + "Saved to server {relative time}". Mixed-EOL toast on open.
+
+### 6.6 Upload / download (v1 scope)
+
+- **Download:** context menu "Download…" (and Save-As for too-large files). Backend save dialog; default name = `sftp::names::sanitize_local_name(basename)` (last segment after `/` and `\`; `<>:"/\|?*` and C0/C1 → `_`; bidi, zero-width and invisible format characters removed; names capped at 200 UTF-8 bytes keeping a short extension (≤ 20 bytes, cut at a character boundary; this also keeps the name within 255 UTF-16 units with `.99.part`); reserved device names `CON PRN AUX NUL COM1-9 LPT1-9` get a `_` after the **stem** (`CON.txt` → `CON_.txt`, because Windows ignores the extension); trailing dots/spaces trimmed; empty → `download`). Data streams to `<chosen>.part` created with `create_new(true)` (on collision `<chosen>.1.part`, …; Unix `O_NOFOLLOW|O_CLOEXEC` so a planted symlink is never followed; default mode `0o666 & !umask` like any other download), is written through a 256 KiB `BufWriter`, flushed and `sync_all`ed, and renamed over the chosen path (the user already confirmed overwrite in the native dialog); on cancel or error the writer is dropped together with the `.part`. **Provenance mark, written on the `.part` before the rename** (it moves with the file; fallback: the final file): Windows `Zone.Identifier` ADS (`[ZoneTransfer]\r\nZoneId=3\r\n`) so SmartScreen/Protected View apply; macOS `com.apple.quarantine` = `0081;<hex time>;Shellfin;` via `setxattr(…, XATTR_NOFOLLOW)`; Linux none. A write failure (e.g. FAT/exFAT without ADS) is logged, not fatal. Progress events at most every 100 ms. Files only.
+- **Upload:** "Upload files…" (native multi-picker) or OS drop onto a tree folder/background. Files only; for dropped directories the frontend shows "Folders are not supported yet" (from `DropEntry.isDir`) and the backend returns `localIsADirectory` if one is passed anyway; a FIFO, socket or device as source is `notARegularFile`. The local reader reuses one 256 KiB buffer with a read cursor (one copy per chunk). Local files whose name is not valid Unicode fail with `invalidArgument{field:"name"}` (not retryable). Local files are opened through `local_path` with source `OsChosen` (regular files only; UNC/network paths allowed because the path came from the OS dialog/Explorer drop, §9.4). Same temp + posix-rename procedure as saves; a **new** file without `overwrite` is moved into place with a plain SFTP `rename` (never overwrites, so a file appearing meanwhile gives `remoteExists`); new files 0644, existing files keep mode/owner/group. An upload never writes through a symlink: "Replace" on a symlink replaces the link entry with a regular file (0644). Limitation: a cancelled or failed in-place upload leaves the target partially written (no temp file). `progress` counts bytes handed to the SFTP pipeline (up to the window below ahead of the server).
+- **Pipelining window and memory bound.** A transfer starts with 8 requests in flight (`PIPELINE_DEPTH`) and grows by one per answer received within 5 s (`SLOW_REQUEST`), i.e. it doubles per round trip, up to `TRANSFER_DEPTH` = 64 × 32 KiB (as OpenSSH `sftp`); an answer slower than 5 s halves it (never below 8), so a full window on a slow uplink stays well inside the 30 s request timeout. Requests above 8 take a permit, without waiting, from a **per-session pool of 168 extra requests (5.25 MiB)** shared by the session's transfers (`TransferRegistry.pools`); when the pool is empty a transfer simply stays at 8. Worst case per session: `active × (8 × 32 KiB + 256 KiB) + 5.25 MiB` = 6.75 MiB with the default 3 transfers, 37.25 MiB with 64. Editor reads and saves keep the fixed depth 8. Every request of a pipelined writer is sent at once (a throttled source never leaves the link idle). On a high-latency link this raises throughput several-fold (a 32 MiB test over a 100 ms RTT proxy: about 2 → 8 MiB/s).
+- **Fast failure on loss and cancel.** With 64 requests in flight, the requests of a dead link (and the close/remove after them) would queue behind a full SSH channel window and each end only at the 30 s SFTP request timeout. Transfers therefore race their I/O against `transfer::stop_signal`, which fires on cancel **or** as soon as the session gives the connection up (polled every 250 ms); a stop on loss is reported as `disconnected` (retryable). After a cancel or on a lost connection the remote close and the temp remove wait at most 500 ms (`STOP_CLEANUP_WAIT`); a download closes its handle bounded as well, and `Sftp::list` on a connection the session gave up fails at once with `notConnected`.
+- **Concurrency and limits:** at most **`transfers.maxConcurrent` (1–64, default 3) transfers per session** run at once (one semaphore per session, dropped on `session_close`; a changed setting makes a new gate for transfers started afterwards, running and already queued ones keep theirs). **Conflicts (`transfers.onConflict`):** an explicit `overwrite: true` always overwrites; otherwise `ask` = `remoteExists`, `overwrite` replaces, `skip` ends the transfer with the `skipped` event and writes nothing — **for uploads only**: a download through the Save dialog (and its `transfer_retry`) always writes the chosen target, because the user already confirmed it there (`commands::transfer::download_conflict`); `skip` would apply only to a download without a dialog, of which there is none.
+- **Timestamps (`transfers.preserveTimestamps`, default on):** upload sets the remote `atime`/`mtime` from the opened local file with an `fsetstat` on the open handle after the data and before `fsync`/close (atomic and in-place writes; a refusal is ignored); download sets the local times from the remote `stat` on the `.part` handle after the provenance mark and before the rename (`File::set_times`; a failure is logged). Times outside the SFTP v3 `u32` range are skipped. The registry reads the flag when a transfer starts (`TransferRegistry::set_preserve_timestamps`, applied live).
+- **OS notification (`transfers.notifyOnComplete`):** the registry counts successful transfers; when the last running transfer of the app ends and at least one succeeded since the previous notification, `Notifier::transfers_done(count, name)` fires once (one file: its name; several: the count). Skipped, failed and cancelled transfers do not count. Shown only while the window is unfocused (§5.8). Every transfer emits `started` at once; queued ones wait before opening any local or remote handle and can be cancelled while waiting. Bandwidth limits (`sftp/throttle.rs`): one limiter per session and direction shared by concurrent transfers, applied per received chunk (download) and per upload chunk, cancel-aware (a wait that is cancelled or dropped refunds its booking, and a refund never moves the next free instant into the past); effective limit = bookmark override captured at `session_open`, else the live global setting. Editor reads/saves and listings are deliberately not throttled; the SFTP window (8, growing to at most 64 × 32 KiB) bounds the burst.
+- **Conflicts / retry:** without `overwrite`, an existing remote name → `failed{error: remoteExists, retryable: true}`; the backend keeps `{local path, remote dir, session}` of failed transfers for 10 min (or until session close; `transfer_retry` on an unknown, already retried, cancelled or expired transfer gives `notFound{what:"transfer"}`). `retryable: true` for `remoteExists`, `disconnected`, `notConnected`, `sftpUnavailable`, `timeout`. The UI raises one "Replace these files?" dialog per burst (200 ms debounce) and calls `transfer_retry(transferId, overwrite: true)` — only the conflicting files are resent; a retry creates a new row. `session_close` cancels the session's transfers first (`cancelled` events; temp and `.part` files removed), while `session_disconnect` cancels only the active and queued ones: failed retryable transfers stay for retry.
+- **Drop registry:** `drop:files` creates `DropRegistry{dropId → entries}` with a 60 s TTL, at most 32 unredeemed drops (oldest evicted); the entry is **consumed** by the first `transfer_upload_dropped` (failed files then live on as retryable transfers, independent of the TTL). `isDir` comes from `metadata` in `spawn_blocking`, because the drag event arrives on the UI thread and a path on a slow share must not freeze the window.
+- **Drag & drop security and limits:** paths stay in Rust (`WindowEvent::DragDrop`); events carry names, `isDir` and logical positions (`drop:hover` on Enter **and** Over); the frontend hit-tests `[data-remote-dir]` (a file row = its folder, the empty area = the tree root). The OS "copy" cursor cannot be controlled per position (wry answers `DROPEFFECT_COPY` for any file drag), so the cursor shows over the whole window and a drop outside a folder is simply not redeemed. HTML5 drag-and-drop between elements does **not work on Windows** (Tauri's drop handler replaces WebView2's drop target); in-app drag uses pointer events (§8.3).
+- Transfers popover in the status bar (progress, cancel, retry/replace, dismiss, clear finished).
+
+---
+
+## 7. Bookmarks, settings & local storage
+
+### 7.1 Locations & permissions
+
+| Data | Location |
+|---|---|
+| bookmarks, settings, recents | `<app_config_dir>/{bookmarks,settings,recents}.json` — Windows `%APPDATA%\app.shellfin.desktop\`, macOS `~/Library/Application Support/app.shellfin.desktop/`, Linux `~/.config/app.shellfin.desktop/` |
+| logs | `<app_log_dir>/shellfin.<date>.log`, daily, 7 files, each capped at 32 MiB (§9.6) |
+| instance lock | `<app_config_dir>/instance.lock` (exclusive file lock held for the life of the process) |
+| passwords | OS keychain, service `app.shellfin.desktop`, accounts §5.6 |
+| known_hosts | OpenSSH files (shared with OpenSSH) |
+
+- **Unix:** **no process-wide umask change** (it would be inherited by `xdg-open`/browser children of the opener and make downloads 0600). Instead, before logging starts the backend creates `app_config_dir` and `app_log_dir` with `DirBuilderExt::mode(0o700)` (and `chmod`s them to 0700 if they pre-exist with group/other bits). The 0700 log directory is the guarantee for log files — tracing-appender opens them with default `OpenOptions` (umask-dependent mode), which is acceptable because nobody else can traverse the directory. App storage files (`*.json`, `*.tmp`, `*.corrupt-*`, `*.bak`) are opened with `OpenOptionsExt::mode(0o600)` explicitly. Downloads keep the user's normal default mode (`0o666 & !umask`, §6.6). SFTP-created remote files use explicit permissions (§6.4/§6.6).
+- **Windows:** the directories are under `%APPDATA%`/`%LOCALAPPDATA%`, whose inherited ACL grants access only to the user, SYSTEM and Administrators; at startup the backend runs the `config` row of §7.4.1 on both directories and logs a warning if it does not hold.
+
+### 7.2 File format, safety, validation
+
+- JSON, UTF-8 (one leading BOM is stripped), pretty, top-level `"version"`. Writes: serialize → a unique temp file `.<name ≤ 200 B>.<8 random>.tmp` (`create_new`, Unix 0600 and `O_NOFOLLOW`, removed on error, so a user's own `<chosen>.tmp` is never touched) → `sync_all` → `rename` (atomic replace).
+- **Locks.** One std `Mutex` per store, taken only on blocking threads (`bookmarks_get`, `recents_get`, `bookmarks_export` and the import read-only check run inside `blocking()`). The settings mutex is held only for a clone or a swap: `Stores::update_settings` writes the file under a separate writer lock (`settings_write`), so the ~20 readers on the async runtime never wait for disk I/O.
+- **One running instance.** `Stores::open` takes an exclusive `File::try_lock` on `instance.lock`. In the shipped app the single-instance plugin (`tauri-plugin-single-instance`, registered first in the builder as the plugin requires, Rust only, no WebView permission) hands a second launch to the running app: the callback shows, unminimizes and focuses the main window, ignores argv and cwd and opens no UI, and the second process exits inside the plugin before `setup` runs. The lock is defence in depth: a second instance that gets this far (debug and `e2e` builds, where the plugin is off, so `tauri dev` can run next to an installed Shellfin) opens every store **read-only** (one `storageReadOnly` warning, no quarantine, migration or repair, no keychain orphan cleanup). The updater's `app.restart()` runs off the main thread, so Tauri restarts through `RunEvent::Exit`, where the plugin releases its mutex, D-Bus name or socket first.
+- **Size cap.** `read_json` refuses a store file over 64 MiB (`MAX_STORE_BYTES`; metadata check plus a `take` bound against growth) and `load_json` quarantines it like an unparsable one (`storageCorrupt`, detail "file too large").
+- Unparsable → quarantine as `<file>.corrupt-<ms>.json`, defaults, `storageCorrupt` warning.
+- **Settings per-field repair.** When the merged settings document does not deserialize, `settings::repair` starts from the defaults and applies the stored values field by field (only keys the defaults know, so the work is bounded by the number of settings), keeping each one only if the whole document still deserializes. Only the bad fields fall back to their defaults; the original file is quarantined (`storageCorrupt`, the detail lists the reset field paths, at most 20) and the repaired settings are written back. A read-only (newer-version) file is repaired in memory only. The mechanism is generic, so every new field is covered without changes. Migrations `vN → vN+1` over `serde_json::Value` with `<file>.v<N>.bak.json` backups; `version > CURRENT` → read-only (`readOnly: true`, `storageReadOnly`).
+- **Validation runs on load and on save** (same function): `name` 1–100 chars, unique (case-insensitive); `host` via `valid_hostname`; `port` 1–65535; `identityFile` non-empty for `key`, ≤ 4096 chars; `groupId` exists; `JumpRef` valid and not self-referential; bookmark→bookmark jump chains at most 8 deep (`MAX_BOOKMARK_JUMPS` = `ssh::target::MAX_JUMPS`) on load, save and import (a save that would push another bookmark's chain past the cap is refused); `startDir` ≤ 4096 chars without NUL. Invalid entries on load are dropped (kept in the `.corrupt-*` copy) with a warning. Settings are clamped to the ranges in §4.4 on load and rejected on update.
+- **Password binding:** `auth.passwordBinding {hostname, port, user}` is written by the backend when a password is saved. `bookmark_save` that changes `host`, `port`, `user`, `useSshConfig` or `proxyJump` **deletes the keychain entry** and sets `passwordSaved=false` (the UI warns before saving).
+
+`bookmarks.json` is at **schema v2**. Shape (`passwordBinding` is storage-only; the `Bookmark` DTO omits it):
+```json
+{ "version": 2,
+  "groups": [ { "id": "8c0…", "name": "Home", "order": 0 } ],
+  "bookmarks": [ { "id": "b3f…", "name": "nas", "host": "nas.local", "port": 2222, "user": "admin",
+      "auth": { "method": "password", "passwordSaved": true,
+                "passwordBinding": { "hostname": "nas.local", "port": 2222, "user": "admin" } },
+      "proxyJump": { "kind": "sshConfig", "alias": "bastion" }, "groupId": "8c0…", "tags": ["backup"],
+      "startDir": "/volume1/backups", "useSshConfig": true, "color": "teal", "order": 0,
+      "uploadLimitKiBps": 512, "createdAtMs": 1792500000000, "updatedAtMs": 1792500000000 } ] }
+```
+- **v1 → v2 migration** (`bookmarks_v1_to_v2`, backup `bookmarks.v1.bak.json`): v1 had no `order`; the migration keeps what the UI showed (bookmarks by case-insensitive name, groups by their old `order`). `order` is an explicit `i32` per entry, normalised to dense `0..n` (per `groupId` for bookmarks, among all groups) on load and in every commit, so a hand-edited or partial file self-heals. `color` is optional (unknown stored values load as "no color", the bookmark is kept); the two bandwidth fields are skipped when `None`, so older files load unchanged. New groups and bookmarks are appended; a bookmark that changes group through `bookmark_save` goes to the end of the new group.
+- **Hostile stores.** `BookmarkIndex` (id map, lower-cased names, group ids) is built once per pass, so a 5000-entry store or import with a hostile jump chain validates in well under a second.
+- **Limits and cascades** (validation): ids `[A-Za-z0-9-]{1,64}`; `user` 1–255 chars without whitespace/controls; ≤ 20 tags of 1–50 chars; jump-chain cycles between bookmarks are rejected; invalid entries are dropped until stable on load (a copy is kept as `*.corrupt-<ms>.json`); an unreadable or newer-version file makes the store read-only (move/save/delete refuse like any write); deleting a bookmark clears `proxyJump` references to it and the saved passwords of the bookmarks that used it as a jump.
+
+### 7.3 Display, merge, recents
+
+- Sidebar sections **`~/.ssh/config`** (read-only rows per concrete alias; secondary text `HostName[:port]` or `via <jump>`; warning badge; tooltip "Defined in {file}:{line}") and **My bookmarks** (groups by `order`, bookmarks by `order` within their group, then ungrouped; reorder by pointer-event drag, context menu Move up/down/to group…, or Alt+Up/Down — persisted with `bookmark_move`/`group_move`; ssh-config hosts and a read-only store are not draggable; a bookmark's accent colour is shown as a stripe on its row, on its connection tab and in the connections list). Context menu on config rows: Connect, **Copy to my bookmarks** (`host = alias`, `useSshConfig = true`, `auth = auto`), **Reveal config file** (`app_reveal_path("sshConfig")`).
+- Status dots: green = a connected session for that entry exists.
+- **Recents:** the backend upserts on first `connected` (`lastConnectedAtMs`, label, userAtHost, via) and on `session_close` (`lastDir` from the frontend, `terminalCount` = terminals still running, counted by the backend); max 10; drafts are stored as `quick{spec}`. Each update emits `recents:changed` with the full list.
+- **Startup restore (`general.onStartup = "restore"`):** at quit (`app_quit` and the forced quit, before the sessions close) the backend records the bookmark ids of the open, non-probe sessions opened from a bookmark (any state), in opening order (`SessionHandle.opened_seq`), deduplicated, ≤ 64, as `openAtQuit` in `recents.json` (no version bump; malformed or invalid ids are dropped on load without touching the entries; `recents_clear` empties it too). `AppBootstrap.restoreBookmarkIds` returns them, filtered to existing bookmarks, only when the setting is `restore`. Ad-hoc and ssh-config sessions are never restored; reopening (with `confirmConnect` and the normal prompts) is the frontend's job.
+- **Skipped update (§9.8):** `update_skip_version` stores one version as `skippedUpdateVersion` in `recents.json` (no version bump; a value that is not `[0-9][0-9A-Za-z.+-]{0,63}` is dropped on load without touching the entries; `recents_clear` keeps it).
+
+### 7.4 ssh_config semantics
+
+- Parser limits: one leading BOM is stripped; a file containing `PRIVATE KEY-----` or NUL bytes is skipped whole with one `badLine{text:"?"}` at line 0 (files that are not valid UTF-8 are still parsed lossily, so Latin-1 comments in old configs keep working); `badLine.text` is only a known keyword (lower case) or `?`, never the line itself; at most 50 `badLine` warnings per file (counted across includes) and snapshot warnings are deduplicated; a broken `Host`/`Match` line opens a dead block, so the options after it do not attach to the previous block.
+- Files: user `~/.ssh/config` (Windows `%USERPROFILE%\.ssh\config`), then system (`/etc/ssh/ssh_config`, Windows `%ProgramData%\ssh\ssh_config`); first obtained value wins across both. Every file (incl. Includes) is opened via `local_path` (source `Config`: strict path allowlist, 4 MiB cap) and must pass its §7.4.1 row, else it is ignored with a warning.
+- Lexing (OpenSSH `argv_split(.., terminate_on_comment=1)`): keyword case-insensitive, separated by whitespace or `=`; double-quoted args; a `#` at the start of a token ends the line (full-line and trailing comments).
+- `Host` patterns `*`, `?`, `!` (negated match excludes the block), matched case-insensitively against the alias as typed.
+- `Match`: `all`, `host` (HostName so far), `originalhost`, `user`, `localuser`; AND-combined, `!`-negatable. Other criteria (`exec`, `canonical`, `final`, `tagged`, `localnetwork`, `version`, `sessiontype`, `command`) ⇒ block **not matching** + `unsupportedMatchCriteria`. Nothing is ever executed.
+- `Include`: multiple args; `~`; relative to `~/.ssh` (user) or `/etc/ssh` (system); patterns containing `**` are rejected (`includeRecursiveGlob`; OpenSSH `glob(3)` has no `**`); glob in alphabetical order; nonexistent matches ignored; matches are taken lazily, at most 1024 per argument (`includeTooManyFiles`); depth ≤ 16; cycle detection; **≤ 256 files in total** (`includeTooManyFiles`); conditional inside `Host`/`Match`; on Windows, patterns and matches failing the drive-letter allowlist (§9.4) are rejected **before** globbing/stat (`untrustedFile`).
+- OpenSSH interpretations where the above is silent: `ProxyJump`/`ProxyCommand` first wins; `PubkeyAuthentication unbound|host-bound` = true; `ChallengeResponseAuthentication` is an alias of `KbdInteractiveAuthentication`; time units are accepted (`1m30s`); `AddKeysToAgent` is honoured only from user-scope files (`yes` ⇒ true, `confirm`/`ask` ⇒ false); file-level warnings are reported at line 0; `known_hosts::lookup_name` lowercases host and `HostKeyAlias` (ASCII) like `ssh.c`.
+- First value wins except accumulating `IdentityFile`, `CertificateFile` (stored, unused), forwards/`SendEnv`/`SetEnv` (ignored). `IdentityFile none`/`ProxyJump none` disable.
+- File-valued options (`UserKnownHostsFile`, `GlobalKnownHostsFile`, `IdentityAgent`): `none`, `/dev/null`, `NUL` ⇒ **disabled** (never read/written; `canRemember = false`). `IdentityAgent SSH_AUTH_SOCK` / `$NAME` / `${NAME}` ⇒ env var lookup.
+- Tokens: `HostName` `%h`, `%%`; file options `~`, `%d`, `%u`, `%h`, `%k` (`HostKeyAlias`, else the alias), `%p`, `%r`, `%n`, `%%`, `${ENV}` (expanded only after `valid_hostname` passed, §5.1). Unknown token ⇒ `unknownToken`; `%C` and `%l` are unsupported (no local host name source without a new dependency). A `HostName` with an unknown token is `invalidHostname{value: <raw HostName>}` (OpenSSH aborts too), never the bare alias; an unexpandable `UserKnownHostsFile` argument falls back to the defaults (§5.3). The ssh_config export doubles `%` in `User` (OpenSSH expands tokens there; our resolver reads `User` literally).
+- Interpreted keywords: `Host, Match, Include, HostName, User, Port, IdentityFile, IdentitiesOnly, IdentityAgent, ProxyJump, ProxyCommand (→ unsupported), UserKnownHostsFile, GlobalKnownHostsFile, StrictHostKeyChecking, HostKeyAlias, HostKeyAlgorithms (only "+ssh-rsa" honoured), HashKnownHosts, ServerAliveInterval, ServerAliveCountMax, ConnectTimeout, PreferredAuthentications, PubkeyAuthentication, PasswordAuthentication, KbdInteractiveAuthentication, AddKeysToAgent`. Others parsed and ignored.
+- Deviation (security): `StrictHostKeyChecking no` still hard-fails on changed keys.
+- **`connection.readSshConfig = false`:** `SshConfigService` switches to `DisabledSource`, which opens nothing (every file is "not found"): neither the user nor the system config is read, the snapshot is empty, `sshConfig` targets and `sshConfig` jumps fail with `notFound{sshConfigHost}` (`ssh::target` checks the setting; with it on, an alias missing from the config still resolves as a plain hostname, as OpenSSH does) and `useSshConfig` bookmarks use only their own fields. The flag is set before the first parse at startup; a change re-parses and emits `ssh-config:changed`. Reloads are serialised, so a watcher re-parse that read the files before the switch cannot overwrite the empty config afterwards. The watcher keeps running but its re-parses read nothing.
+
+#### 7.4.1 File trust checks (`platform::file_trust`)
+
+General rules:
+- The check runs **on the opened handle** inside `local_path::open_local` (after the path allowlist, §9.4): Unix `fstat(fd)` (so a symlinked dotfile is judged by its **target**, as OpenSSH does), Windows `GetSecurityInfo(handle, SE_FILE_OBJECT, OWNER|DACL)`. No path-based check followed by a separate open (no TOCTOU). Only the `%ProgramData%\ssh` directory chain is checked by path (`GetNamedSecurityInfoW`), after the allowlist.
+- Windows: **NULL owner, NULL DACL (incl. FAT/exFAT volumes without security), or any API error ⇒ untrusted.** Only `ACCESS_ALLOWED` ACEs that are not `INHERIT_ONLY` are evaluated; `win_security::classify_ace` skips only the known non-granting types (deny, audit, alarm, label, resource-attribute, scoped-policy, trust-label, access-filter) and every other ACE type, including `ACCESS_ALLOWED_COMPOUND` and unknown ones, fails closed. "Write-type rights" = `FILE_WRITE_DATA | FILE_APPEND_DATA | WRITE_DAC | WRITE_OWNER | DELETE | GENERIC_WRITE | GENERIC_ALL`; "read rights" = `FILE_READ_DATA | GENERIC_READ | GENERIC_ALL`. "Own SIDs" = current user, SYSTEM `S-1-5-18`, Administrators `S-1-5-32-544`.
+- Failure ⇒ file ignored + `untrustedFile` warning (configs, known_hosts) or `keyLoadFailed{insecurePermissions}` (keys).
+
+| File kind | Unix (fstat of the opened fd) | Windows — any drive-letter location except `%ProgramData%\ssh` | Windows — `%ProgramData%\ssh\*` | OpenSSH reference |
+|---|---|---|---|---|
+| User ssh config + its Includes | owner = uid or root; `mode & 0o022 == 0` | owner ∈ own SIDs; no write-type ACE for other SIDs | (system row) | `readconf.c` `SSHCONF_CHECKPERM` → fatal |
+| System ssh config + its Includes | owner = root (no mode check) | – | the file **and every directory from `%ProgramData%\ssh` down to it**: owner ∈ {SYSTEM, Administrators, TrustedInstaller}; no write-type ACE for any other SID | not checked by OpenSSH; owner check added because `%ProgramData%` is user-creatable |
+| User known_hosts | owner = uid or root; **no mode check** except world-writable (`mode & 0o002`) ⇒ untrusted — so `0664` from `umask 002` (RHEL/Fedora user-private groups) is accepted | owner ∈ own SIDs; no write-type ACE for other SIDs | – | `hostfile.c`: no permission check; created via `fopen("a+")` under the umask |
+| Global known_hosts | owner = root | – | same as system config row | – |
+| Private key | owner = uid; `mode & 0o077 == 0` | owner ∈ own SIDs; no write-type **or read** ACE for other SIDs | – | `sshkey_perm_ok` refuses group/other-accessible keys |
+| `.pub` file | owner = uid or root (no mode check) | owner ∈ own SIDs | – | – |
+| Upload source (`OsChosen`) | regular file only | regular file only (UNC allowed, §9.4) | – | – |
+| App storage dirs/files | dirs 0700 (`DirBuilderExt::mode`), files `mode(0o600)` (§7.1) | startup check with the user-config row | – | – |
+
+Rationale: `C:\ProgramData` grants `S-1-5-32-545` (Users) `0x116` (create files/folders), so a non-admin can create `%ProgramData%\ssh`; the user's `~/.ssh/config` is owned by the user with only user/SYSTEM/Administrators ACEs; `GetSecurityInfo` on the opened config **handle** returns the same owner as a path query. Each directory of the `%ProgramData%\ssh` chain is checked **without following links** before any system-scope file is opened: a reparse point or non-directory gives `untrustedPath` (a junction planted by another user could redirect to SMB or stall startup), a missing directory gives not-found. `ACCESS_ALLOWED_CALLBACK` ACEs are evaluated like plain allow-ACEs, object/callback-object allow-ACEs make the DACL uninterpretable ⇒ untrusted (fail closed), and `FILE_DELETE_CHILD` counts as a write right on directories. Any file whose **final path** (after links) lies under `%ProgramData%\ssh` gets the system row. Consequence for Windows users with keys on non-system NTFS volumes (`D:\`): the volume root grants Authenticated Users *Modify* by default, so such files are usually rejected until their ACL is tightened — documented in the README and in the `untrustedFile`/`insecurePermissions` message.
+
+### 7.5 Live reload (decision: watcher + manual)
+
+- `notify_debouncer_mini::new_debouncer(500 ms)` watches non-recursively: the parent directory of every file read, **the directory part of every `Include` pattern** (even if no file matches yet), and `~` (to notice `~/.ssh` being created). Events touching those paths → re-parse (spawn_blocking) → emit `ssh-config:changed` if different. The watched set is recomputed after each parse; at most 64 directories (beyond that, manual reload only + log warning). A re-parse happens only when a cheap **fingerprint** changed (existence, size, mtime and on Unix the inode of every file read, every Include directory, every watched directory and both main config paths), so merely opening the config files, which inotify reports on Linux, cannot start a re-parse loop; a change during a re-parse clears the fingerprint, so no update is lost.
+- Manual "Reload ~/.ssh/config" (welcome, palette, sidebar) → `ssh_config_reload`.
+- Watcher start failure → warning; manual reload still works. Open sessions are unaffected (resolution at connect time).
+
+### 7.6 Live bookmark edits
+
+`bookmark_save` calls `SessionManager::apply_bookmark` for every open session whose `bookmark_id` matches: the throttle overrides are replaced (`SessionThrottle::set_overrides`, effective on the next chunk), `SessionHandle.live` (label, colour, overrides) feeds later `SessionInfo`s (so a reconnect reports the edited values) and `SessionEvent::BookmarkUpdated{label, color, limitOverrides, needsReconnect}` is sent. `needsReconnect` compares the saved bookmark with the connect-time snapshot (`ResolvedTarget.bookmark`) over host, port, user, `useSshConfig`, `proxyJump` and auth method/identity file, so undoing an edit clears it; `startDir`, tags and group do not set it. `session_reconnect_now` and auto-reconnect keep the session's resolved target, so the UI offers "Reconnect to apply changes" (close + reopen the bookmark, asking about unsaved editor tabs first; the new tab takes the old tab's place and name; the bookmark's startup command is sent again, because it is a new connection). `bookmark_delete` does not notify the sessions of the deleted bookmark.
+
+### 7.7 Bookmark export and import
+
+The webview never supplies a path: both commands open the native dialog in Rust (`bookmarks_export` Save, default `shellfin-bookmarks.json` / `shellfin-ssh-config`, folder Downloads; `bookmarks_import` Open, JSON filter).
+
+- **JSON envelope** `{format:"shellfin-bookmarks", version:1, exportedAt (RFC 3339 UTC), groups:[{id,name}], bookmarks:[{id,name,host,port,user,auth,proxyJump,groupId,tags,startDir,useSshConfig,color,uploadLimitKiBps,downloadLimitKiBps,confirmConnect,startupCommand,notes}]}`. It is built from the public `BookmarksDto`, so it cannot contain passwords, passphrases, `passwordSaved` or keychain bindings (tested). Ids are only references inside the file. Written with the atomic writer (0600 on Unix).
+- **ssh_config export** writes `Host` blocks (alias = name reduced to `[A-Za-z0-9._-]`, unique): `HostName`, `Port`, `User`, `IdentityFile` (`%` doubled) + `IdentitiesOnly`, `PreferredAuthentications` (password auth), `ProxyJump` (a bookmark jump becomes the target's alias). Values are quoted when they hold anything but `[A-Za-z0-9._@+:/~=,-]`, with `\` and `"` escaped; a value with a control character or U+2028/2029 is never written (reported `unsafeValue`), so a hand-edited store cannot inject directives. Group, tags, start dir, colour, limits, `startupCommand`, `notes` and a set `confirmConnect` are reported `notRepresentable`.
+- **Import (hostile input):** read with `read_local(path, FileKind::ImportSource)` (`OsChosen` rules: regular file only, no trust row, **5 MiB** cap; larger → `importInvalidFile{tooLarge}`). `parse_import`: parse errors/nesting beyond serde_json's recursion limit → `notJson`; `format != "shellfin-bookmarks"` → `unknownFormat`; a version other than 1 → `unsupportedVersion`; wrong top-level shape → `badStructure`; > 5000 bookmarks or > 500 groups → `tooMany`. Every group/bookmark field is validated with the `bookmark_save`/`group_save` rules (name, host via `valid_hostname`, port, `valid_user`, key path, `proxyJump`, tags, `startDir`, limits, `groupId` must name a valid group of the file); unknown fields are dropped; an unknown `color` becomes none; `confirmConnect` (boolean) and `notes` (bookmark rules) are imported. **`startupCommand` is never imported** (a shared file must not plant a command that runs in the user's shell): the entry is imported without it, a replaced bookmark keeps its own command unless the file changes its host, port, user, `useSshConfig` or `proxyJump` (then the command is dropped too, so it is never typed into a server it was not written for), and `BookmarksImportResult.startupCommandsStripped` lists the final names of the affected imported bookmarks (both cases). A bad entry is rejected on its own and reported as `{entry, index, field, code}`; duplicate ids in the file keep the first.
+- **Apply (`BookmarkStore::import`):** ids are regenerated; groups map by name (case-insensitive), missing ones are created; jumps between imported bookmarks are remapped, a dangling jump or a cycle rejects that bookmark (iterated until stable, each survivor re-validated against the final set). Passwords are never imported (`password` auth lands as "not saved"). A conflict is a bookmark with the same name (names are unique store-wide); `skip` keeps it (a jump to the file's copy maps to the existing one), `replace` overwrites it in place keeping id and `createdAtMs` (importing resolves jump references in one pass, and the dependents of a rejected entry are rejected through a reverse graph as `unresolvedReference`; a replace cannot lengthen a jump chain past the cap of 8) (a saved password is kept or forgotten by the same rule as `bookmark_save`; forgotten ones also lose their keychain entry), `duplicate` adds `name (2)`, `(3)`, … Everything is one `commit` (atomic write); nothing is written when nothing changed; a read-only (newer-version) store refuses with `storageReadOnly` before the dialog opens.
+
+---
+
+## 8. Frontend architecture
+
+### 8.1 Folder layout (`src/`)
+
+```
+main.tsx                 fonts, i18n init, bootstrap, <App/>
+bootstrap.ts             ordered startup: initBackend() → listeners (quit, recents, ssh-config, window, menu) → app_frontend_ready;
+                         a failure shows a localized retry screen
+App.tsx                  <Shell/> + dialogs + toasts; global shortcut handling
+styles/                  tokens.css, global.css, xtermTheme.ts, cmTheme.ts
+i18n/                    index.ts, locales/{en,uk}/translation.json, resources.d.ts (typed keys), format.ts (Intl), pseudo.ts (en-XA),
+                         errorMessage.ts (errors.<code>), translate.ts (t outside React)
+ipc/                     bindings/ (ts-rs, GENERATED — never edit), types.ts (re-export), backend.ts (Backend interface),
+                         tauriBackend.ts, call.ts, index.ts (initBackend/getBackend),
+                         mock/ (mockBackend.ts, scenarios.ts, fakeFs.ts, fakeShell.ts, termFlow.ts, fixtures.ts)
+state/                   store.ts + slices/ (app, settings, hosts, sessions, workspaces, buffers, terminals, prompts, transfers, ui) —
+                         plain objects/arrays only; layoutPrefs.ts (layout in localStorage)
+features/                shell/ welcome/ hosts/ files/ editor/ terminal/ session/ transfers/ palette/ keys/ settings/ menu/ actions/
+components/              Dialog, Field (+SecretInput), Button, IconButton, StatePanel, StatusDot, ColorMark, BrandMark, ServerText,
+                         Progress, Icon, InlineRename, BandwidthInput, ErrorBoundary
+lib/                     pure helpers and data: remotePath, localPath, serverText, paste, keybindings, accelerators, actionIds,
+                         dragdrop, permissions, hostSpec, bookmarkForm/settingsForm, shellquote, … (identifiers and protocol data
+                         only; user-visible text stays in features/components and goes through i18n)
+```
+
+Tests sit next to the code (`*.test.ts(x)`); `vite-plugins/freezeSafe.ts` and `scripts/*.mjs` are build-time guards (§9.1, §11).
+
+**Bundle layout (lazy chunks).** The main chunk holds the shell, state and light helpers (about 550 kB, 166 kB gzip). CodeMirror is its own chunk: `editor/bufferStore.ts` is the light state store, `bufferRegistry.ts` (extensions) is loaded through `bufferLoader.ts` together with `CodeEditor`, which is `React.lazy` in `EditorArea`; `cmBridge.ts` lets menus use the registered view and commands without importing CodeMirror, and `languageExtension.ts` builds one `StreamLanguage` per parser (`lib/languages.ts` stays light, there is no `@codemirror/language-data`). The Settings, Keys, bookmark import/export, command palette (cmdk) and Help dialogs are lazy in `DialogHost`; each group sits in its own `LazyDialogBoundary`, so a chunk that fails to load (or a dialog that throws) reports the error and closes that dialog instead of replacing the window. `vite-plugins/woff2Only.ts` drops the woff fallbacks of `@fontsource` (woff2 only). `npm run test:freeze` exercises the lazy paths (drags a bookmark, opens the palette and every Settings section, switches to Ukrainian).
+
+### 8.2 Internationalisation (from day one)
+
+#### 8.2.1 Library
+**i18next 26.5.3 + react-i18next 17.1.0** — CLDR plurals via `Intl.PluralRules` (Ukrainian `one/few/many/other`), interpolation, typed keys, tooling (`i18next-cli 1.77.0`: `extract --ci --dry-run`, `lint`, `status`, `types`). A home-grown `t()` would re-implement plurals and tooling.
+
+#### 8.2.2 Rules
+- **No user-facing literals.** ESLint (`eslint-plugin-i18next` 6.1.5, rule `i18next/no-literal-string`, level `error`). In ESLint flat config a later block's options **replace** an earlier block's options for the same rule wholesale (and the plugin then shallow-merges them over its defaults), so both blocks spread one shared options object from `eslint.config.js`:
+  ```js
+  const i18nBase = {
+    "jsx-attributes": { exclude: ["className", "id", "type", "key", "href", "role", "data-*", "name", "htmlFor",
+      "autoComplete", "spellCheck", "lang", "dir", "inputMode", "orientation", "variant", "size", "icon", "testId"] },
+    callees: { exclude: ["t", "i18n.t", "logger.*", "console.*", "invoke", "call", "listen", "emit", "classNames", "cn", "Error"] },
+    words: { exclude: ["^[a-z0-9_.:/~-]+$", "^#[0-9a-fA-F]{3,8}$"] },   // no ^[A-Z_]+$ (would exempt "OK")
+  };
+  ```
+  - block 1 (listed **first**) — `src/**/*.tsx`: `["error", { ...i18nBase, mode: "jsx-only" }]`;
+  - block 2 (listed **after** block 1, so it wins for overlapping files) — `src/features/**/*.{ts,tsx}`, `src/components/**/*.{ts,tsx}`, `src/state/**/*.ts`, `src/lib/reportError.ts` (the notice/toast helper; there is no `toast.ts`; `lib/notices.ts` only holds notice kind identifiers): `["error", { ...i18nBase, mode: "all" }]` (catches `toast("…")`, `setError("…")`, `useState("…")` inside components, which `jsx-only` skips; the attribute excludes are repeated via `i18nBase`).
+  - `src/ipc/**`, `src/i18n/**`, tests and mocks are exempt.
+  Exempt by convention: the product name and technical data (`~/.ssh/config`, `known_hosts`, `ssh-agent`, `SHA256`, key types, hosts, paths) — passed as interpolation params or rendered in `<code>`.
+- Resources: `src/i18n/locales/en/translation.json` (default + **fallback**; one namespace `translation`), nested by feature; other locales (`uk`) are `locales/<lng>/translation.json`, lazy-imported JSON chunks (`import.meta.glob`, `ensureLanguage`/`setLanguage` in `i18n/index.ts`). `Settings.locale` (`system` or a BCP-47 tag) is resolved by `resolveLocale` (system = `navigator.languages`, fallback `en`); the picker shows endonyms (`LANGUAGE_ENDONYMS`, never translated). Plurals use the i18next suffixes (`_one`/`_other` in English, plus `_few`/`_many` in Ukrainian) and every plural key must be called with `count`; `src/i18n/parity.test.ts` checks key parity (plural-aware), tokens and `count` usage.
+- Init: `import en from "./locales/en/translation.json"; i18next.use(initReactI18next).init({ resources: { en: { translation: en } }, lng: resolveLocale(settings.locale), fallbackLng: "en", supportedLngs: ["en", "uk"], interpolation: { escapeValue: false }, returnNull: false })`. `escapeValue: false` is safe because React escapes text nodes; **server-controlled values MUST NOT be passed into `<Trans>`** (only into `t()` rendered as text).
+- Typed keys via `CustomTypeOptions` module augmentation.
+- **Backend output is never prose:** `errors.<code>` with params; enum params are translated through their own key families (`entity.<EntityKind>`, `ioOp.<IoOp>`, `timeoutOp.<TimeoutOp>`, `keyLoadReason.<…>`, `disconnectKind.<…>`, `authMethod.<…>`, `saveStrategy.<…>`, `hostKeyVerification.<…>`); `configWarnings.<code>`; `prompt.errors.<PromptLastError>`. Server text (banners, kbd-int labels, disconnect messages, SFTP messages in details) is shown verbatim through `displayServerText` (§9.5) and visually marked as server text.
+- Native dialog **titles and filter names**, and the external-link confirmation text, come from the frontend (`dialog_pick_identity_file(title, filterName)`, `transfer_*(dialogTitle)`, `app_open_external(url, confirmTitle, confirmBody)`).
+- Formatting only via `i18n/format.ts`: `formatBytes`, `formatRate`, `formatRelativeTime`, `formatDateTime`, `formatNumber`, `formatList` (all `Intl.*` with the current language). Never concatenate translated fragments into a sentence; independent facts may be shown as separate UI items (e.g. welcome card chips).
+- Terminal-inserted lines (exit/restart/reconnected/output-dropped) are translated and written with ANSI dim styling — never containing server text.
+- Dev pseudo-locale `en-XA` (accents + 30 % padding) toggle.
+
+#### 8.2.3 Native macOS menu labels
+The native macOS menu (needed for Cmd+C/V/Q in the WebView) is built in Rust from a fixed English data table (`app_menu.rs`, `MENUS`) and is relabelled at runtime: on macOS the frontend sends the translated labels with `menu_set_labels` at startup and on every language change (`features/shell/nativeMenuLabels.ts`). System-role items follow the OS language. The language is applied before the shell renders (`bootstrap` calls `setLanguage` before `setBootstrap`; `setLanguage` uses a request token, the latest call wins), so a Ukrainian user never sees an English first paint; the native-menu and notification text sync happen afterwards. The CodeMirror phrases and the editor's content `aria-label` live in a `localeCompartment` and follow `languageChanged` for every open buffer, on screen or not.
+
+#### 8.2.4 Tests
+`i18next.config.ts` (committed): `locales: ["en", "uk"]` (`i18n:check` also verifies the uk file), `extract.input: ["src/**/*.{ts,tsx}"]`, `extract.output: "src/i18n/locales/{{language}}/{{namespace}}.json"` (→ `locales/en/translation.json`; the `{{namespace}}` placeholder is required — without it i18next-cli switches to merged-namespace files whose top-level keys are namespaces and rewrites a flat `en.json` into `{"translation":{…}}` with key names as values, verified), `extract.defaultNS: "translation"`, and `extract.preservePatterns` for every dynamic key family — `errors.*`, `configWarnings.*`, `entity.*`, `ioOp.*`, `timeoutOp.*`, `keyLoadReason.*`, `disconnectKind.*`, `authMethod.*`, `saveStrategy.*`, `hostKeyVerification.*`, `prompt.errors.*` — because with the default `removeUnusedKeys: true` the dynamically-built keys look unused and `extract --ci --dry-run` would exit 1. `translation.json` is committed in the tool's own formatting (`npm run i18n:extract` regenerates it). `npm run i18n:check` (`i18next-cli extract --ci --dry-run`) fails CI exactly when a statically used key is missing or a non-preserved key is unused. A Vitest test asserts every `ErrorCode["code"]`, `ConfigWarning["code"]` and each enum value of the key families above has a key in `translation.json` (const arrays with `satisfies` + exhaustiveness type checks). The manual checklist includes an `en-XA` walk-through.
+
+#### 8.2.5 Copy and key naming
+
+`src/i18n/locales/en/translation.json` is the only source of UI text. Keys are nested by feature (`shell.*`, `hosts.*`, `connect.*`, `hostKey.*`, `prompt.*`, `reconnect.*`, `terminal.*`, `editor.*`, `files.*`, `transfers.*`, `settings.*`, …). A key cannot be both a string and a parent, so labels use suffixes (`connect.authLabel` next to `connect.authKey`). Dynamic families (`errors.<code>`, `action.<id>`, `menubar.<id>`, `fix.*`, enum families, `editor.cm.*`) are listed in `preservePatterns` of `i18next.config.ts`.
+
+### 8.3 State management (Zustand)
+
+One store of slices with immer middleware; **state holds only plain objects/arrays** (no `Map`/`Set`, so immer's MapSet plugin is unnecessary); non-React code uses `useStore.getState()`.
+
+| Slice | Holds |
+|---|---|
+| `app` | bootstrap info, platform, warnings, quit state |
+| `settings` | `Settings` |
+| `hosts` | `SshConfigSnapshot`, `BookmarksDto`, `recents` (updated by `recents:changed`), agent status |
+| `sessions` | `byId: Record<id, { target: RecentTarget, label, state, info?, banner? }>`, `sessionStats` (the 1 Hz `stats` events live there, so the tab strip and the bookmarks panel do not re-render every second), `order`, `activeId` — **never** a `Target` with a password; a draft password lives only in the dialog's local state until `session_open` |
+| `workspaces` | per session: `tree { root, expanded: Record<path, true>, listings: Record<path, {listing, fetchedAtMs, stale}>, selection }`, `editorTabs`, `activeBuffer`, `terminalTabs`, `activeTerminal`, `panelOpen` |
+| `buffers` | `BufferMeta` by id; the editor cursor lives outside it in `cursors` (`setCursor`), so typing does not replace the `buffers` map |
+| `terminals` | `{ termId, sessionId, title, cwd, status: "running"\|"exited"\|"closed", exitCode }` |
+| `prompts` | current prompt per session |
+| `transfers` | rows (incl. retryable failures) |
+| `ui` | activity view, `palette` and `dialog` (discriminated unions), notices (`level` info/success/warning/error; identical errors are de-duplicated, auto-dismiss after 8 s) |
+
+Rules: a typed password that is not stored in the keychain reaches the backend only inside the `session_open` draft request; the store keeps a `quick` (or `bookmark`) target. `connected` of a bookmark target refetches `bookmarks_get`. All user-initiated `void promise` sites go through `reportError`/`guard` (`lib/reportError.ts`). Listeners are registered before `app_frontend_ready`. Subscriptions select derived data with `useShallow` (FileTree, ReconnectOverlay, TerminalPanel), `SessionWorkbench` is keyed by the active session, `setListing` keeps the cached listing object when the new one is identical (`lib/sameListing.ts`; only the age is renewed after 15 s), and `removeSession` also clears every reference to the session (prompt, rename targets, drop target and the session-bound dialogs); per-buffer bookkeeping (`loadSeq`, `snoozed`, `newFileIds`) is cleaned through `onBufferDropped`, which also covers closing a whole session.
+
+### 8.4 Component tree
+
+```
+<App>
+ ├ <Shell>
+ │  ├ <TitleBar> BrandMark · <MenuBar> (in-app menu; macOS uses the native menu) · <ConnectionTabs> (state dots, colour marks,
+ │  │            rename, duplicate) · palette launcher · window buttons (Windows/Linux)
+ │  ├ <ActivityBar> Bookmarks · Files · Bookmarks and files (default) · Keys / Settings (open dialogs) · [Port forwarding: hidden]
+ │  ├ resizable panels (react-resizable-panels v4: Group / Panel / Separator)
+ │  │   ├ <Sidebar> = <BookmarksPanel> + <FilesToolbar> + <FileTree>
+ │  │   ├ editor area: <EditorArea> (tabs, breadcrumbs, <CodeEditor/>) | <WelcomeScreen/> | <ConnectingCard/> | <SessionErrorPanel/>
+ │  │   └ <TerminalPanel> (+ <ReconnectOverlay/>, <TerminalFindBar/>)
+ │  └ <StatusBar> panel toggles · host key chip · key type/source · SFTP · ↑↓ rates · transfers popover · Ln/Col · language · encoding · EOL
+ ├ dialogs (features/shell/DialogHost, session/PromptHost): BookmarkDialog, HostKeyDialog, SecretPrompt, KbdInteractiveDialog,
+ │   ConflictDialog, EncodingPicker, ReplaceDialog, PasteConfirmDialog, close/quit dialogs, KeysDialog, SettingsDialog,
+ │   MoveBookmarkDialog, help dialogs
+ ├ <CommandPalette/> (cmdk; plain substring matching; prefixes `>` commands, `@` hosts, `/` go to path)
+ ├ <ContextMenu/> (features/menu: terminal, tabs, text fields, tree, bookmarks)
+ └ <Notices/> (toasts: info / success / warning / error; only errors use role="alert")
+```
+
+- The Home (welcome) tab is always the first connection tab. Without a session only the bookmarks view exists.
+- **Window chrome:** the window is frameless (`decorations: false` + native shadow on Windows/Linux; `titleBarStyle: Overlay` with traffic lights at (16, 15) on macOS). The window buttons and dragging are app commands (§4.2) so the capability needs no `core:window:*`; `data-tauri-drag-region` is therefore unsupported and the title bar calls `window_start_dragging` on `mousedown` (buttons, tabs, menu items and inputs are not handles; double click toggles maximize). Resizing needs nothing from the page (tauri-runtime-wry handles the undecorated hit-test). Minimum window size 960×600.
+- **Layout persistence** is local: `localStorage` key `shellfin.layout.v1` (view, sidebar open, status bar, sidebar width, Bookmarks/Files split, terminal panel height), every access in try/catch; resize writes are debounced 250 ms and flushed on `pagehide`. `settings.ui.*` sizes are only defaults for a fresh run.
+- **Resizable limits** (`features/shell/layoutLimits.ts`, pure functions): the sidebar is at least 200 px and at most 80% of the window width, but never so wide that the main area drops below 320 px (`sidebarMaxPx`); the bound follows the window (`resize` listener) and a stored width is clamped to the window it is restored into (`clampSidebarWidth`), so a shrinking window shrinks the sidebar. The stored `sidebarWidth` accepts 160–10000 px (same range as the backend's `ui.*` pixel sizes, which are finite 0–10000).
+- **Maximized terminal panel:** the editor `Panel` is `collapsible` to 0, so dragging the horizontal splitter to the top snaps the terminal panel to maximized (the editor is collapsed, still mounted: tabs and unsaved buffers are untouched). `Workspace.panelMaximized` (session-only, not persisted) is the single source of truth: an effect collapses/expands the editor panel from it, and the panel's `onResize` writes it back when the user drags. Toggle: the panel-header button (Maximize panel / Restore panel), the registry action `toggleMaximizePanel` (View menu, palette, macOS menu id `view.maximizePanel`; no shortcut, because the terminal passthrough list in §8.7 has no free key) and a double click on the splitter. Restore re-expands the editor to its previous size, so the terminal returns to its previous height; the terminal height saved to `shellfin.layout.v1` is never the maximized one. Hiding the panel, opening a file and focusing the editor all restore the editor.
+- **Action registry:** `lib/actionIds.ts` (ids, menu layout, shortcut labels) + `features/actions/registry.ts` (behaviour, enabled/checked state) are the single definition of every app action. The in-app menu bar, the macOS `menu:action` events (`features/shell/shellEvents.ts` maps the backend's menu ids to registry actions), global shortcuts (`App.tsx`), context menus and the command palette all use it. Labels are `action.<id>`, menu names `menubar.<id>`. The Edit menu acts on whatever had focus before the menu opened (terminal, CodeMirror, text field). Menu-bar keyboard access (F10, Alt tap, Alt+letter) works everywhere except inside the terminal.
+- **Connecting and failure UI:** `ConnectingCard` shows a stepper derived from `SessionState.phase` plus the pending prompt (an open `hostKeyUnknown` = "Verifying host key"); Esc cancels. `SessionErrorPanel` (shares `StatePanel`) shows `authFailed.tried/serverMethods`, a one-line fix per common code, and Close tab / Copy details / Edit connection… / Try again. The reconnect overlay sits over live content and shows both fingerprints for `hostKeyMismatchOnReconnect`. Disconnect keeps the tab and shows "Disconnected from <host>" with a Reconnect button.
+- **Prompts:** only the active session's prompt opens as a dialog; background prompts show a badge on the tab, probe prompts an "Answer" button in the Test-connection area. Prompt dialogs swallow the keyboard for 500 ms after opening (`inputGuardMs`) and drop IME compositions that started before they opened; the host-key dialog autofocuses Cancel (Enter rejects) and secret fields have a show/hide toggle. Global shortcuts are inert while any modal is open; `openDialog`/`openPalette` never replace or cover the quit dialog.
+- **Test connection** is a hidden probe session (`probeOnly`, not in `sessionOrder`, no workspace).
+
+### 8.5 Theming tokens (`styles/tokens.css`)
+
+```css
+:root {
+  --bg: #14161B;          --panel: #171A20;        --chrome: #0F1115;       --backdrop: #0B0C0F;
+  --border: #262A33;      --border-input: #2B303A; --border-subtle: #1F232B;
+  --text: #D7DCE4;        --text-bright: #F2F4F8;  --text-muted: #9AA2B1;   --text-secondary: #A9B0BD;
+  --text-dim: #6B7385;    --text-gutter: #7A8191;
+  --accent: #4FD1C5;      --accent-fg: #0F1115;    --accent-ring: rgba(79, 209, 197, .15);
+  --hover: #1E222A;       --selected: #222731;     --tab-active: #1B1E25;   --seg-active: #262B35;
+  --ok: #4ADE80;          --warn: #E5C07B;         --danger: #F87171;       --link: #8AB4F8;
+  --warn-bg: #2E2717;     --danger-bg: #3A1F22;    --danger-border: #3A2A2E; --accent-bg: #16302E;
+  --syn-keyword: #8AB4F8; --syn-string: #C3E88D;   --syn-number: #F7A072;   --syn-comment: #7D8597; --syn-purple: #C792EA;
+  --font-ui: "Inter", system-ui, sans-serif;  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --fs-ui: 13px; --fs-mono: 12.5px; --fs-small: 11.5px; --radius: 8px; --radius-sm: 6px;
+  --h-titlebar: 44px; --w-activity: 52px; --h-tabs: 38px; --h-status: 26px; --h-row: 28px;
+  /* + --bm-red/orange/yellow/green/teal/blue/purple/gray (bookmark colours), --border-strong, --link-hover, --code-fg,
+     --selection-bg, --selection-outline, --focus-ring — see the file for the full list */
+}
+```
+**Highlight rule ("neutral layers"):** a bookmark row is tinted with its colour via `color-mix()` (`--row-tint`, 10 %); hover, selected-blurred and selected-focused are white overlays (`--layer-hover`, `--layer-sel-blur`, `--layer-sel-focus`; selected uses the focused layer by `.bookmarks-panel__list:focus-within`); the connected row only gets a brighter, weight-500 name (the status dot is filled vs hollow); keyboard focus is a 2 px inset accent outline (rows, group headers) or a 2 px outline with 2 px offset (activity buttons); the active activity-bar item is a filled neutral tile (`--act-active`, hover `--act-hover`). The colour swatch and its accessible name always stay. `color-mix()` needs WebView2 111+, WKWebView 16.2+, WebKitGTK 2.40+. Only the bookmark list and the activity bar follow this rule.
+
+Fonts imported from `@fontsource/*` in `main.tsx` (Vite bundles woff2). `index.html` contains **no `<style>` and no inline `<script>`** (CI check, §9.1); the pre-paint background comes from `global.css`. Before the first xterm: `await document.fonts.load('13px "JetBrains Mono"')`.
+
+**Themes.** `tokens.css` holds the dark set on `:root` (unchanged) and the light set "Neutral" on `:root[data-theme="light"]`; every theme-dependent colour (state layers, scrims, shadows, folder icon, status ring, active line, bell flash, diff tint) is a token, component CSS uses only `var(--…)`. `features/settings/appearance.ts` (installed from `main.tsx`) mirrors `settings.appearance` and `terminal.background` onto `<html>`: `data-theme` (the *resolved* theme; `system` follows `prefers-color-scheme` live), `data-accent` (`teal` default; six accents, each with a dark and a light value in `tokens.css` and `lib/theme.ts#ACCENT_VALUES`, light ones >= 4.5:1 on white, panel and chrome, white text on them >= 4.5:1; the brand mark stays teal), `data-motion="reduce"` (`reduceMotion` on, or `system` + `prefers-reduced-motion`; transitions and animations off, spinners slow down), and the inline custom properties `--ui-scale` (`uiFontSize / 13`; every UI `font-size` is `calc(Npx * var(--ui-scale))`, terminal and editor sizes are not scaled) and `--term-bg`. Setting properties through CSSOM needs no CSP change. Pre-paint: `index.html` may not carry a script, so the last applied appearance is cached in `localStorage` (`shellfin.appearance`) and applied synchronously at the start of `main.tsx` (the very first run, or a cleared cache, paints dark first). The settings dialog previews unsaved appearance live (`useAppearancePreview`) and restores the saved one on close.
+
+**Terminal colours.** `features/terminal/terminalTheme.ts` builds the xterm `ITheme`: `terminal.background = null` follows the app theme (dark: the existing colours, cursor = dark accent; light: the light palette); a `#RRGGBB` value is the background, and foreground, cursor, selection and the 16 ANSI colours come from the dark or light palette by the background's WCAG relative luminance (> 0.4 = light palette). The terminal registry re-themes all terminals when the appearance is applied (theme, accent, system change, background). The terminal panel uses `--term-bg` as its background, and while a custom background is set `html[data-term-tone]` re-skins `.terminal-panel` with the matching token set so its tabs and find bar stay readable. Contrast of the light tokens, the accents and the light terminal palette is a unit test (`styles/contrast.test.ts`, `terminalTheme.test.ts`).
+
+**Contrast rules (binding for new CSS).**
+- Light values that failed the WCAG tests were darkened and stay as tested: `--ok` #14753A, `--syn-comment` #656C78, `--text-dim` and the hollow status ring #848B96 (3:1 icon grade), `--bm-yellow` #BF8003; light accents are teal #0B7A70, blue #1F5FBF, purple #7E3FB5, orange #A94A0B, green #13763A, pink #BE185D (dark pink #F29BC4), each ≥ 4.5:1 on white, panel and chrome and carrying white text at ≥ 4.5:1; the teal tint is #E6F4F2.
+- `--text-dim` is for icons and decoration only, never for text (use `--text-muted`). A focus ring is never the translucent `--accent-ring` alone (use the solid `--accent`); the contrast test scans all CSS for focus rules that rely on `--accent-ring` only.
+- Every UI `font-size` is `calc(Npx * var(--ui-scale, 1))`, including the file row meta, the find toggle and the CodeMirror search panel; icon and row sizes do not scale.
+- The editor theme is `dark: true`, so `styles/cmTheme.ts` overrides CodeMirror's dark defaults with tokens for `.cm-button`, `.cm-textfield`, `.cm-dialog`, `.cm-specialChar` and `.cm-tooltip`; otherwise they leak into the light theme.
+- With a custom terminal background `.terminal-panel` gets accent tokens per tone and accent (the contrast test covers all 12 combinations), and the xterm canvas follows the unsaved appearance preview (`previewAppearance` / `endAppearancePreview` keep a preview state; `shownAppearance()` feeds `currentTerminalTheme` and the search decorations; a settings or OS-theme change during a preview re-applies it).
+- Reduce motion keeps spinners turning (slowly) instead of freezing them. The native window background in `tauri.conf.json` is static.
+- Known limits, accepted: the terminal palette switches at luminance 0.4, so mid-grey custom backgrounds (0.18-0.4) get the dark palette at 2.0-2.5:1; syntax colours on the light editor selection reach 3.65-4.1:1.
+
+### 8.6 Terminals
+
+- `terminalRegistry: Map<TermId, { term, host: HTMLDivElement, fit, search, webgl?, channel }>` (a module-level `Map`, not in Zustand).
+- Create: `new Terminal({ fontFamily, fontSize, scrollback, allowProposedApi: true, theme, linkHandler: { activate: openLink, allowNonHttpProtocols: false } })` — **`windowOptions` left at default (all reporting off)**; Unicode11, Fit, Search addons; a custom link provider for plain-text URLs uses the same `openLink`. `openLink(event, uri)` only on Ctrl/Cmd+click → `backend.openExternal(uri, t("link.confirmTitle"), t("link.confirmBody"))` (backend native confirm shows the real URI; http/https only). `@xterm/addon-clipboard` (OSC 52) MUST NOT be loaded.
+- Mount/unmount: append `host` to the container, attach WebGL (`onContextLoss` → dispose → DOM renderer), fit, resize; on unmount dispose WebGL and park `host` in a hidden element; parked terminals keep receiving writes.
+- Ack every ≥ 256 KiB from `write` callbacks; on `outputDropped` write `"\x18\x1b[0m"` and then the localized dim line (§4.5).
+- **Paste (`lib/paste.ts`)**: xterm.js registers its own `paste` listeners on its textarea and element and pastes `clipboardData` unsanitized (`CoreBrowserTerminal.ts`, `Clipboard.ts`). We therefore register a **capture-phase** `paste` listener on the terminal `host` element (`host.addEventListener("paste", onPaste, { capture: true })`) that calls `preventDefault()` + `stopImmediatePropagation()`, reads `clipboardData.getData("text/plain")`, strips every C0 control except TAB/LF/CR, DEL and all C1 controls (prevents `ESC[201~` bracketed-paste breakout), and calls `term.paste(clean)` — the single paste path for Ctrl+Shift+V, Cmd+V, Shift+Insert, the context menu (which reads `navigator.clipboard.readText()` and goes through the same sanitiser) and Linux middle-click of *external* primary selections (delivered as paste events). If `term.modes.bracketedPasteMode` is false and the text contains a newline, a store-driven confirm dialog (first 5 lines, escaped) is shown first. A paste while the shell is gone (exited/closed) is swallowed. xterm's internal middle-click paste of its *own* selection is not routed through the listener; it can only contain rendered cell text (the buffer stores no control characters). Vitest/jsdom test: dispatch a `paste` event carrying `ESC[201~` on xterm's textarea and assert one sanitized paste.
+- Keyboard: `attachCustomKeyEventHandler` passes app shortcuts through (§8.7); everything else goes to the remote (incl. Ctrl+C/S/W/K). Copy: Ctrl+Shift+C (Cmd+C) / copy-on-select (on mouse-up, not on every selection change); Paste: Ctrl+Shift+V / Shift+Insert (Cmd+V) are left to the browser so the native `paste` event reaches the single sanitising listener.
+- Links: own link provider (no `@xterm/addon-web-links`) for plain `http(s)://` text per buffer row (a URL wrapped over two rows is not joined — accepted limitation); URLs with credentials or over 2048 chars are never offered; only Ctrl/Cmd+click opens, always through `app_open_external`.
+- Exit/restart: Enter restarts after `exit` and after `closed`; while exited/closed all other input is dropped locally; status flips to `running` after `term_restart` resolves (only if no `exit`/`closed` arrived during the call). `closed{error}` writes `[Terminal closed: <localized error, controls escaped>]`; `exit{code:null, signal}` shows the signal via `displayServerText`.
+- Tabs: rename (double-click/F2, local, stored in `TerminalMeta.name`), middle-click close, arrow navigation; the "N ·" prefix only with two or more terminals per session; titles come from the OSC title (server text, via `displayServerText`), then the folder the terminal was opened in. Find bar (case/regex toggles, Enter/Shift+Enter, Esc). "Save output…" (`terminal/saveOutput.ts`) saves scrollback + screen as plain text through `app_save_text_file`. Font family/size, line height, scrollback, cursor blink and cursor style of existing terminals follow `settings_update`. Bell (`terminal.bell`): `visual` makes `term.onBell` add `terminal-host--bell` to the host for 150 ms (CSS flash); `sound` plays a short Web Audio beep (`lib/beep.ts`, no asset and no network, rate-limited, silent where Web Audio is missing); `off` does nothing. Other terminal settings are described in §8.11. `terminal.rightClick = "paste"`: the document `contextmenu` guard (`App.tsx`) calls `rightClickPastes`, which pastes through the same sanitiser as every paste and shows no menu.
+- **Input order:** `sendInput` pushes input in 64 KiB chunks onto a per-terminal queue and issues the next `term_write` only after the previous one settled (a failed write is swallowed and the queue goes on; `disposeTerminal` drops the queue), so large pastes arrive in order. The chunks are `Uint8Array`s handed to `termWrite` as they are (raw request body, §4.5).
+- **OSC titles** are coalesced per animation frame (`terminal/titleCoalescer.ts`): a flood of title sequences patches the store once, with the last title.
+- **Screen reader mode** (`terminal.screenReaderMode`, default off, Settings > Terminal > Behavior): applied live to xterm for every open terminal; the xterm container has `role="group"`.
+- **Linux paste fallback:** for Ctrl+Shift+V / Shift+Insert on Linux (WebKitGTK), if no native `paste` event arrives within 120 ms the terminal reads the clipboard itself (`pasteClipboardInto`, through `navigator.clipboard.readText()` and the same sanitiser), so a paste happens exactly once. The non-passive `wheel` listener is installed only where the platform is not Windows (WebView2 has zoom control off).
+- A channel message for a terminal whose registry entry is no longer the registered one is ignored (stale channel after dispose or restart).
+- Banners and error texts are never written into xterm.
+
+### 8.7 Keyboard shortcuts (`Mod` = Ctrl on Windows/Linux, Cmd on macOS)
+
+| Shortcut | Action | Active when |
+|---|---|---|
+| `Mod+K` | Command palette | outside the terminal (on macOS also inside: Cmd+K does not reach the shell) |
+| `Ctrl+Shift+K` | Command palette | inside the terminal (Windows/Linux); plain Ctrl+K goes to the shell (readline kill-line) |
+| `Mod+N` | New connection | not in terminal |
+| `Mod+,` | Settings | not in terminal |
+| `Mod+S` / `Mod+Alt+S` | Save / Save all | not in terminal |
+| `Mod+W` | Close editor tab (confirm if dirty) | not in terminal |
+| `Ctrl+Tab` / `Ctrl+Shift+Tab` | Next/prev editor tab | not in terminal |
+| `Mod+F` | Find in the editor | editor |
+| `Cmd+F` (macOS) / `Ctrl+Shift+F` (Windows/Linux) | Find in the terminal | terminal (plain Ctrl+F is readline forward-char) |
+| `` Ctrl+` `` / `` Ctrl+Shift+` `` | Focus (or toggle) terminal panel / New terminal | always. `` Ctrl+` `` focuses an open but unfocused terminal and hides the panel only when the terminal already has focus |
+| `Mod+B` | Toggle sidebar | not in terminal |
+| `Mod+1…9` | Switch connection tab | always |
+| `Mod+=` / `Mod+-` / `Mod+0` | Font size (terminal + editor; the focused one alone) | not in terminal on Windows/Linux |
+| `F11`, `F6` / `Shift+F6`, `Mod+Shift+E` / `Y` / `J` | Full screen; cycle sidebar/editor/terminal; focus tree/editor/terminal | not in terminal (macOS Cmd chords still match there; F6/F11 do not) |
+| `F10`, Alt tap, `Alt+letter` | Menu bar | everywhere except the terminal |
+| `Ctrl+Shift+C` / `Ctrl+Shift+V` / `Shift+Insert`; `Cmd+C` / `Cmd+V` | Terminal copy / paste | terminal |
+| `F2` / `Delete` / `Enter` / `Shift+F10` | Rename / delete / open / context menu | tree |
+| `Alt+Up` / `Alt+Down` | Move bookmark or group | bookmarks list |
+
+Rules:
+- **Layout-independent matching** (`lib/keybindings.ts` `normKey`): a Latin letter or digit in `event.key` wins (keeps AZERTY/Dvorak semantics); any other key (a Cyrillic letter, say) falls back to the physical `event.code`. With AltGr held (Ctrl+Alt on Windows) the key is a typed character and is never mapped to the physical key, so typing never triggers a command (e.g. Polish AltGr+S). `Mod+Alt+S` matches `key === "s"` on Windows/Linux; on macOS Option changes `key`, so the physical `KeyS` decides. Punctuation shortcuts (`,` `.` `-` `=` `/` and the backquote) fall back to the physical `Comma`/`Period`/`Minus`/`Equal`/`Slash`/`Backquote` code when `key` is not printable ASCII (AltGr still excluded). Menu mnemonics also accept the physical key of the first letter of the English menu name (Alt+F, E, V, C, T, H) when the translated first letter does not match.
+- **Terminal passthrough:** in a focused terminal on Windows/Linux the shell owns every key (readline, mc, htop use F6, F10, Ctrl+_, Alt+letter, …) except the entries marked "always"/"terminal" above. The menu bar and the palette offer the same actions, and the first time a swallowed global shortcut is typed a one-time toast says so (`shellfin.flag.shortcutSwallowed`).
+- **Reserved browser accelerators** are cancelled in the bubble phase and only if nobody called `preventDefault` (`lib/accelerators.ts`: F3/F5/F7, Mod+R/P/U/S/F/G/O/H/J/D, Mod+=/+/-/0, Alt+Left/Right/Home outside macOS, Ctrl+wheel); xterm and CodeMirror handle their own keys first. F12 / Ctrl+Shift+I are left to the WebView (debug builds only, §9.1).
+- The `Tab` key is never trapped by the editor (accessibility). Dragging uses pointer events, not HTML5 DnD (§6.6).
+
+### 8.8 Backend abstraction & mock
+
+`interface Backend` (`ipc/backend.ts`) mirrors every command plus `openSession(req, onEvent)`, `openTerminal(sessionId, size, cwd, onMessage)` and `listen(event, cb)`. `ipc/index.ts` exposes `initBackend()` (awaited once before render; `getBackend()` throws if unset):
+- inside Tauri → `TauriBackend`; in a plain browser dev server (`npm run dev`) → `MockBackend`; `VITE_BACKEND=tauri` forces Tauri;
+- **smoke builds** (`vite build --mode smoke`, `.env.smoke` sets `VITE_BACKEND=mock`) select the mock even inside Tauri, so the real shell can be exercised without a backend (`docs/SMOKE-RUN.md`);
+- **release builds never contain the mock**: `vite build` in production mode throws if `VITE_BACKEND=mock` is set; the mock sits behind a build-time constant plus a dynamic import; `npm run build` ends with `scripts/assert-no-mock.mjs dist` (marker `__shellfin_mock_backend__`, `MOCK_BACKEND_MARKER` in `mockBackend.ts`) and CI greps the embedded `dist/` of every release build.
+
+Mock scenarios (`?scenario=<name>`, default `happy`; list in `ipc/mock/scenarios.ts`): `hostKeyUnknown`, `hostKeyChanged`, `hostKeyChangedNoHint`, `hostKeyCaManaged`, `passphraseRetry`, `passwordRetry`, `kbdInteractive2fa`, `dropAfter10s`, `autoReconnect`, `reconnectHostKeyMismatch`, `saveConflict`, `binaryFile`, `nonUtf8File`, `largeFile`, `sftpUnavailable`, `uploadConflict`, `terminalFlood`, `agentUntrusted`. Accepted test secrets are the documented constants `MOCK_SECRETS`. The mock models the backend contract, not just happy paths: `FakeFs` (etags/`remoteChanged`, encodings, binary/oversized files, truncated listings, subtree renames), `FakeShell` (a small readline with `stty size`, `exit`, `flood`), `termFlow.ts` (the §4.5 pipeline: 4 MiB unacked window, 8 MiB backlog, `outputDropped`), timed transfer events, the single re-dial after `promptClosed{connectionLost}`, `needsReconnect`. When the real backend contract changes, update the mock and its tests in the same change.
+
+**Freeze gate:** Tauri runs `Object.freeze(Object.prototype)` before any page script (`freezePrototype: true`); jsdom unit tests do not, which once hid a startup crash in xterm.js. `vite-plugins/freezeSafe.ts` rewrites xterm's `x.toString = y` assignments (1 site in `@xterm/xterm`, 1 in `@xterm/addon-webgl`) to `Object.defineProperty` and fails the build if the match count changes after an xterm upgrade; xterm and the webgl addon are excluded from `optimizeDeps` so dev goes through the same transform; xterm is loaded lazily (`terminalLoader.ts`) behind an `ErrorBoundary`. `npm run test:freeze` builds the smoke bundle and drives it in jsdom with a frozen prototype (connect, terminal, paste, find, edit and save a file, tree context menu, transfers popover); it fails on any exception. The jsdom gate is not WebView2: the real-window smoke run in `docs/SMOKE-RUN.md` remains the authority.
+
+### 8.9 Quit flow
+
+Rust: `WindowEvent::CloseRequested { api }` → `api.prevent_close()`; `RunEvent::ExitRequested { code: None, api }` (Cmd+Q, menu Quit, OS) → `api.prevent_exit()`. `QuitState` machine (in `AppState`):
+
+| State | Close/quit request | `app_quit_ack` | `app_quit_cancel` | `app_quit(lastDirs)` | Timer |
+|---|---|---|---|---|---|
+| `idle` | → `requested`, emit `app:quit-requested`, start 3 s timer | – | – | → `quitting` | – |
+| `requested` | ignore (timer still running) | → `confirming` | → `idle` | → `quitting` | 3 s without ack ⇒ → `unresponsive` (nothing else happens) |
+| `unresponsive` | **forced quit** (`quitting` with empty `lastDirs`) — only because the user repeated the request after the frontend failed to answer for ≥ 3 s | → `confirming` (late ack: the busy WebView recovered) | → `idle` | → `quitting` | – |
+| `confirming` | re-emit `app:quit-requested` (frontend refocuses its dialog) | – | → `idle` | → `quitting` | none (the user is deciding) |
+| `quitting` | ignore | – | – | – | – |
+
+There is **no timer-driven forced quit**: a merely busy WebView (large paste, opening a big buffer, App Nap) only delays the confirmation dialog; dirty buffers can be lost only after the user explicitly repeats close/quit while the frontend has been unresponsive for ≥ 3 s. (A native "not responding" dialog was rejected: it would put backend-authored prose on screen, §8.2.2.)
+
+Frontend on `app:quit-requested`: immediately `app_quit_ack()`; if dirty buffers exist, or `general.confirmQuit` asks (`always`; `withConnections` (default) with a connected or reconnecting session; `never` does not), show `<QuitConfirmDialog>` (Save all / Discard / Cancel; without unsaved changes: Quit / Cancel, naming running shells or open connections; `confirmCloseWithTerminals` no longer influences quitting, only closing tabs and connections), Cancel → `app_quit_cancel()`; on proceed (or no dirty buffers) → `app_quit({ [sessionId]: workspaces[sessionId].tree.root ?? null, … })`. `quitting`: first remove the agent keys of every session (`SessionManager::remove_all_agent_keys`, concurrently, its own 1 s budget `AGENT_KEYS_BUDGET`, so a stalled terminal or transfer cannot delay the removal), then close every session with its `lastDir` (recents updated; DISCONNECT; 500 ms total budget via `tokio::time::timeout`; transfers are only signalled to stop, not awaited), flush logs, `app.exit(0)` → `ExitRequested{code: Some(0)}` is **not** prevented. No frontend `onCloseRequested`, so no `core:window:*` permissions are needed.
+
+Updates (§9.8): "Update and restart" never bypasses this flow. `update_install` stages the verified update and then calls the same entry point as the close button (`app:quit-requested`), so unsaved changes and `general.confirmQuit` are asked about as usual. At the end of `quitting` (sessions closed, logs flushed) a staged update is installed instead of `app.exit(0)`: success restarts the app (Windows: the NSIS installer restarts it); failure emits `update:install-failed`, moves `quitting` → `idle` and keeps the app open. `app_quit_cancel` drops the staged update.
+
+### 8.10 Settings dialog and bookmark import/export
+
+- **Settings dialog:** fixed 860×600 (viewport-capped), the section list never moves, only the content pane scrolls. Sections: General (language, confirm before quitting, startup, notifications, updates), Appearance (theme, accent, UI text size, reduce motion; §8.5), Files, Terminal (incl. the background), Editor, Transfers, Connection, Advanced (log level, Clear recent connections with confirm, Open logs folder, Reset all settings…). The nav label of Appearance is `settings.appearance.title`, because `settings.appearance` is a parent key; the terminal background uses flat sibling keys `settings.terminalBackground*` because `settings.terminal` is already a string. Appearance changes (theme, accent, size, motion, terminal background) preview live and are undone on Cancel (`useAppearancePreview`); Save persists them. Terminal and Editor each have a neutral-sample live preview and the same font picker (`lib/fontFamily.ts` validation).
+- **Editor settings** (`bufferRegistry` compartments): line numbers, active-line highlight, tab/space indent unit, plus font family/size as CSS variables on `.code-editor` (every open editor follows live). **Save-time transforms** (`lib/saveTransforms.ts`, `doSave`): trailing-whitespace trim and final newline are applied to the buffer as one undoable CodeMirror transaction right before the write (same expected etag, `markSaved` of the transformed document), so the editor shows what was saved and undo makes the buffer dirty again.
+- **Files:** `foldersFirst` is a sort option of `flattenTree`; `confirmDelete = false` makes `requestDelete` delete without the dialog.
+- **Transfers:** `onConflict` is decided by the backend; the frontend only shows the Replace dialog for `ask` (the sole policy that reports `remoteExists`) and renders the terminal event `skipped` as a finished, non-retryable "skipped" row.
+- **Closing with running shells** (`general.confirmCloseWithTerminals`): `requestCloseTerminalTabs`, `requestCloseSession` and the quit flow ask first; unsaved-editor-changes dialogs keep priority.
+- **Bookmark import/export:** actions `importBookmarks` / `exportBookmarks` (File menu, Bookmarks panel header menu, palette) open an options dialog (conflict strategy skip/replace/duplicate; format JSON/OpenSSH config, with the "passwords are never exported" note) and only then call `bookmarks_import` / `bookmarks_export`, which open the native dialogs. A cancelled dialog (`picked`/`saved` false) shows nothing; otherwise a summary dialog lists added/replaced/skipped and each rejected entry (`ImportInvalid`) or the export's skipped fields. `BookmarksImportResult.bookmarks` goes straight into the store.
+
+### 8.11 Settings: terminal, editor, files, connection options
+
+- **Form:** `lib/settingsForm.ts` holds the dialog's one flat form model (`SettingsFormState`, built by `formFromSettings`), its validation (`invalidFields`, contract paths such as `terminal.letterSpacing`) and the conversion back to `Settings`; `features/settings/` has one module per section (`General`, `Files`, `Terminal`, `Editor`, `Transfers`, `Connection`, `Advanced`, `Appearance`) plus the shared fields in `settingsFields.tsx`. Every edit uses a functional updater, so two quick edits both land and edits survive a switch to another section and back. Ranges that changed live in `SETTINGS_RANGES`. Appearance and the terminal background are owned by `appearance.ts` / the appearance section (§8.5).
+- **Terminal** (`terminalRegistry.applySettings`, all live): `letterSpacing`, `minimumContrastRatio`, `wordSeparators` (`wordSeparator`), `scrollSensitivity`, `altIsMeta` (`macOptionIsMeta`, macOS only). `mouseReporting = false` registers a CSI handler for `CSI ? Pm h` that swallows the DEC mouse modes (9, 1000-1003, 1005, 1006, 1015, 1016; `lib/mouseModes.ts`); a sequence that mixes them with other modes (e.g. `1049`) is applied by xterm in order and the mouse modes are reset right after it (`resetModesSequence`), so the other modes are never reordered against the following output; it lets `l` through, and resets the modes a program already set when the switch is turned off live; the mouse then always selects. `hideMousePointerWhileTyping` adds `terminal-host--typing` on a key press and removes it on mouse move. `multilinePasteWarning = false` skips the paste confirmation (`PasteTarget.warnMultiline`; sanitising stays). `onExit`: on a shell `exit` event `closeOnSuccess` (code 0) or `close` removes the tab right away. `newTerminalCwd = currentFolder` sends the file tree's root folder with `cwdFallback: true` (`terminalActions.newTerminalStart`); "Open terminal here" stays strict (`cwdFallback: false`). `openTerminalOnConnect = false` skips the first terminal in `onConnected`. `termType` is applied by the backend at `term_open`.
+- **Startup command** (`session/startupCommand.ts`): armed in `doOpenSession` from the bookmark (or draft), consumed by the first `openTerminalTab` of that session after `term_open` resolved (`term_write` of the text plus `\r`); dropped when the session is closed. Not stored in Zustand beyond the bookmark itself, never logged.
+- **Confirm before connecting:** `requestOpenSession` (double click, menus, palette, recents, quick connect, duplicate, startup restore) asks through a store dialog (`connectConfirm.ts`) when the bookmark has `confirmConnect`; activating an already open connection, "Reconnect to apply changes", automatic reconnect and the bookmark dialog's own Save & connect do not ask.
+- **Startup restore:** `bootstrap` hands `AppBootstrap.restoreBookmarkIds` to `restoreBookmarkSessions` once per app start (sequential, so confirmations queue); not awaited, credential prompts wait for the user.
+- **Notifications:** Rust shows them; the frontend only sends localized texts (`notifications_set_texts`) after `app_frontend_ready` and on each language change. `{{name}}` / `{{count}}` are the backend's placeholders and are passed through untouched.
+- **Editor** (`bufferRegistry` compartments, all live, also for buffers that are not on screen): bracket matching, auto-close brackets (`@codemirror/autocomplete`, promoted from a transitive to a direct dependency), whitespace marks, fold gutter and keys, and indentation detection (`lib/detectIndent.ts` over the first 200 000 characters; tabs vs spaces and width when unambiguous, else the settings). `newFileEol = crlf` sets the buffer's EOL for a file created by "New file…" (`markNewFile`), without marking it unsaved.
+- **Files:** `doubleClick = download` makes a click only select a file and a double-click start the download (folders and keys are unchanged). The tree shows no size or date column: size and modification time are in the row tooltip, formatted by `formatBytes` (`sizeUnits`: KiB/MiB in steps of 1024 or KB/MB in steps of 1000) and `formatFileDate` (`dateFormat`); `showPermissions` adds an `rwx owner group` span to each row (`lib/entryDetails.ts`, numeric ids when the names are null, rendered through `displayServerText`). `files.autoRefresh` (`features/files/autoRefresh.ts`): one timer for the whole app, a pass per connected session over the root and the expanded folders, never overlapping, skipped while the window is hidden, while a name input is open and for sessions that are not connected; errors are silent.
+- **Connections:** `readSshConfig = false` hides the ssh-config group (the backend also sends an empty snapshot). `rememberPasswords = false` hides the "save in keychain" option in the bookmark dialog; `submitBookmarkForm` never calls `bookmark_set_password(id, <password>)` then, and treats `secretStorageDisabled` as "do not store" (the typed password still goes into the connection request). `defaultUser` prefills quick connect (targets without `@`) and new bookmarks.
+- **Bookmark dialog and import:** `confirmConnect`, `startupCommand` (one line, <= 1024 characters, no control characters) and `notes` (<= 4000 characters, plain text in a `<textarea>`) are validated in `lib/bookmarkForm.ts` as the backend does. The import summary lists `startupCommandsStripped` by `displayName` with the reason. Copying an ssh-config host into a bookmark never prefills `connection.defaultUser` (the config's `User` wins; `prefill.sshConfig` marker).
+- **Dialog queueing:** a "Confirm before connecting" question that is replaced by another dialog (quit, settings, edit) settles `false` (store subscription in `connectConfirm.ts`), so the startup restore never hangs on it. Background work never replaces a dialog: the restore asks with `requestOpenSession(…, { background: true })`, which waits until no dialog is open, and a conflict found by `runPendingSaves` (saved with `interactive: false`) opens at once only when no dialog is open, else when the open one closes (`openConflictWhenFree`). User-initiated connects are unchanged. `startupCommand` is sent again by "Reconnect to apply changes" (a new connection).
+- **Small rules from the audit:** `bootstrap` tracks each global listener (`allSettled`; Retry registers only the missing ones); `loadRoot` and `onConnected` do nothing for a session that was removed meanwhile; `zoomFonts` is serialised (the store changes at once, one `settings_update` in flight, an answer never sets a size below a newer key press, a failure rolls back to the last confirmed size only when no newer press exists); recent cards are keyed by `JSON.stringify(target)`; `Notices` keeps its live region mounted, pauses the dismiss timer on hover and focus-within, and errors stay 20 s (other toasts 8 s); the reconnect card is `role="group"` with only its title `role="alert"` (focus never moves, the countdown is not announced).
+
+### 8.12 Settings dialog widgets (short copy, (?) tips, terminal preview, Escape)
+
+- **One setting per row:** `components/Field.tsx` `Setting` is the settings row (label and optional tip left, control right; label linked by `htmlFor`, so the tip button never becomes part of the control's name); `Checkbox` with `info` uses the same pattern with the box on the right; compound controls (`FieldGroup`, `BandwidthInput`, accent and background pickers) are stacked and take `info` too. No multi-column grids. The older `Field` (label wraps the control) stays for the other dialogs.
+- **Copy rule:** a visible `hint` is at most one short line and only where it adds something (`bandwidthHint`, `fontCustomHint`); longer explanations are `info` (`settings.*Info` keys) behind `components/InfoTip.tsx`. Number fields show their range only as the error after a failed save (`settings.rangeInvalid`).
+- **`InfoTip`:** a real `<button>` (`aria-label` "More about {{setting}}") plus a `role="tooltip"` element that is always in the DOM and linked by `aria-describedby`. It opens on hover, keyboard focus and click, closes on leave, blur and Escape (which stops propagation so a surrounding dialog stays open). It is not a dialog, never moves or traps focus, and nothing opens it as a side effect of focus restoration (it only reacts to its own button's focus). Colours are tokens and sizes follow `--ui-scale`.
+- **Terminal preview** (`features/settings/TerminalPreview.tsx`, sticky at the top of the Terminal section): static React/CSS, no xterm instance and no server data. Colours come from `buildTerminalTheme` for the shown theme and `terminal.background`; font, size, line height and letter spacing from the form; the cursor shows `cursorStyle` and blinks with `cursorBlink` only while `<html data-motion="full">` (the reduce-motion setting). It always renders with `font-variant-ligatures: none`.
+- **Escape order:** `Dialog` closes on Escape from a bubble-phase document listener (the capture listener only traps Tab and guards input), and only for an Escape that is not `defaultPrevented` and whose target is inside the dialog (or the body). A widget inside a dialog (`InfoTip`, `ContextMenu`, popovers) therefore handles Escape in its own React handler and calls `preventDefault()`: the innermost widget gets Escape first, then the dialog.
+- **Ligatures:** only `editor.fontLigatures` (default false) exists. It sets `--editor-font-ligatures` (`none` / `normal`) on `.code-editor`; `styles/cmTheme.ts` applies it as `font-variant-ligatures` on `.cm-content`, live. The terminal deliberately has no ligature setting and no ligature addon (product decision: `@xterm/addon-ligatures` reads font bytes through the `local-fonts` permission, cannot see the bundled web font, and tracks xterm 6 only in a beta); it renders plain characters.
+
+### 8.13 Updates UI (§9.8)
+
+- `features/updates/updateActions.ts` + `UpdateDialog.tsx` (dialog kind `update`), state in the `updates` slice (`info`, `phase` `available|downloading|restarting|failed`, progress, error). Action `checkForUpdates` (Help menu, palette; macOS app menu id `help.checkForUpdates`). `update:available` opens the dialog only when no dialog, palette or prompt is open; otherwise an info notice points to Help. A manual check with nothing newer shows the `upToDate` notice; errors use the normal `errors.<code>` path.
+- The dialog: version, installed version, release date, release notes as plain text (`displayServerText(notes, 10000, keepNewlines)`, scrollable bounded box, never HTML), and "Update and restart" / "Later" / "Skip this version"; a .deb/.rpm install shows "Download" (release page via `app_open_external`) instead of "Update and restart". Downloading shows progress and Cancel; failures stay in the dialog with "Try again". "Update and restart" hands over to the quit flow (§8.9); cancelling the quit dialog returns to the offer.
+- Settings → General: "Check for updates automatically" (checkbox, (?) tip) and "Update channel" (Stable / Experimental, (?) tip), one setting per row.
+
+---
+
+## 9. Security
+
+### 9.1 WebView confinement (ACL, CSP, navigation)
+
+- **ACL:** `src-tauri/src/commands/names.rs` is the single list of app commands (§4.2). `build.rs` `include!`s it and passes it to `tauri_build::AppManifest::new().commands(..)`, which generates one `allow-<command-with-dashes>` permission per command. `capabilities/main.json` (`"windows": ["main"]`; referenced explicitly by `app.security.capabilities`) grants exactly `core:event:allow-listen`, `core:event:allow-unlisten` and those permissions. A Rust test (`commands::acl_tests`) asserts that the invoke handler, the generated manifest and `capabilities/main.json` all match the list, and that no `opener:`, `dialog:`, `fs:`, `shell:`, `core:window:`, `notification:` or `updater:` permission is granted. **Every new command needs a `names.rs` entry, a capability permission and the ACL test passing**; the frontend wrapper (`tauriBackend.ts`) and its test must list it too.
+- `tauri.conf.json`: `productName: "Shellfin"`; window `{ "label": "main", "create": false, "title": "Shellfin", "width": 1440, "height": 900, "minWidth": 960, "minHeight": 600, "center": true, "dragDropEnabled": true }`; frameless (§8.4); `withGlobalTauri: false`; `security.freezePrototype: true`; CSP:
+```json
+"csp": { "default-src": "'self'", "script-src": "'self'", "style-src": "'self' 'unsafe-inline'",
+         "img-src": "'self' data:", "font-src": "'self' data:", "connect-src": "ipc: http://ipc.localhost",
+         "object-src": "'none'", "base-uri": "'none'", "form-action": "'none'", "frame-src": "'none'", "worker-src": "'none'" },
+"dangerousDisableAssetCspModification": ["style-src"]
+```
+  `'unsafe-inline'` styles are required by xterm.js/CodeMirror runtime `<style>` elements; `dangerousDisableAssetCspModification: ["style-src"]` stops Tauri from adding a style nonce (which would make browsers ignore `'unsafe-inline'`) while keeping script-src nonce handling. No `devCsp`: on desktop `tauri dev` loads `devUrl` directly and Tauri does not apply CSP there, so CSP is validated by the **release-build smoke run** (`docs/SMOKE-RUN.md`: terminal + editor render, no CSP errors). CI checks the built `dist/index.html` has no inline `<script>` and no `<style>`.
+- **Navigation lock:** in `setup` the window is built with `WebviewWindowBuilder::from_config(app, &config.app.windows[0])?.on_navigation(is_app_origin).on_new_window(|_, _| NewWindowResponse::Deny).build()`; `is_app_origin` allows `tauri://localhost`, `http://tauri.localhost`, `https://tauri.localhost`, and `devUrl` only under `cfg!(dev)`. External links only via `app_open_external`.
+- **Dev server:** Vite runs on port **5173** (`strictPort`, HMR 5174; `devUrl` in `tauri.conf.json` must match). The default 1420 can fall inside a Windows excluded TCP port range.
+- **WebView guard script** (injected by the backend into the main frame before any page script, all platforms): `contextmenu` is `preventDefault`ed in the capture phase (no native menu; the event still reaches frontend handlers); `dragover`/`drop` are `preventDefault`ed in the capture phase with `dropEffect = "none"`, so an unhandled drop never navigates (an in-app drop target must set its own `dropEffect` and `preventDefault`). The frontend additionally cancels reserved accelerators (§8.7), allows text selection only where needed (`user-select`), and cancels drags except on `[data-drop-zone]` and text fields.
+- **WebView2 hardening (Windows, `window.rs`):** after the window is built, `AreDefaultContextMenusEnabled = false`, `AreBrowserAcceleratorKeysEnabled = false` (F5/Ctrl+R, Ctrl+P, Ctrl+U, Ctrl+S, Ctrl+F, Alt+←/→, F12/Ctrl+Shift+I, zoom keys) and `IsZoomControlEnabled = false` are applied through `WebviewWindow::with_webview` and read back into the log (`webview2 hardened`); `zoom_hotkeys_enabled(false)` is set explicitly. DOM key events still reach the page. macOS/Linux: the guard script covers the context menu; WKWebView/WebKitGTK have no built-in reload/print/zoom shortcuts. Devtools: release builds have none; debug builds keep them but they open at start only with `SHELLFIN_DEVTOOLS=1` (F12/Ctrl+Shift+I are disabled).
+- **Web permission policy (Windows):** a WebView2 `PermissionRequested` handler allows exactly one kind, `clipboard-read`, and only when the requesting URI is the app origin (same check as the navigation lock, `window::clipboard_read_allowed`); every other request (camera, microphone, geolocation, notifications, MIDI, …) is **denied**, nothing is auto-allowed and no decision is saved in the profile (`SavesInProfile = false`). Tauri's own `clipboard` window option is not used (it allows reads for any origin). WebView2 reports `clipboard-read` as user-initiated even without a gesture, so the effective gate is the origin, which the navigation lock and `script-src 'self'` pin to the app. macOS/Linux: unchanged on purpose; WKWebView and WebKitGTK show WebKit's own one-click "Paste" confirmation for `navigator.clipboard.readText()`; silencing it would need private API or settings that also open programmatic clipboard access to every script. Keyboard paste (the native `paste` event) needs no permission anywhere.
+- **`freezePrototype` stays on.** It breaks libraries that assign to inherited properties (xterm's `x.toString = y`); the build-time `freezeSafe` Vite plugin and the freeze gate handle that (§8.8). Never turn the setting off to fix a crash.
+- **Single-instance plugin:** `tauri-plugin-single-instance` is registered first in the builder (as the plugin requires) and driven from Rust only: it has no JS commands, the capability grants no `single-instance:` permission and the ACL test forbids the prefix. A second launch focuses the running window (§7.1). It is off in debug and `e2e` builds. The only other plugins are dialog, opener, notification (below) and the updater (§9.8), none with a WebView permission beyond the listed ones.
+- **WebView downloads** are refused: `on_download` answers every request with a denial (`window::download_allowed`, unit-tested); files only arrive through the transfer commands.
+- **Notification plugin:** `tauri-plugin-notification` is registered for Rust-side use only; the capability grants no `notification:` permission (the ACL test forbids the prefix). The plugin still injects a `window.Notification` shim into the page; every plugin command is denied by the ACL, so on macOS/Linux the shim's startup `is_permission_granted` call is rejected and logs a harmless unhandled rejection (removing it would mean calling `notify-rust` / `mac-notification-sys` directly, a dependency decision). Notification bodies carry server-influenced names, so on Linux, where notification servers interpret body markup, they are escaped (`notify::escape_markup`, `body_for_platform`).
+
+### 9.2 Secrets
+
+- Private keys and passphrases never leave Rust. Secret-bearing **inbound** DTOs (exhaustive): `OpenSessionRequest.target(draft).password`, `PromptAnswer.{passphrase.passphrase, password.password, keyboardInteractive.responses}`, `bookmark_set_password.password`. `Secret<T>`: Deserialize-only, zeroized on drop, Debug `***`; a unit test asserts no outbound DTO contains `Secret` (compile-time by construction) and that `format!("{:?}")` of any inbound DTO never contains the value.
+- The frontend keeps passwords only in dialog-local component state, clears inputs on close, and never puts them into Zustand, recents or logs.
+- Keychain: passwords only, bound to `{hostname, port, user}`; auto-used only when the binding matches and the hop's host key was verified through known_hosts (§5.6); deleted on bookmark delete or binding-relevant edits. If `keyring::Entry::store_status()` is an error, the "Save in keychain" checkbox is disabled (`keyringUnavailable`); the status is evaluated once per process (a keyring daemon started later requires an app restart — shown in the tooltip).
+- `HopSecrets` are replayed only to the same pinned host key and dropped on close. Agent identities are added by the app only if the agent accepts the 12 h lifetime constraint (otherwise nothing is added — Windows OpenSSH agent, §5.5); added identities are removed on close; only owner-verified agents receive keys.
+
+### 9.3 Host keys
+Unknown → explicit decision; changed/revoked/CA-managed/reconnect-mismatch → hard fail, no override (changed/revoked/CA-managed are evaluated before the session pin, so they also apply on auto-reconnect, §5.3); pins per hop for the session; `StrictHostKeyChecking` honoured (stricter on `no`); no SHA-1 host-key signatures; certificates not negotiated; known_hosts writes validated, hashed when configured, 0600, locked; system known_hosts only if trusted (§7.4.1).
+
+### 9.4 Local paths (`platform::local_path`)
+Every local file open goes through `local_path::open_local(path, kind)` / `read_local(path, kind)` (path policy of the source below, then §7.4.1 on the handle). Sources:
+
+| Source | Where the path comes from | Windows path policy |
+|---|---|---|
+| `Config` | ssh config/Includes, known_hosts files, `IdentityFile`, bookmark `identityFile` (incl. paths returned by `dialog_pick_identity_file`, since they are then stored and reused), `IdentityAgent` file paths | **strict allowlist** (below) |
+| `OsChosen` | upload sources from the native open dialog or an OS drop (`DropRegistry`), download targets from the native save dialog | regular-file check only; UNC and mapped network drives **allowed** — the OS shell already authenticated, the user chose the file, and the WebView never supplies these paths |
+| Agent endpoints | `IdentityAgent`, `SSH_AUTH_SOCK`, default pipe | exact grammar `\\.\pipe\<name>` (no `\`, `/`, NUL in `<name>`; not `.`/`..`) — §5.5 |
+
+**Strict allowlist (Windows, `Config` source), applied before any `metadata`, security or open call.** Guarantee, stated precisely: *no SMB access can be triggered through path syntax, a mapped network drive, or a symlink/junction in the final component.* A directory symlink/junction in an **earlier** component that points to a network location (e.g. a roaming-profile `~/.ssh` made with `mklink /D \\server\…`) is followed by the OS inside `CreateFileW` and is only detected after open (step 5) — the SMB connection has then already happened. Creating such a link requires the same user (or admin/Developer Mode), so this is not a cross-user boundary; v1 accepts this residual instead of walking every component.
+1. `Path::components()` must start with `Prefix::Disk(_)` or `Prefix::VerbatimDisk(_)` followed by `RootDir`. Everything else is rejected: UNC/`VerbatimUNC`, `DeviceNS` (`\\.\…`), RootDir-first paths (`\foo`, `\??\UNC\…`, `\??\C:\…`), drive-relative (`C:foo`), `//server/…`.
+2. `.` and `..` are resolved lexically first (as Win32 does) before the `%ProgramData%\ssh` precheck, the allowlist and the open, so `C:\ProgramData\x\..\ssh\ssh_config` is recognised as the system location. Reserved device names (`CON`, `NUL`, `COM0`–`COM9`, `LPT0`–`LPT9`, with any extension, also `NUL:`/`com1:`) in any component are rejected; a `:` in any component after the drive is rejected (alternate data streams).
+3. `GetDriveTypeW("<X>:\")` must not be `DRIVE_REMOTE` (4) (mapped network drives) — and not `DRIVE_NO_ROOT_DIR`.
+4. If the final component is a symlink/junction (`symlink_metadata`), `read_link` it and run steps 1–3 on the (absolutized) target before following; at most one level, else reject.
+5. After opening: `GetFinalPathNameByHandleW` must not start with `\\?\UNC\` (defence in depth).
+Then on all platforms: the opened object must be a regular file (`fstat`/`GetFileInformationByHandle`); Unix opens with `O_NONBLOCK` (FIFOs cannot block) and follows symlinks (dotfile setups), the trust check judging the target; read at most `kind.max_bytes` (keys and `.pub` 64 KiB; config/known_hosts 4 MiB; `OsChosen` uploads streamed). Violations → `keyLoadFailed{untrustedPath|notAFile|tooLarge}` / `ConfigWarning{untrustedFile}` / `localNotFound`.
+- **Documented exceptions** (local writes that do not go through `local_path`, which has no write kind): `bookmarks_export` and `app_save_text_file` write through `file::write_chosen_file` (error `io{writeLocalFile, path: <file name only>}`), and the download files (`create_part`, `mark_of_the_web`, `finish_part_with`). Their targets come only from the native Save dialog, the `.part` is created with `create_new` (plus `O_NOFOLLOW|O_CLOEXEC` on Unix), the rename replaces only the path the user confirmed, and the provenance mark is written before the rename.
+- Remote paths: POSIX utils, NUL rejected, temp files created with `EXCLUDE`.
+- Downloads: sanitized default name, `create_new` `.part`, Mark-of-the-Web on Windows (§6.6).
+- `app_open_external`: http/https only; URLs with credentials (`https://user@host`, an anti-spoofing measure) and URLs over 2048 characters (checked again after normalisation) are refused with `invalidArgument{field:"url"}`; parsed and re-serialized with the `url` crate; the **native** confirm shows the URL first with its host in punycode (`url::Url::host_str()` is already IDNA-encoded), then the frontend-supplied title/body after `displayServerText`-equivalent sanitizing in Rust (C0/C1, bidi, zero-width and invisible code points removed, U+2028/2029 turned into spaces, ≤ 200 chars each; the same sanitiser covers every native dialog title); only one confirm may be open at a time (concurrent calls return `false`).
+
+### 9.5 Untrusted server content
+- `lib/serverText.ts` `displayServerText(s, limit)` is used for **every** server-originated string shown in the UI (banners ≤ 8 KiB, kbd-int name/instructions/labels ≤ 256 chars each, disconnect messages, terminal titles ≤ 256, file names in dialogs/toasts): replaces C0/C1 controls and bidi controls (U+202A–202E, U+2066–2069, U+200E/F, U+061C) and the same invisible or deceptive set as Rust `is_deceptive_char` (soft hyphen, CGJ, Hangul/Khmer/Mongolian fillers and selectors, U+200B–200F, U+2028–202E, U+2060–206F, U+3164, U+FEFF, U+FFA0, U+FFF0–FFFB, tag characters U+E0000–E0FFF) with visible escapes (`\x1b`, `⟨U+202E⟩`) and truncates with an ellipsis. The variation selectors U+FE00–FE0F are deliberately not escaped (emoji need U+FE0F). Unlike the Rust dialog sanitiser the UI shows these characters instead of deleting them, so two names stay distinguishable. File tree rows render names with bidi isolation (`<bdi>` + controls escaped).
+- ESLint errors (core rules only — `eslint-plugin-react 7.37.5` does not support ESLint 10): `no-restricted-syntax` for `JSXAttribute[name.name='dangerouslySetInnerHTML']`, `no-restricted-properties` / `no-restricted-syntax` for `innerHTML`, `outerHTML`, `insertAdjacentHTML`, `document.write`, plus `no-eval`, `no-implied-eval`, `no-new-func`.
+- The only remote command built from data is "Open terminal here": `ssh::shellquote::cd_wrapper` (fixed `/bin/sh -c` wrapper, octal-escaped path, POSIX sessions only — §4.5), verified injection-free across sh/bash/dash/zsh/fish/tcsh/csh; unit tests assert the wire command never contains `'`, `\\` or `\'` inside the wrapper for arbitrary byte strings (property test). The local `ssh-keygen -R` hint is built by the backend with `posix_quote` (`'` → `'\''`) or PowerShell quoting per local platform and is `null` for values with control/invisible characters (§4.3, §5.3); the UI never builds or edits it. Likewise the UI's own "Copy SSH command" helper (`lib/sshCommand.ts`) uses `--` before the destination, refuses a jump host starting with `-`, and offers nothing for unsafe values. "Copy path" copies a path containing control or bidi characters in its escaped, visible form, so a hostile name cannot smuggle control sequences into a terminal paste.
+- `ClientHandler` rejects every server-initiated channel (`AdministrativelyProhibited`); `openssh_ext_host_keys_announced` stays a no-op (no UpdateHostKeys learning). The server's disconnect message is cut to 8 KiB and at most 16 banners per hop are forwarded.
+- Bounds: listings (§6.2), kbd-int rounds/prompts (§5.6), banner size, Include count/size (§7.4), settings clamping (§7.2).
+
+### 9.6 Process hardening
+- `panic = "unwind"`; supervisors convert task panics to `internal` for one session; the panic hook logs file:line only.
+- `platform::harden_process()` at startup (Unix): Linux `prctl(PR_SET_DUMPABLE, 0)`; macOS/Linux `setrlimit(RLIMIT_CORE, 0)`; create/tighten the 0700 app directories (§7.1). No umask change.
+- Windows: **no WER manipulation in v1** (`WerAddExcludedApplication` only affects WER *reporting*, not admin-configured `LocalDumps`, and leaves a persistent HKCU value needing uninstall cleanup). Residual risk, documented in §13: on a native crash, WER/LocalDumps (if configured by an admin) may capture process memory. Mitigations: `panic = "unwind"` (Rust panics don't crash the process), secrets zeroized on drop and held only as long as needed.
+- Logging: default filter `info,shellfin=info,russh=warn,russh_sftp=warn` (`RUST_LOG` only in debug builds); never log terminal data, file contents, secrets (type-enforced), kbd-int responses, key material. **Escaping:** every log layer uses one field formatter (`logging::safe_fields`) that runs each field value, the message included, through `sanitize_for_log` (≤ 4096 characters), so server text inside an error (SFTP status messages, disconnect reasons) cannot forge log lines or carry escape or bidi control characters. **Cap:** a `CappedWriter` around the daily appender stops at 32 MiB per UTC day (`MAX_LOG_BYTES_PER_DAY`, counted from the size of today's file so restarts do not reset it) with one note line, and the next day starts fresh: at most 7 files × 32 MiB. Log dir 0700 on Unix (log file modes follow the default umask; the directory makes them unreachable for other users).
+
+### 9.7 Test-only user-state isolation (cargo feature `e2e`)
+
+`src-tauri/src/e2e.rs` exists for automated end-to-end runs of a real build. In an `e2e` build `SHELLFIN_E2E_ROOT=<absolute dir>` is **required** and redirects all user state:
+
+| State | Normal build | `e2e` build |
+|---|---|---|
+| home (`~/.ssh/config`, `known_hosts`, default identities, key scan, config watcher, identity-file dialog start dir, Windows known_hosts confinement root, `${HOME}`/`${USERPROFILE}`) | OS home | `<root>/home` |
+| system ssh dir (`ssh_config`, `ssh_known_hosts{,2}`) | `/etc/ssh`, `%ProgramData%\ssh` | `<root>/system-ssh` |
+| app config (bookmarks, settings, recents) | Tauri `app_config_dir` | `<root>/config` |
+| logs | Tauri `app_log_dir` | `<root>/logs` |
+| WebView profile | platform default | `<root>/webview` (Windows/Linux; macOS WebKit ignores it) |
+| keychain | OS keychain | `<root>/keyring.json` — a **plaintext** JSON map (test credentials only), written atomically, 0600 on Unix |
+| default agent | `SSH_AUTH_SOCK`, then the Windows OpenSSH pipe | only `SHELLFIN_E2E_SSH_AUTH_SOCK`; no pipe fallback |
+
+All trust checks (file trust, local-path allowlist, agent owner check, host-key verification) run unchanged on the redirected paths. Guards, which must all stay in place:
+1. Compile time: every read of the variables and the fake keychain are `#[cfg(feature = "e2e")]`; without the feature `e2e::active()` is a constant `None` and the variable names are not in the binary (unit test `env_var_has_no_effect_without_the_feature`).
+2. `build.rs` panics when `e2e` is combined with a release-profile build (`PROFILE == "release"`, which follows profile inheritance), and `e2e.rs` has a `compile_error!` for `e2e` without `debug_assertions`. An e2e binary is always a dev-profile build.
+3. Fail closed: an e2e build without the variable, or with a relative path, refuses to start; it never falls back to real user state.
+4. CI: `ci.yml` builds a debug e2e binary and requires the marker string `SHELLFIN_E2E_ROOT` in it (positive control); the release/CI `build` jobs fail if `e2e` appears in the build arguments or any built release binary contains the marker, and artifacts are uploaded only after those checks (build → checks → upload).
+5. The startup log says `E2E MODE: all user state is redirected`.
+
+Residual risks, accepted for test builds: the fake keychain is plaintext; the root is trusted as given (the 0700/DACL hardening still applies to the config/log dirs below it). Build and run: `npm run tauri build -- --debug --no-bundle --features e2e` (embedded frontend; binary `src-tauri/target/debug/shellfin[.exe]`) or `cd src-tauri && cargo build --features e2e` (loads `devUrl`, needs `npm run dev`), then start it with `SHELLFIN_E2E_ROOT=<abs dir>` (and optionally `SHELLFIN_E2E_SSH_AUTH_SOCK`).
+
+### 9.8 Updates (signed self-update)
+
+`src-tauri/src/updater.rs` + `commands/update.rs`, on top of the official `tauri-plugin-updater` (§2.2). Everything runs in Rust; the WebView only calls the four commands of §4.2 and receives `update:available` / `update:install-failed`.
+
+**Trust model.**
+- **What is trusted:** one minisign Ed25519 public key, compiled into the binary (`plugins.updater.pubkey` in `tauri.conf.json`, key id `559240A91983C276`). The plugin downloads the artifact, verifies its signature against that key **before** returning the bytes, and with `requireSignedVersion: true` also checks that the signature's trusted comment carries the version the manifest announced (a tampered manifest cannot pair a new version number with an older, validly signed artifact: downgrade protection). `allowDowngrades` and every `dangerous*` option stay off; a unit test pins the shipped config (key, endpoints, `requireSignedVersion`, NSIS `passive`).
+- **What is not trusted:** the manifests and the download location. They are fetched over **HTTPS only** (the guard and the plugin both refuse other schemes; TLS by rustls with the platform verifier), but GitHub, a CDN or a network attacker who could alter them can at most withhold updates or offer an artifact that fails verification (`updateVerifyFailed`, nothing installed). Release notes and every other manifest field are untrusted text: bounded in Rust (10 000 characters, CR/LF normalised) and rendered with `displayServerText` (plain text, controls/bidi escaped, scrollable box).
+- **The private key** exists only offline with the maintainer and, for CI, in the GitHub secrets `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` of the protected `release` environment (§11.3). It is never in the repository.
+- **Key loss:** no new update can be signed for installed copies; users must install the next version by hand (a new key is shipped in that version). Keep an encrypted offline backup (CONTRIBUTING "Releasing").
+- **Key compromise:** whoever holds the key (and can serve a manifest, e.g. with repository write access or by controlling the download path) can push signed malware to every installation with automatic checks on. Response: remove the secrets, rotate the key in a release signed with the old key **only if** that key is believed safe, otherwise publish a security advisory telling users to reinstall from a verified download; the `requireSignedVersion` check does not help against a compromised key.
+- **Platform signatures are separate:** Authenticode / Developer ID (§11.3) still apply to the installed files; the updater signature only authenticates the update channel.
+
+**Guard.** No check, schedule or download in dev or debug builds (`cfg(dev)` or `debug_assertions`), in `e2e` builds, or without an HTTPS endpoint for the selected channel (`updatesDisabled`). Unit tests cover each case.
+
+**Channels.** `general.updateChannel` (`stable` default, `experimental`) selects one of the configured endpoints at **every** check (no restart): `https://github.com/shellfin-app/shellfin/releases/download/updater/stable.json` or `.../experimental.json`. Both live on a permanent pre-release `updater` (never "latest") written by `update-channels.yml` (§11.3) only when a release is **published**: a stable release writes both files, a pre-release (`vX.Y.Z-experimental.N`, GitHub pre-release flag) only `experimental.json`; a channel file is never replaced by an older or equal version. The client compares SemVer (`0.2.0` > `0.2.0-experimental.3`) and installs only strictly newer versions, so switching from experimental back to stable never downgrades: the app waits until stable catches up. A skipped version is skipped on both channels.
+
+**Schedule.** First automatic check 15 s after startup, then every 24 h of wall-clock time (the loop wakes hourly, so sleep/hibernation does not stretch the interval); only while `general.autoUpdate` is on (default on; a disabled setting does not consume the slot). Failures of automatic checks are logged only. Manual checks (Help → "Check for updates…", the palette, the macOS app menu) work regardless of the setting and say "You're up to date" when nothing newer exists. An automatic announcement never replaces an open dialog, palette or prompt; it then shows a notice pointing to Help.
+
+**Install.** `update_install(version)` downloads with progress (cancellable), the plugin verifies, the bytes are staged in memory, then the normal quit flow runs (§8.9: unsaved changes and `confirmQuit` are asked about). After the sessions are closed the staged update is installed: Windows starts the NSIS installer in **passive** mode (`/P /R`, progress bar only, restarts the app) and exits; macOS replaces the `.app` from the `.app.tar.gz`; Linux replaces the AppImage; then the app restarts. Cancel or a cancelled quit drops the staged bytes; nothing touched the disk before the install step. A failed install keeps the current version running (`update:install-failed`).
+
+**Linux packages.** Only an AppImage (the `APPIMAGE` variable set and not a .deb/.rpm bundle type) replaces itself. A .deb/.rpm installation gets `install: manualDownload`: the dialog offers "Download", which opens the release page through `app_open_external` (native confirm, §9.4). The release-page URL is built by the backend from the validated version and the crate's repository URL.
+
+**Windows installer types.** Windows ships the NSIS installer only (x64 and ARM64, per-user install), so there is exactly one updater artifact per platform key (`windows-x86_64` / `windows-aarch64`) and no second, per-machine installation to update. There is no MSI: `bundle.targets` lists `nsis`, `app`, `dmg`, `appimage`, `deb` and `rpm`, the release workflow fails if an `.msi` appears, and `scripts/updater-manifest.mjs` ignores MSI files. (`updater.rs` still recognises the MSI bundle type when classifying an install, harmlessly, for copies built by hand.)
+
+---
+
+## 10. Testing strategy
+
+### 10.1 Rust unit tests
+- `sshconfig`: global options, `Host *` after specific hosts, negation, `?`, case-insensitivity, `Key=Value`, quotes, tabs, **trailing comments**, Include (relative, `~`, glob order, nested, inside `Host`, cycle, depth 17, missing, **`**` rejected, > 256 files**), Match subset + unsupported warning, IdentityFile accumulation, `ProxyJump none`, tokens, `${HOME}`, **`UserKnownHostsFile none|/dev/null|NUL` → disabled**, **`IdentityAgent SSH_AUTH_SOCK` / `$VAR`**, invalid HostName/HostKeyAlias → warning, alias enumeration with file:line.
+- `known_hosts`: plain/hashed (`|1|O33ESRMWPVkMYIwJ1Uw+n877jTo=|nuuC5vEqXlEZ/8BXQR7m619W6Ak=` = `example.com`), `[host]:port`, wildcards/negation, `@revoked`, **`@cert-authority` → CaManaged**, malformed lines, multiple files, verdict priority; **lookup name with `HostKeyAlias` + non-22 port is the plain alias** (and the written line is `alias <type> <b64>`); writer: validation rejects `x,*`, hashing when `HashKnownHosts yes`, 0600/0700 on Unix, concurrent learns (threads) produce intact lines.
+- `ssh::target`: precedence, quick-spec (IPv6), ProxyJump rules, cycles, depth, `valid_hostname` cases (incl. `/`, `%` rejected); **`Host *.int` + `HostName %h.corp.example.com` resolves to `x.int.corp.example.com` and passes validation** (expansion before validation).
+- `ssh::agent` endpoint grammar (pure function, runs on every OS): accepts `\\.\pipe\openssh-ssh-agent`, `\\.\PIPE\pageant.user.abc`; rejects `\\.\pipe\..\UNC\h\s\x`, `\\.\pipe\..\C:\x`, `\\.\PIPE\..\GLOBALROOT\??\C:\x`, `\\.\pipe\../C:/x`, `\\.\pipe\a/../..\x`, `\\.\pipe\.`, `\\.\pipe\..`, `\\.\pipe\`, `\\host\pipe\x`, `\??\pipe\x`, names with NUL.
+- `ssh::auth` (with a fake handle): candidate order (agent-held config key first; IdentitiesOnly), budget/reserve arithmetic, **boundary: disconnect on attempt 6 ⇒ `authFailed`; disconnect on attempt < 6 after a publickey failure ⇒ one re-dial; second ⇒ `tooManyAuthFailures`**, RSA hash selection for agent keys, kbd-int regex (`Password:` yes; `Passcode:`, `Verification code:`, `OTP` no), skip/cancel semantics, keychain binding & verification gating, **`useSavedPassword` with a stale binding ⇒ re-prompt with `savedPasswordAvailable=false`**.
+- `known_hosts` reconnect pin: same key ⇒ ok; different key that known_hosts trusts ⇒ re-pin; different untrusted key ⇒ `hostKeyMismatchOnReconnect`; **pinned key now `@revoked` ⇒ `hostKeyRevoked`; pinned key now under a matching `@cert-authority` ⇒ `hostKeyCaManaged`; pinned key's known_hosts line replaced by a different key of the same type ⇒ `hostKeyChanged`** (fatal verdicts before pin compare).
+- `ssh::shellquote` (`cd_wrapper` property test: arbitrary bytes ⇒ only `\NNN` in the payload, no `'`/`\\`/`\'` in the wrapper; NUL/C0 rejected), `sftp::names` (reserved names, ADS colon, bidi), `sftp::path`, `sftp::text`, **`sftp` attribute pairs** (`fsetstat` gid change always carries the uid), `platform::local_path` (**`\??\UNC\…`, `\??\C:\…`, `C:foo`, `\foo`, `\\srv\s`, `//srv/s`, `\\.\x`, `\\?\UNC\…`, `NUL.txt` rejected; `C:\…` and `\\?\C:\…` accepted; symlink to a UNC target rejected; FIFO; size cap**), `platform::file_trust` (**per-row tests of §7.4.1**: Unix config `0664` rejected, known_hosts `0664` accepted, `0666` rejected, key `0640` rejected, symlinked config judged by target; Windows temp files with crafted ACLs incl. NULL DACL ⇒ untrusted), `storage` (atomic write, 0600, quarantine, migrations, read-only, **validate-on-load drops bad entries**, password binding cleared on edit), settings clamping, `Secret` Debug/compile-time direction, `error` JSON snapshots, ts-rs export + drift check.
+
+- Hostile and resource-bound cases (unit): `terminal::input` (order under a multi-thread runtime, the 8 MiB bound, channel end, failure), `term_write` argument parsing (raw body, fallback JSON array, hostile JSON, header rules, size), the pump-wakeup model check, `sftp` transfer window (grows, shrinks, shares the session pool, `stop_signal` fires on cancel or loss), `local_source` chunking, rate-limit refunds, `slow_listing_returns_partial_entries`, endless-empty-READDIR and never-answering-READDIR probes, `storage` (oversized store file, per-field settings repair on hostile documents, a 5000-entry hostile jump chain on load and import, settings reads that do not wait for a writer), `logging` (sanitised fields, daily cap and reset), KDF caps with crafted OpenSSH, PPK, PKCS#8 and malformed DER headers, one dial deadline with a paused clock, wildcard matching on non-ASCII and 4 MiB hostile known_hosts, a 10 000-element ProxyJump chain on a 256 KiB stack, the watcher fingerprint (opening config files does not re-parse), `single_instance_enabled`, `window::download_allowed`.
+
+### 10.2 Integration tests (feature `it`, Linux CI + local Docker)
+- `src-tauri/tests/sshd/compose.yml`: image from `src-tauri/tests/sshd/Dockerfile` based on **`debian:bookworm-slim`** + `openssh-server` + `libpam-google-authenticator` + `fish` + `tcsh` (Debian's sshd is built with PAM; users `tester-fish`/`tester-tcsh` have those login shells): `UsePAM yes`, `KbdInteractiveAuthentication yes`, `AllowTcpForwarding yes`; users `tester` (password/pubkey/kbd-int), `tester2fa` (`AuthenticationMethods publickey,keyboard-interactive` with `pam_unix` + `pam_google_authenticator` using a fixed test secret; the test computes the TOTP with ring HMAC-SHA1 per RFC 6238). Containers `bastion` (published `127.0.0.1:2222`) and `target` (internal only). Test keys (ed25519 encrypted, RSA OpenSSH, RSA PEM) in `tests/fixtures/keys/` (mode 0600 enforced by the test harness).
+- Cases (headless, in-memory `EventSink`, scripted `PromptBroker`): host key unknown → learn → known; changed → `hostKeyChanged`; `HostKeyAlias` on port 2222 learned as plain alias and matched by `ssh-keygen -F alias` in the container; `@cert-authority` line → `hostKeyCaManaged`; **reconnect after the container's host key is regenerated → `hostKeyMismatchOnReconnect`**; password ok/wrong/retry; keychain-less password binding logic; encrypted key prompt/wrong/skip/right; RSA SHA-2 (OpenSSH + PEM); **RSA key via agent** (test spawns `ssh-agent`, `ssh-add`, verified-socket path); agent owner check (socket of another uid → `agentUntrusted`, run as root in CI container); kbd-int password and **2FA (password + TOTP)**; budget: agent with 8 keys + password still reaches password; ProxyJump bastion→target; PTY size/binary/exit; `term_open` with hostile `cwd` names (quotes, `\'`, `$()`, backticks, `&`, Unicode) for users with bash, fish and tcsh login shells → correct `pwd`, no side effects; a HA host whose two host keys are both in known_hosts reconnects to the other key without error; **connect, append `@revoked * <key>` to known_hosts, force a reconnect ⇒ `hostKeyRevoked`; connect, replace the host's known_hosts line with a different ed25519 key, force a reconnect ⇒ `hostKeyChanged`**; agent `add_identity` with `KeyLifetime` succeeds on OpenSSH's Unix `ssh-agent` and the key is gone after `session_close`; SFTP list (incl. truncation with a server-side dir of 100 001 entries — generated in the container), read/save (atomic, in-place when owner differs, **gid preserved or InPlace**, permissions via fsetstat), conflict, upload conflict → `transfer_retry`, download `.part` + sanitize; **flood test:** `yes` in terminal 1 with acks withheld → (a) `session_probe_all` does not declare loss, (b) `sftp_write_text` succeeds, (c) `term_write` to terminal 2 echoes within 1 s, (d) `outputDropped` arrives; keepalive loss via `docker pause` → reconnect after `unpause`; **server-initiated channel rejected** (an in-process `russh::server` test peer opens `auth-agent@openssh.com`/`session` channels → open failure `AdministrativelyProhibited`).
+- **Test binaries** (`src-tauri/tests/`): `it_infra`, `it_session` (connect, host keys, auth, agent), `it_terminal`, `it_sftp` (listing, save, transfers, bandwidth limits, live bookmark edits, remote identity), `it_resilience` (pauses the target, regenerates its host keys, kills sessions — a separate binary with a lock serialising its cases, because cargo runs test binaries one after another), plus `flow_memory` and `listing_memory` (counting global allocator; no Docker). `tests/support` holds the harness (`docker_compose_ok`, `PauseGuard` unpauses on drop, `HostKeyGuard` restores `/etc/ssh/ssh_host_*`). The harness builds and starts `tests/sshd/compose.yml` itself (project `shellfin-it`).
+- **Environment facts:** with OpenSSH + Linux-PAM a failed `password`-method attempt followed by a successful keyboard-interactive login on the same connection is dropped (`pam_setcred` replays the failed result) — the app's order (kbd-int before password, §5.6) avoids it and tests must not use that sequence. The fixture sets `MaxStartups 200:30:400`, otherwise the parallel suite hits sshd's default drop threshold at random. The user `tester-sftponly` (`ForceCommand internal-sftp`) covers the identity probe. `agent_socket_of_another_user_is_untrusted` **fails** instead of skipping when `CI` or `SHELLFIN_IT_REQUIRE_OWNER_TEST` is set and it cannot switch users.
+- Further cases: a 256 KiB paste plus a tail arrives in order (`large_paste_arrives_in_order`, remote `sha256sum`), FIFOs, devices and links to them are refused (`fifos_and_devices_are_refused`), symlink swaps are detected (`symlink_swaps_are_detected`), a same-size edit with a restored mtime conflicts and an edit inside the commit hook is caught (`save_atomic_conflicts_symlink_and_fallback`), an ignored known_hosts file gives `knownHostsIgnored` and a prompt, and a host known under another key type prompts under `accept-new` (`accept_new_asks_for_ignored_files_and_other_key_types`), and `docker_pause_reconnects_automatically` (loss noticed in a few seconds although 64 requests were in flight). An ignored benchmark (`it_sftp::transfer_throughput`, delay proxy, `SHELLFIN_BENCH_RTT_MS`) measures pipelined throughput.
+- **Not automated** (manual checks, Appendix): quit with a stalled transfer and agent keys, `finish()` on a stalled transport (both need a real agent and a frozen link), the Windows OpenSSH agent pipe, and single-instance hand-over.
+- **Fixture keys** under `src-tauri/tests/fixtures/keys/` are test-only: a unit test (`fixture_keys_are_all_test_keys`) requires each private key to open with a known test passphrase and carry the comment `shellfin-test` (or a pinned fingerprint), and the secret scanners allow-list only that directory (`.gitleaks.toml`, `.github/secret_scanning.yml`).
+- Platform-specific security tests run natively in CI (`unit-native`: `windows-2025`, `windows-11-arm`, `macos-15`), because the Win32 ACL/path code (which ships on x64 and ARM64) and macOS FSEvents/setrlimit never run on Linux.
+
+### 10.3 Frontend tests (Vitest + jsdom + Testing Library)
+Store slices (all `SessionState` transitions incl. `reconnecting` stages; prompts; buffer dirty; workspace cache), `remotePath`, `format`, `keybindings` (Ctrl+K inside terminal passes through), `serverText` (controls/bidi/truncation), `paste` (ESC stripping, multi-line confirm; **a `paste` event dispatched on xterm's textarea is captured once and sanitized**), `outputDropped` handling writes CAN + SGR reset first, quit flow (ack, cancel, `lastDirs`; backend state-machine unit test: no forced quit without a repeated request, late ack from `unresponsive` → `confirming`), components against the mock (BookmarkDialog incl. password-forget warning, HostKeyDialog, SecretPrompt skip/use-saved/plural, ReconnectOverlay stages, ConflictDialog, FileTree, upload "Replace?" → retry), i18n completeness (§8.2.4), contract (`tsc --noEmit` over bindings; mock implements `Backend`).
+
+### 10.4 Manual test checklist
+The Appendix, on Windows 11 and at least one of macOS/Linux, using **release builds** for the CSP/navigation items; `docs/SMOKE-RUN.md` describes the release-build smoke run against the mock backend.
+
+---
+
+## 11. Build, distribution & supply chain
+
+### 11.1 Scripts
+`npm run dev` (Vite + mock backend in a browser), `npm run tauri dev|build`, `npm run build` (typecheck + production bundle + no-mock assertion), `npm run build:smoke`, `npm run test:freeze`, `npm run smoke:tauri`, `npm run test`, `npm run test:watch`, `npm run lint`, `npm run typecheck`, `npm run i18n:check` / `i18n:extract` / `i18n:status`, `npm run bindings` (regenerates ts-rs output via `cargo test export_bindings`), `npm run bindings:check` (regenerates, then `scripts/bindings-check.mjs`: no diff, no untracked binding, no orphan binding without a Rust type), `npm run rust:check`, `npm run notices` / `npm run notices:check` (§11.6). Node 24.22.1 (§2.5).
+
+### 11.2 CI (`.github/workflows/ci.yml`)
+- Workflow default `permissions: contents: read`. All actions pinned to **full commit SHAs** (Dependabot `github-actions` updates them; npm and cargo updates are grouped (`tauri*` crates, `@tauri-apps/*`, `@codemirror/*` with `@lezer/*`, `@xterm/*`) and wait 7 days after a release). Every job has a `timeout-minutes`. Runner images are explicit (`windows-2025`, `macos-15`, `ubuntu-22.04`, `windows-11-arm`) and the Rust compiler is the exact version of `src-tauri/rust-toolchain.toml` (`RUST_TOOLCHAIN` in the workflows; raised on purpose, not by Dependabot).
+- Every Linux job (incl. `checks` and `integration`, which compile `tauri`/`webkit2gtk-sys`) installs the Tauri prerequisites: `libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf`.
+- `checks` (ubuntu-22.04): `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings` (also with `--features it` and `--features e2e`), `cargo test --locked` (includes the ACL test and regenerates the ts-rs bindings), the e2e feature tests plus the debug-e2e-build marker positive control, bindings drift check (`scripts/bindings-check.mjs`), `npm ci`, `npm run notices:check` (cargo-about 0.9.2 via `taiki-e/install-action`), `npm run lint`, `npm run typecheck`, `npm run test`, `npm run i18n:check`, `npm run build`, built-`index.html` inline-script/style check, `node scripts/assert-no-mock.mjs dist`, `npm run test:freeze`.
+- `msrv` (ubuntu-22.04): `cargo +1.90 check --locked --all-targets`, so the `rust-version` promise stays true.
+- `workflows` (ubuntu-22.04): `actionlint` (with shellcheck of the `run:` scripts), `zizmor` and `gitleaks` over the full history with `.gitleaks.toml`; `actionlint` and `gitleaks` are installed with `go install` at exact versions (the Go checksum database verifies them), `zizmor` with the SHA-pinned install action.
+- `unit-native` (`windows-2025`, `windows-11-arm`, `macos-15`): `cargo test --locked`.
+- `integration` (ubuntu-22.04): `cargo test --locked --features it` (the harness starts the Docker fixtures); sshd logs on failure.
+- `security` (ubuntu, also weekly `schedule`): `cargo deny check advisories bans sources licenses` (sources: crates.io only), `cargo audit`, the "exactly one `rsa 0.10.x`" guard, `npm audit --omit=dev --audit-level=high` (blocking), plus `npm audit --audit-level=high` including dev dependencies as a **non-blocking** report. `cargo-deny`/`cargo-audit` are installed via a SHA-pinned `taiki-e/install-action`.
+- `build` matrix (needs `checks`): `windows-2025` (x64) and `windows-11-arm` (native ARM64 runner), both `--bundles nsis`, `ubuntu-22.04` (x64), `macos-15` (Apple Silicon, `--target aarch64-apple-darwin`, ad-hoc signed with `APPLE_SIGNING_IDENTITY=-` like a release without Apple secrets). No 32-bit Windows and no Intel Mac. The pinned Rust toolchain via a SHA-pinned toolchain action, Node 24.22.1, `npm ci --ignore-scripts`, `cargo fetch --locked`; `tauri-apps/tauri-action` (SHA-pinned, builds only, `uploadWorkflowArtifacts: false`) with `-- --locked`; then the e2e-marker check on the release binaries, the no-mock marker grep of the embedded `dist/`, and only then `actions/upload-artifact` as the last step. No release on PRs. Caches allowed here (not in release).
+
+### 11.3 Release (`.github/workflows/release.yml`, tag `v*`)
+- Top-level `permissions: {}`. First job `verify` (no environment, `contents: read`, `actions: read`): the tagged commit must be an ancestor of `origin/main` and `ci.yml` must have a successful `push` run for exactly that commit, so a broken or side-branch tag builds nothing (wait for CI before tagging). Matrix: `windows-x64` (`windows-2025`) and `windows-arm64` (`windows-11-arm`, native build), both NSIS only — no MSI; `linux-x64` (`ubuntu-22.04`), `macos-arm64` (`macos-15`, `--target aarch64-apple-darwin`). Two jobs run in the protected GitHub **Environment** `release` (required reviewers, restricted to `v*` tags, no self-review): each `build` job (holds the signing secrets; `contents: read`) and the `draft-release` job (`needs: [build, updater-manifest, notes-sbom]`; `contents: write`, `id-token`/`attestations`; runs no repository code). Between them `updater-manifest` (no environment, no secrets, `contents: read`) assembles `latest.json`, and `notes-sbom` (same restrictions) extracts the CHANGELOG section of the version as the release notes and builds two CycloneDX SBOMs (`cargo cyclonedx` for Rust, `npm sbom --omit=dev` for the npm production dependencies); they are release files, so `SHA256SUMS` and the attestation cover them.
+- Reproducibility: every build job sets `RUSTFLAGS` with `--remap-path-prefix` for the workspace, `~/.cargo` and `~/.rustup`, and `SOURCE_DATE_EPOCH` from the tagged commit, so binaries contain no runner or home paths (a maintainer's local `tauri build` should do the same). The toolchain is the exact `RUST_TOOLCHAIN`.
+- macOS without Apple secrets is signed **ad hoc** (`APPLE_SIGNING_IDENTITY=-`): an unsigned Apple Silicon bundle is reported by Gatekeeper as "damaged" with no override, an ad-hoc signed one gets the normal "Open Anyway" path (README, Install).
+- Order per build job: `npm run build` (the frontend, in a step **without any secret**) → updater-key detection and the release `--config` override (`build.beforeBuildCommand: ""`, `bundle.createUpdaterArtifacts` true only when `TAURI_SIGNING_PRIVATE_KEY` exists; the official repository fails without it, forks build without updater artifacts) → optional platform-signing configuration → `tauri-action` builds only (no `tagName`; the **only** step with `TAURI_SIGNING_PRIVATE_KEY` / `_PASSWORD` in its environment) → checks (no `e2e` feature or `SHELLFIN_E2E_ROOT` marker in release binaries, no mock marker in the embedded `dist/`, `VITE_BACKEND` unset, tag equals `v<package.json version>` and `src-tauri/Cargo.toml` agrees) → `upload-artifact`. Only then `draft-release` downloads everything, writes `SHA256SUMS` (optionally `SHA256SUMS.asc` when GPG secrets exist), attests every file with `actions/attest-build-provenance` and runs `gh release create --draft`. The workflow never publishes. **No caches**, `npm ci --ignore-scripts`, `--locked` builds.
+- Artifacts: NSIS `.exe` (x64 and ARM64), `.dmg`, `.app.tar.gz` (macOS updater bundle), `.AppImage`, `.deb`, `.rpm`; with the updater key also the minisign `.sig` of the NSIS installers, the `.app.tar.gz` and the AppImage, and `latest.json`; always the two SBOMs and `SHA256SUMS`. Pre-release tags (`v*-*`, e.g. `v0.3.0-experimental.1`) build the AppImage only on Linux (an rpm version cannot contain `-`), and the draft is marked as a pre-release (never mark it "latest"). The draft's notes are the `CHANGELOG.md` section of the version; without one (typically a pre-release) GitHub generates them.
+- `updater-manifest` runs `scripts/updater-manifest.mjs assemble` (unit-tested): exactly one artifact per platform key (`windows-x86_64` and `windows-aarch64` → NSIS `.exe`, `darwin-aarch64` → `.app.tar.gz`, `linux-x86_64` → AppImage), each `.sig` made with the key id of `plugins.updater.pubkey` for this version and file name, URLs `https://github.com/<repo>/releases/download/<tag>/<asset>`, notes from the `CHANGELOG.md` section of the version (≤ 8000 characters), `pub_date` now.
+- **Publishing is the gate.** The draft reaches nobody. When a maintainer publishes it, `.github/workflows/update-channels.yml` (`release: published`, or `workflow_dispatch` with a tag; refuses drafts; `contents: write` only in its one job; no secrets) downloads that release's `latest.json`, and with `scripts/updater-manifest.mjs channels` writes `stable.json` and `experimental.json` (stable release) or only `experimental.json` (pre-release by SemVer suffix or GitHub flag), each only if the new version is SemVer-greater than the one in the file, to the permanent pre-release `updater` (created on first use, `--latest=false`, "Update channels — do not delete") with `gh release upload --clobber`. The app reads only those two files (§9.8), never `releases/latest`.
+- **Homebrew tap.** `.github/workflows/homebrew-tap.yml` (`release: published` or `workflow_dispatch` with a tag; refuses drafts; runs in the `release` environment, `contents: read`, `attestations: read`) renders the cask with `scripts/homebrew-cask.mjs` (unit-tested; stable `shellfin`, or `shellfin@experimental` for a pre-release; the two conflict with each other; `auto_updates true`, `depends_on arch: :arm64` and the macOS minimum from `bundle.macOS.minimumSystemVersion`; `zap` paths for `app.shellfin.desktop` under `~/Library`; a caveat about "Open Anyway" until the app is notarized). The sha256 comes from the release's `SHA256SUMS` after `gh attestation verify` of that file; the DMG is never downloaded. The step that pushes to `shellfin-app/homebrew-tap` through the Contents API is the only one that sees `HOMEBREW_TAP_TOKEN` (contents:write on the tap only); it skips with a notice without the token, creates the tap README when missing, and writes a cask only if the version is SemVer-greater than the one in the tap. CI renders both casks and runs `brew style` on them (`homebrew-cask` job).
+- Signing is optional per platform and active only when all of its secrets exist: Windows Authenticode via Azure Artifact/Trusted Signing (`bundle.windows.signCommand` written as a `--config` override; service-principal `AZURE_*` secrets), macOS Developer ID + notarization (`APPLE_*`). Tauri signs during the build, so the platform signing secrets are in the environment of the `tauri-action` step (Cargo build scripts run there; the frontend build no longer does); mitigations: lockfiles, `--locked`, `--ignore-scripts`, no caches, reviewed `v*` tags only, secrets absent from every earlier step. The updater key (`TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`) is **required** for the official repository and is passed to the `tauri-action` step only. Details for maintainers: `CONTRIBUTING.md`.
+- CI builds (`ci.yml`, PRs, forks) never see the updater key: the base `tauri.conf.json` keeps `createUpdaterArtifacts` off, so they build without updater artifacts.
+
+### 11.4 Dependency hygiene
+`Cargo.lock` and `package-lock.json` committed; exact versions in `package.json`; `cargo build --locked`; `npm ci --ignore-scripts` in CI and release (only `@swc/core` via the dev-only i18next-cli and optional `fsevents` have install scripts; `tauri build` needs neither); `deny.toml` in the repo (crates.io only, `tauri-plugin-fs` allowed only as a dependency of `tauri-plugin-dialog`, `tauri-plugin-shell` and `aws-lc-*` banned).
+
+### 11.5 Icons & versioning
+1024×1024 master (`#4FD1C5` rounded square, `>_` glyph in `#0F1115`) → `npm run tauri icon app-icon.png`. Single version source `package.json`; `tauri.conf.json` reads it (`"version": "../package.json"`); `src-tauri/Cargo.toml` must carry the same version (the release workflow checks it). The in-app logo is `components/BrandMark.tsx` (from `assets/brand/shellfin-logo.svg`).
+
+### 11.6 Third-party licence notices
+
+The installers redistribute Rust crates (MIT, Apache-2.0, BSD, ISC, Zlib, Unicode-3.0, MPL-2.0, …) and npm production packages, among them the two OFL-1.1 fonts (Inter, JetBrains Mono, embedded as woff2). Those licences require the copyright and licence text to ship with binary copies. `THIRD_PARTY_NOTICES.txt` (repository root, **generated, never edited by hand**) is produced by `scripts/notices.mjs` (`npm run notices`): the Rust part by `cargo about generate` (cargo-about 0.9.2; `src-tauri/about.toml` holds the licence allow-list of `deny.toml` and the four shipped targets, `src-tauri/about.hbs` the template), the npm part from the non-dev entries of `package-lock.json` with their licence files from `node_modules` (after `npm ci`), including the full OFL text and copyright lines of both fonts. The file ships as a Tauri resource (`bundle.resources`) next to the app. The same script writes `src-tauri/installer/LICENSE.txt`, the installer's licence page with **both** texts of the dual licence. CI (`npm run notices:check` in the `checks` job) fails when either file differs from what the lockfiles produce, so any dependency change must regenerate and commit them. MPL-2.0 components are used unmodified; the notices name each crate version and repository, which is where the source is available.
+
+### 11.7 Platform baseline decisions
+
+`ubuntu-22.04` (glibc 2.35) is deliberately the Linux build image: it is the oldest glibc baseline that WebKitGTK 4.1 packages support, so the AppImage and the deb run on the widest range of distributions. Ubuntu 22.04 reaches end of standard support in April 2027; before that, move the Linux jobs (CI, release, update channels) to `ubuntu-24.04` in one change and note the new minimum glibc in the README. Runner images for Windows and macOS are named explicitly so that GitHub's `-latest` migrations never change a release build unannounced.
+
+---
+
+## 12. Status and roadmap
+
+The v1 feature set (§1.1) is implemented; delivery history lives in git. Planned after v1: split panes/editors, port-forwarding UI, further UI locales (English and Ukrainian ship; the native macOS menu already follows the UI language, §8.2.3), recursive directory transfer and delete, an optional per-bookmark "always save in place" (§13), Windows 11 Snap Layouts on the custom maximize button (needs subclassing the WebView2 host window; no maintained Tauri 2 crate exists).
+
+Dependency order of the backend modules, for orientation: config/trust/storage (`sshconfig`, `known_hosts`, `platform`, `storage`, `secrets`) ← `ssh` ← `session` ← `terminal`, `sftp` ← `commands`.
+
+## 13. Risks & open questions
+
+**Risks**
+1. **russh 0.x churn** — `=` pins; usage isolated in `ssh/`, `terminal/`, `sftp/`; upgrade checklist: re-run the Docker integration suite (§10.2) and re-verify the API facts of §2.3, re-check flow-control and server-channel defaults, check whether re-key host-key comparison was added.
+2. **No per-channel flow control in russh** — handled by always draining + bounded backlog with discard (§4.5); the visible cost is discarded output on extreme floods.
+3. **Re-key host key not compared** (russh calls `check_server_key` only on the initial kex) — exploitation needs the session keys; low impact; to be reported upstream.
+4. **Non-UTF-8 remote names** decoded lossily by russh-sftp → `lossyName`, operations disabled.
+5. **Prompt latency vs `LoginGraceTime`** — 110 s timeout + pinned re-dial.
+6. **Windows crash dumps** — no WER manipulation in v1; on a native crash, admin-configured `LocalDumps`/WER may capture process memory (secrets are zeroized on drop and short-lived; Rust panics unwind and do not crash the process).
+7. **Linux keychain availability** — degrade with explanation; evaluated once per process.
+8. **CSP `'unsafe-inline'` styles** — scripts strict; nonce injection disabled for style-src only.
+9. **Clipboard** — keyboard paste uses native paste events; menu/context-menu paste needs `navigator.clipboard.readText()` (allowed for the app origin only on Windows, WebKit's one-click confirmation on macOS/Linux, §9.1).
+10. **ssh_config fidelity** — `Match exec/canonical/final`, canonicalization, `ProxyCommand` unsupported (warnings).
+11. **Pageant** only via its OpenSSH-compatible pipe in `IdentityAgent`; users relying on auto-discovery must add one config line (documented in README).
+12. **Windows file-trust strictness** — keys/configs on non-system NTFS volumes (`D:\`, default *Modify* for Authenticated Users) or FAT/exFAT media are rejected until their ACL is tightened; the error message explains how (`icacls`). Accepted for v1 (security over convenience).
+13. **Atomic saves drop ACLs/xattrs/SELinux labels** (SFTP v3 cannot read them) — §6.4.
+14. **Interrupted transfers** leave a `.<name>.sshb-*.tmp` on the server when the connection was lost mid-transfer, and cancelled in-place uploads leave a partially written target (§5.8, §6.6). Without `posix-rename@openssh.com`, a disconnect between the two renames of a save leaves the original only as the `.<name>.sshb-*.bak` backup (§6.4).
+15. **Windows 11 Snap Layouts** are not available on the custom maximize button.
+
+**Open questions (defaults chosen for v1 in brackets)**
+1. Start directory for *new* terminals (beyond "Open terminal here")? [Decided: `terminal.newTerminalCwd` = `home` (default) or `currentFolder` (the file tree's root), §4.5.]
+2. Persist key passphrases? [No; recommend ssh-agent.]
+3. Port forwarding UI? [After v1; hidden.]
+4. Split editor/terminal? [After v1; not present.]
+5. Offer a per-bookmark "always save in place" option for files with ACLs/xattrs? [v1.1 if requested.]
+6. Restore sessions on restart? [Decided: optional, `general.onStartup = restore` reopens the bookmarks that were open at the last quit, §7.3; the default is the welcome screen.]
+7. Known limits to watch (accepted for v1): the terminal palette threshold and light syntax contrast (§8.5); `it_resilience` once failed 4 of 5 cases on a cold start of the sshd fixtures (it passed on every rerun, watch for flakiness in CI); the window focus cache for notifications re-queries `is_focused()` on the focus event and is unverified on GTK; `has_controls` (the `cwdFallback` check) rejects C0/DEL only, other control paths are octal-escaped, which is safe.
+
+---
+
+## Appendix — Manual test checklist
+
+1. First start without `~/.ssh/config`: welcome, empty config section, no errors.
+2. Real `~/.ssh/config`: hosts listed; edits appear ≤ 1 s; new file in an `Include conf.d/*` dir appears; Reload works.
+3. Config with Include, `Host *`, negation, trailing comments, `Match exec` → correct values + warning badge.
+4. Bookmark CRUD, groups, tags, validation; editing host of a bookmark with saved password warns and forgets it.
+5. Unknown host → dialog (`[host]:port` or plain `HostKeyAlias`), fingerprint matches `ssh-keygen -lf`; with/without "Add to known_hosts"; `ssh` (OpenSSH) on the same machine accepts the learned line.
+6. Changed key → hard fail with file:line and a correctly quoted `ssh-keygen -R` command; `@cert-authority` host → CA-managed failure.
+7. Encrypted key: wrong twice, skip, then right; "Add to ssh-agent" only offered with a verified agent; with the **Windows OpenSSH agent** the checkbox is disabled with the "keeps keys permanently" tooltip, and if a constrained add is attempted anyway (e.g. via another pipe that rejects it) the `agentConstraintUnsupported` warning appears and `ssh-add -l` stays unchanged.
+8. Password: wrong → retry; save → next connect without prompt only when the host is in known_hosts; otherwise "Use saved password" button.
+9. Windows OpenSSH agent (service running, app **not** elevated) is accepted and used; Pageant via `IdentityAgent` pipe; a pipe created by another non-admin account → `agentUntrusted`; `IdentityAgent \\host\pipe\x` and `IdentityAgent \\.\pipe\..\UNC\host\s\x` → rejected without network access.
+9a. Windows: `IdentityFile \??\UNC\host\s\id`, a mapped network drive path, or a symlink to a UNC target → `keyLoadFailed{untrustedPath}` with no SMB traffic (check with a packet capture or `net use` log); uploading from a `\\nas\share` file via the picker works.
+9b. RHEL/Fedora-style `~/.ssh/known_hosts` with mode 0664 is honoured; `~/.ssh/config` with 0664 is rejected with a warning.
+10. Keyboard-interactive 2FA prompts show sanitized server labels; "Passcode:" is never auto-filled.
+11. ProxyJump via alias and bookmark; per-hop prompts; `AllowTcpForwarding no` → `jumpChannelFailed`.
+12. 3 sessions × 3 terminals; tab switching keeps scrollback; resize updates `stty size`.
+13. `htop`, `vim`, `less`, `mc` mouse, UTF-8 (Ukrainian, emoji, CJK), binary `cat`, `yes` flood → UI responsive, "output discarded" line, Ctrl+C works; SFTP save during flood works.
+14. Copy/paste via Ctrl+Shift+V, Cmd+V, Shift+Insert, context menu and (Linux) middle-click: text containing `ESC[201~` does not execute and is pasted exactly once; multi-line paste confirm without bracketed paste; Ctrl+click URL → native confirm with the real URL; OSC 8 link with a `javascript:`/`file:` target does nothing.
+15. Ctrl+K in bash kills the line; Ctrl+Shift+K opens the palette.
+16. Tree: lazy expand, symlinks, broken link, permission-denied dir, hidden toggle, 5 000 entries performance; hostile file names (bidi, controls) display escaped.
+17. Edit/save YAML, shell, nginx; status bar fields; undo after tab switch.
+18. Conflict: Overwrite / Reload; touch-only change no conflict.
+19. Save preserves 0600/0755, via symlink; file owned by another user (group-writable) → in-place; file whose group differs from the user's primary group keeps its group.
+20. windows-1251 reopen/save; CRLF preserved; binary and > 5 MiB rejected with Download offer.
+21. Upload via picker and drop; "Replace?" → only conflicting files resent; dropping a folder → notice; download of `CON.txt` / `a:b` / bidi names → sanitized; downloaded `.exe` shows SmartScreen warning (MOTW).
+22. Disconnect (sshd restart, cable, sleep) → overlay stages/countdown; buffers kept; reconnect → new shells for running terminals only; regenerate server host key during outage → `hostKeyMismatchOnReconnect` (unless the new key is already in known_hosts → silent re-pin); replacing the known_hosts line with a different key during the outage → `hostKeyChanged`.
+22a. "Open terminal here" on a directory named `x\';touch /tmp/P;#` for bash, fish and tcsh users → correct cwd, no `/tmp/P`; menu entry absent on a Windows OpenSSH server.
+22b. `yes` flood with a window title set by OSC in the prompt → after "output discarded" the dim line and following output are visible.
+23. Pending save while disconnected runs after reconnect.
+24. Quit with dirty buffers via window close, Cmd+Q (macOS) and Alt+F4 → confirmation; Cancel → the close button works again immediately; quitting records `lastDir` for every open session in Recent; with the WebView hung (devtools `while(true){}`) the first close does nothing visible, a second close after ≥ 3 s quits; a merely busy WebView (large paste) still shows the dialog when it recovers.
+25. Release build: no CSP errors in the console; `window.location = "https://example.com"` from devtools is blocked.
+26. `en-XA`: no untranslated strings, no clipping.
+27. Logs and `recents.json` contain no passwords; on Linux config dir is 0700 and files 0600.
+28. Window chrome (release build): frameless title bar drags, double click toggles maximize, minimize/maximize/close buttons work, edge resizing works; menu bar via mouse, F10, Alt tap and Alt+letter (not inside the terminal); on macOS the native menu items run the same actions. No native context menu, no F5/Ctrl+R/Ctrl+P/Ctrl+U/zoom reaction, no devtools; Ctrl+click on a terminal URL asks for confirmation first.
+29. Layout-independent shortcuts: with a Cyrillic (or other non-Latin) keyboard layout Ctrl+S, Ctrl+K, Ctrl+B, Ctrl+1…9 still work; AltGr+letter types the character and never triggers a command; inside the terminal Ctrl+R/P/U/K reach the shell and Ctrl+Shift+F opens terminal find.
+30. Bookmarks: colour stripe on the row and connection tab; reorder by dragging (Windows too: pointer events, not HTML5 DnD), between groups, onto a group header, Alt+Up/Down and "Move to group…"; editing limits of a connected bookmark applies live, editing host/auth shows "Reconnect to apply changes" (unsaved editor tabs are asked about).
+31. Bandwidth limits (global Settings > Transfers and per bookmark): a large upload/download is throttled, changing the limit applies on the next chunk; editor saves and listings are not throttled.
+32. Transfers: more than 3 files at once queue (all show as started, at most 3 run), cancelling a queued one works, "Replace these files?" appears once per burst; dropping a folder shows the notice; a download carries Mark-of-the-Web (Windows `Zone.Identifier`) or the quarantine attribute (macOS).
+33. Permission hints: a root-owned file/folder gets the lock/warning tooltip for an unprivileged user, Rename/Move/Delete stay enabled and the server decides; Windows OpenSSH servers (no `id`) show no hints.
+34. Disconnect (menu/tab) keeps the tab, buffers and terminals and shows "Disconnected"; Reconnect respawns terminals and re-initialises SFTP; a tab with a lost connection offers Reconnect now.
+35. Terminal extras: find bar (case/regex), "Save output…", tab rename (F2/double click), flood/`outputDropped`, restart with Enter after `exit`; a server-set title containing control or bidi characters is shown escaped.
+36. Platforms: install and start the Windows x64 and Windows ARM64 (NSIS) builds, the Linux AppImage/deb/rpm and the macOS Apple Silicon DMG; verify the Windows WebView2 bootstrapper path on a machine without the runtime.
+37. Single instance (release build, each platform): start Shellfin, minimize it, launch it again → the first window comes to the front restored and no second process stays; same with the window behind other windows; an update install restarts into a working single instance.
+38. Linux (WebKitGTK): Ctrl+Shift+V and Shift+Insert paste exactly once and `navigator.clipboard.readText` is permitted (the 120 ms fallback of §8.6).

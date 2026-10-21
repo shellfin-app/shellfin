@@ -1,0 +1,9 @@
+* text=auto
+# Generated ts-rs bindings must be byte-identical across OSes (CI drift check).
+src/ipc/bindings/** text eol=lf
+*.png binary
+*.ico binary
+*.icns binary
+*.woff2 binary
+# Test-only key fixtures: byte-identical on every OS (parsed by tests, compiled in via include_str!).
+src-tauri/tests/fixtures/keys/** text eol=lf

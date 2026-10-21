@@ -1,0 +1,69 @@
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: var(--scrim);
+}
+
+.dialog {
+  max-width: 100%;
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--border-input);
+  border-radius: 12px;
+  box-shadow: var(--shadow-dialog);
+  overflow: hidden;
+}
+.dialog--danger { border-color: var(--danger-border); }
+
+.dialog__header { display: flex; align-items: center; gap: 12px; padding: 20px 22px 0; }
+.dialog__heading { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.dialog__title { font-size: calc(16px * var(--ui-scale, 1)); font-weight: 600; color: var(--text-bright); }
+.dialog__subtitle { font-size: calc(12px * var(--ui-scale, 1)); color: var(--text-muted); overflow-wrap: anywhere; }
+.dialog__icon {
+  width: 36px; height: 36px; border-radius: 9px; flex: none;
+  display: flex; align-items: center; justify-content: center;
+}
+.dialog__icon--default { background: var(--accent-bg); color: var(--accent); }
+.dialog__icon--warn { background: var(--warn-bg); color: var(--warn); }
+.dialog__icon--danger { background: var(--danger-bg); color: var(--danger); }
+
+.dialog__body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.dialog__footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 14px 22px;
+  border-top: 1px solid var(--border);
+}
+.dialog__footer .spacer { flex: 1; }
+.dialog__text { margin: 0; line-height: 20px; color: var(--code-fg); }
+.dialog__error { margin: 0; font-size: calc(12px * var(--ui-scale, 1)); color: var(--danger); }
+.dialog__hint { margin: 0; font-size: calc(12px * var(--ui-scale, 1)); color: var(--text-muted); }
+.dialog__warn { margin: 0; font-size: calc(12px * var(--ui-scale, 1)); color: var(--warn); }
+
+.facts {
+  display: flex; flex-direction: column; gap: 8px; padding: 12px 14px;
+  border-radius: var(--radius); background: var(--chrome); border: 1px solid var(--border);
+}
+.facts__row { display: flex; gap: 12px; font-size: calc(12px * var(--ui-scale, 1)); }
+.facts__label { width: 70px; flex: none; color: var(--text-muted); }
+.facts__value { overflow-wrap: anywhere; word-break: break-all; }
+.facts__value--strong { color: var(--text-bright); }
+.dialog__close { margin-left: auto; align-self: flex-start; }

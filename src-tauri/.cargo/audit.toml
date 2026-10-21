@@ -1,0 +1,22 @@
+# cargo-audit configuration (§11.2 `security` job; run from src-tauri/, where Cargo.lock lives).
+# Must stay identical to the [advisories] ignores in /deny.toml. Every entry has no fixed release
+# and is justified there in full.
+
+[advisories]
+ignore = [
+  # rsa Marvin timing side channel (russh/ssh-key). Signing IS a private-key operation; accepted
+  # only because the pinned rsa 0.10.0-rc.18 uses constant-time crypto-bigint arithmetic, there is
+  # no decryption, one signature per auth attempt, and agent-held keys are signed by the agent.
+  # rsa < 0.10 is banned in deny.toml and guarded in CI.
+  "RUSTSEC-2023-0071",
+  "RUSTSEC-2024-0370", # proc-macro-error unmaintained (build-time, Tauri gtk-rs stack on Linux)
+  "RUSTSEC-2024-0429", # glib 0.18 VariantStrIter unsound (Tauri gtk-rs stack on Linux; API not used by us)
+  "RUSTSEC-2026-0370", # zvariant unmaintained (merged into zbus 6; keyring/opener still on zbus 5)
+  "RUSTSEC-2026-0371", # zbus_names unmaintained (merged into zbus 6)
+  "RUSTSEC-2026-0372", # zvariant_derive unmaintained (merged into zbus 6)
+]
+informational_warnings = ["unmaintained", "unsound", "notice"]
+
+[output]
+deny = ["warnings"]
+quiet = false

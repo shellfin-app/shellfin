@@ -1,0 +1,32 @@
+.bookmark-form { display: flex; flex-direction: column; gap: 16px; }
+.bookmark-form__row { display: grid; grid-template-columns: minmax(0, 1fr) 96px; gap: 12px; }
+.bookmark-form__row--even { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.bookmark-form__section { display: flex; flex-direction: column; gap: 12px; }
+.bookmark-form__inline { display: flex; gap: 8px; }
+.bookmark-form__inline .button { height: 36px; padding: 0 12px; }
+.bookmark-form__notes { height: auto; min-height: 64px; resize: vertical; padding-top: 6px; font: inherit; }
+.bookmark-form__divider { height: 1px; background: var(--border); }
+.bookmark-form__agent {
+  display: flex; flex-direction: column; gap: 6px; padding: 12px;
+  border: 1px solid var(--border); border-radius: var(--radius);
+}
+.bookmark-form__key { font-size: calc(12.5px * var(--ui-scale, 1)); overflow-wrap: anywhere; }
+.bookmark-form__status { min-height: 18px; font-size: calc(12px * var(--ui-scale, 1)); display: flex; flex-direction: column; gap: 4px; }
+.bookmark-form__ok { color: var(--ok); display: inline-flex; align-items: center; gap: 6px; }
+.bookmark-form__reason { margin-left: 6px; }
+.bookmark-form__waiting { display: flex; align-items: center; gap: 10px; color: var(--warn); }
+.bookmark-form__waiting .button { height: 28px; padding: 0 10px; }
+.bookmark-form__speed { margin: 0; padding: 0; border: 0; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.bookmark-form__speed legend { padding: 0 0 6px; font-size: calc(12px * var(--ui-scale, 1)); color: var(--text-secondary); }
+.bookmark-form__limit { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+
+.color-picker { display: flex; flex-wrap: wrap; gap: 8px; }
+.color-picker__swatch {
+  width: 22px; height: 22px; border-radius: 50%; border: 2px solid transparent;
+  box-shadow: inset 0 0 0 1px var(--swatch-edge);
+}
+.color-picker__swatch--none { background: transparent; border: 1px dashed var(--border-strong); box-shadow: none; position: relative; }
+.color-picker__swatch--none::after { content: ""; position: absolute; left: 3px; right: 3px; top: 50%; border-top: 1px solid var(--text-dim); transform: rotate(-45deg); }
+.color-picker__swatch--checked { border-color: var(--text-bright); outline: 2px solid var(--accent); outline-offset: 1px; }
+.color-picker__swatch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.color-picker__swatch:disabled { opacity: .5; }
