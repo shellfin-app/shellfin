@@ -7,3 +7,7 @@ src/ipc/bindings/** text eol=lf
 *.woff2 binary
 # Test-only key fixtures: byte-identical on every OS (parsed by tests, compiled in via include_str!).
 src-tauri/tests/fixtures/keys/** text eol=lf
+# Generated and shipped (installer resources and licence page): LF in the repository and in every checkout, so the
+# notices tests and `npm run notices:check` do not depend on core.autocrlf. Existing checkouts: `git add --renormalize .`
+THIRD_PARTY_NOTICES.txt text eol=lf
+src-tauri/installer/LICENSE.txt text eol=lf

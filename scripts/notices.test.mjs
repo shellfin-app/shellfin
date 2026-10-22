@@ -1,8 +1,28 @@
 // Unit tests of the licence notice generator (scripts/notices.mjs). The Rust part needs cargo-about and is checked by
 // the CI job `npm run notices:check`; here only the pure helpers and the committed output are tested.
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
+import { relative } from "node:path";
+import process from "node:process";
 import { describe, expect, it } from "vitest";
 import { INSTALLER_LICENSE, OUTPUT, groupByText, installerLicense, normalize, productionPackages } from "./notices.mjs";
+
+/**
+ * The committed content of a generated file. A working copy may have CRLF (core.autocrlf=true on Windows) although the
+ * repository holds LF, so the line-ending assertions read the blob from the git index. Outside a git checkout (or for
+ * an untracked file) it falls back to the file on disk.
+ */
+function committedText(path) {
+  try {
+    return execFileSync("git", ["show", `:${relative(process.cwd(), path).replaceAll("\\", "/")}`], {
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+  } catch {
+    return readFileSync(path, "utf8");
+  }
+}
 
 describe("normalize", () => {
   it("uses LF, strips trailing blanks and ends with exactly one newline", () => {
@@ -44,7 +64,7 @@ describe("groupByText", () => {
 describe("shipped notices", () => {
   it("contain both OFL font licences and are LF only", () => {
     expect(existsSync(OUTPUT)).toBe(true);
-    const text = readFileSync(OUTPUT, "utf8");
+    const text = committedText(OUTPUT);
     expect(text).not.toContain("\r");
     expect(text).toContain("SIL OPEN FONT LICENSE Version 1.1");
     expect(text).toContain("Inter Project Authors");
@@ -52,7 +72,7 @@ describe("shipped notices", () => {
   });
 
   it("the installer licence page holds both licence texts", () => {
-    const text = readFileSync(INSTALLER_LICENSE, "utf8");
+    const text = committedText(INSTALLER_LICENSE);
     expect(text).toBe(installerLicense());
     expect(text).toContain("Permission is hereby granted, free of charge");
     expect(text).toContain("Apache License");
