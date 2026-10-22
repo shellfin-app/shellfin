@@ -12,6 +12,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Importing bookmarks can now keep the startup commands from the file, but only when you explicitly choose to for that
   import. The bookmarks and their commands are listed before anything is saved. By default startup commands are still
   dropped, and a command that is not a single valid line is always dropped.
+- Problems found in your SSH config are now shown: the Config card on the Home screen shows "N warnings" when there
+  are any, and opens a list with the file, the line and what is wrong. Unreadable lines beyond the first 50 in a file
+  are counted as "and N more" instead of being dropped silently.
 
 ### Removed
 

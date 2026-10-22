@@ -57,6 +57,7 @@ export function makeSshConfig(now: number): SshConfigSnapshot {
       configHost("gitlab-runner", "10.0.9.2", 24, { user: "runner" }),
     ],
     warnings: [],
+    droppedWarnings: 0,
     loadedAtMs: now,
   };
 }

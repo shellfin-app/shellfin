@@ -36,6 +36,8 @@ export type DialogState =
   | { kind: "deleteGroup"; groupId: string }
   | { kind: "settings" }
   | { kind: "keys" }
+  /** The ssh config load warnings (Welcome > Config > "N warnings"); the list comes from the live snapshot. */
+  | { kind: "configWarnings" }
   /** Multi-line paste into a terminal without bracketed-paste mode (§8.6); `preview` is already escaped. */
   | { kind: "confirmPaste"; lines: number; preview: string }
   /** The server file changed since it was opened: overwrite / reload / cancel (§6.4). */

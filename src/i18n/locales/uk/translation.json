@@ -232,6 +232,17 @@
     "unsupportedMatchCriteria": "Непідтримувані критерії Match: {{criteria}}.",
     "untrustedFile": "Файл {{file}} має небезпечного власника або дозволи, його проігноровано."
   },
+  "configWarningsDialog": {
+    "fileSkipped": "Файл пропущено: це не файл конфігурації (ключ або двійкові дані).",
+    "listLabel": "Попередження",
+    "location": "{{file}}:{{line}}",
+    "more_one": "і ще {{count}}",
+    "more_few": "і ще {{count}}",
+    "more_many": "і ще {{count}}",
+    "more_other": "і ще {{count}}",
+    "none": "Попереджень немає.",
+    "title": "Попередження конфігурації SSH"
+  },
   "conflict": {
     "body": "Цей файл змінився на сервері після того, як ви його відкрили (у терміналі, скриптом або іншим користувачем). Якщо зберегти зараз, версію на сервері буде замінено.",
     "compareFailed": "Не вдалося порівняти з версією на сервері: {{reason}}",
@@ -1318,6 +1329,10 @@
     "configIncludes_other": "{{count}} файлу Include",
     "configMissing": "Файлу конфігурації ssh ще немає. Хости, які ви до нього додасте, з'являться тут автоматично.",
     "configUpdated": "Оновлено {{time}}",
+    "configWarnings_one": "{{count}} попередження",
+    "configWarnings_few": "{{count}} попередження",
+    "configWarnings_many": "{{count}} попереджень",
+    "configWarnings_other": "{{count}} попередження",
     "firstRun": "З'єднань ще немає. Введіть user@host у полі «Швидке підключення» й натисніть Enter або додайте сервер, яким часто користуєтеся, як закладку.",
     "firstRunAction": "Додати перше з'єднання",
     "knownHosts": "Відомі хости",

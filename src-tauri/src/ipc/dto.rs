@@ -198,6 +198,9 @@ pub struct SshConfigSnapshot {
     pub files: Vec<String>,
     pub hosts: Vec<SshConfigHost>,
     pub warnings: Vec<ConfigWarning>,
+    /// `badLine` warnings not in `warnings` because their file reached the cap of 50
+    /// (all files together).
+    pub dropped_warnings: u32,
     pub loaded_at_ms: i64,
 }
 

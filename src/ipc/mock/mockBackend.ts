@@ -214,6 +214,7 @@ export class MockBackend implements Backend {
     this.transferStepMs = options.transferStepMs ?? 0;
     const now = this.now();
     this.sshConfig = makeSshConfig(now);
+    if (this.hooks.sshConfigWarnings) this.sshConfig = { ...this.sshConfig, ...this.hooks.sshConfigWarnings };
     this.bookmarks = makeBookmarks(now);
     this.recents = makeRecents(now);
     this.fs = new FakeFs(now);
@@ -323,7 +324,7 @@ export class MockBackend implements Backend {
   /** Bookmark ids recorded "at the last quit" (tests / dev scenarios set them). */
   openAtQuit: string[] = [];
   private emptySshConfig(): SshConfigSnapshot {
-    return { ...this.sshConfig, files: [], hosts: [], warnings: [] };
+    return { ...this.sshConfig, files: [], hosts: [], warnings: [], droppedWarnings: 0 };
   }
   async appQuitAck(): Promise<void> {}
   async appQuitCancel(): Promise<void> {

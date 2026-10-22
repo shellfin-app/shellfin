@@ -155,6 +155,7 @@ impl ParsedConfig {
                 .collect(),
             hosts,
             warnings: warnings.list,
+            dropped_warnings: self.dropped_warnings,
             loaded_at_ms,
         }
     }
@@ -359,6 +360,11 @@ mod tests {
             (crate::sshconfig::MAX_CONFIG_FILES - 1)
                 * crate::sshconfig::parser::MAX_BAD_LINES_PER_FILE
         );
+        // 255 included files of 200 junk lines each, 50 reported per file.
+        assert_eq!(
+            s.dropped_warnings,
+            u32::try_from(255 * (200 - crate::sshconfig::parser::MAX_BAD_LINES_PER_FILE)).unwrap()
+        );
         assert_eq!(s.hosts.len(), 1);
         assert!(elapsed < std::time::Duration::from_secs(20), "{elapsed:?}");
     }
@@ -368,5 +374,6 @@ mod tests {
         let f = Fixture::new();
         let s = f.load().snapshot(1);
         assert!(s.hosts.is_empty() && s.files.is_empty() && s.warnings.is_empty());
+        assert_eq!(s.dropped_warnings, 0);
     }
 }

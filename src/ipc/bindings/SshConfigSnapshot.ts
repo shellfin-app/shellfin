@@ -2,4 +2,9 @@
 import type { ConfigWarning } from "./ConfigWarning";
 import type { SshConfigHost } from "./SshConfigHost";
 
-export type SshConfigSnapshot = { mainFile: string, files: Array<string>, hosts: Array<SshConfigHost>, warnings: Array<ConfigWarning>, loadedAtMs: number, };
+export type SshConfigSnapshot = { mainFile: string, files: Array<string>, hosts: Array<SshConfigHost>, warnings: Array<ConfigWarning>, 
+/**
+ * `badLine` warnings not in `warnings` because their file reached the cap of 50
+ * (all files together).
+ */
+droppedWarnings: number, loadedAtMs: number, };

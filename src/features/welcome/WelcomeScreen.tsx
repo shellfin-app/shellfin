@@ -5,12 +5,14 @@ import { Icon } from "../../components/Icon";
 import { formatList, formatRelativeTime } from "../../i18n/format";
 import { getBackend } from "../../ipc";
 import type { RecentEntry, RecentTarget } from "../../ipc/types";
+import { DIALOG_KIND, configWarningsDialog } from "../../lib/dialogs";
 import { USER_HOST_SEPARATOR } from "../../lib/identifiers";
 import { guard } from "../../lib/reportError";
 import { displayName, displayPath } from "../../lib/serverText";
 import { bookmarkTarget, quickTarget, sshConfigTarget } from "../../lib/targets";
 import { useStore } from "../../state/store";
 import { requestOpenSession } from "../session/sessionActions";
+import { configWarningCount } from "./ConfigWarningsDialog";
 import "./welcome.css";
 
 /** Resolves what the user typed into quick connect: a bookmark / ssh-config alias by name, else a quick spec. */
@@ -60,6 +62,17 @@ export function WelcomeScreen() {
     const active = document.activeElement;
     if (active === null || active === document.body || active.closest(".conn-tabs-wrap") !== null) inputRef.current?.focus();
   }, []);
+  // The warnings dialog gives the focus back to its chip; when a reload removed the chip meanwhile, the focus would
+  // fall to <body>, so it goes to quick connect instead. Runs after the dialog's own cleanup (same commit).
+  const dialogKind = useStore((s) => s.dialog?.kind);
+  const previousDialogKind = useRef(dialogKind);
+  useEffect(() => {
+    const was = previousDialogKind.current;
+    previousDialogKind.current = dialogKind;
+    if (was !== DIALOG_KIND.configWarnings || dialogKind === was) return;
+    const active = document.activeElement;
+    if (active === null || active === document.body) inputRef.current?.focus();
+  }, [dialogKind]);
   const [text, setText] = useState("");
   const recents = useStore((s) => s.recents);
   const sshConfig = useStore((s) => s.sshConfig);
@@ -73,6 +86,7 @@ export function WelcomeScreen() {
   const configPath = env?.sshConfig.path ?? sshConfig?.mainFile ?? "";
   const platform = useStore((s) => s.platform);
   const configMissing = env !== null && !env.sshConfig.exists;
+  const configWarnings = configWarningCount(sshConfig);
   const firstRun = (sshConfig?.hosts.length ?? 0) === 0 && (bookmarks?.bookmarks.length ?? 0) === 0;
 
   const submit = (e: FormEvent) => {
@@ -173,6 +187,17 @@ export function WelcomeScreen() {
                 <span>{t("welcome.configIncludes", { count: env.sshConfig.includeCount })}</span>
                 <span>{t("welcome.configUpdated", { time: formatRelativeTime(env.sshConfig.loadedAtMs) })}</span>
               </span>
+            ) : null}
+            {configWarnings > 0 ? (
+              <button
+                type="button"
+                className="info-card__warnings"
+                aria-haspopup="dialog"
+                onClick={() => openDialog(configWarningsDialog())}
+              >
+                <Icon name="alert" size={14} strokeWidth={1.8} />
+                <span>{t("welcome.configWarnings", { count: configWarnings })}</span>
+              </button>
             ) : null}
           </section>
           <section className="info-card" aria-labelledby="welcome-agent">

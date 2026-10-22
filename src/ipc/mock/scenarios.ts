@@ -4,6 +4,7 @@
 // save conflicts, ...
 import type {
   AppError,
+  ConfigWarning,
   HopInfo,
   HostKeyVerification,
   ImportInvalid,
@@ -38,6 +39,7 @@ export const SCENARIO_NAMES = [
   "updateAvailable",
   "updateManualDownload",
   "importStartupCommands",
+  "configWarnings",
 ] as const;
 
 export type ScenarioName = (typeof SCENARIO_NAMES)[number];
@@ -118,6 +120,8 @@ export interface ScenarioHooks {
   pickedFiles?: readonly { name: string; size: number }[];
   /** The file the bookmark import "picks" (default: one plain bookmark). */
   importFile?: MockImportFile;
+  /** Load warnings of the ssh config snapshot (and the `badLine` warnings dropped by the per-file cap). */
+  sshConfigWarnings?: { warnings: ConfigWarning[]; droppedWarnings: number };
 }
 
 /** A bookmark import file as the mock's native dialog reads it (already parsed; `invalid` = parse-stage rejections). */
@@ -445,6 +449,28 @@ export const SCENARIOS: Record<ScenarioName, ScenarioHooks> = {
         { name: "plain-box", host: "plain.example.com" },
       ],
       invalid: [{ entry: "bookmark", index: 4, field: "host", code: "missing" }],
+    },
+  }),
+  // The ssh config has load warnings (Welcome > Config > "N warnings"): a file-level one (line 0), a hostile file
+  // name and Match criteria (bidi / invisible characters, markup), and a junk file that hit the cap of 50 per file.
+  configWarnings: implemented(happyScript, {
+    sshConfigWarnings: {
+      warnings: [
+        { location: { file: "~/.ssh/config", line: 12 }, code: "badLine", params: { text: "port" } },
+        { location: { file: "~/.ssh/config", line: 30 }, code: "unsupportedMatchCriteria", params: { criteria: `exec${RLO}lla` } },
+        { location: { file: "~/.ssh/config", line: 31 }, code: "proxyCommandUnsupported", params: { alias: "legacy-box" } },
+        {
+          location: { file: `~/.ssh/config.d/<b>evil${RLO}${ZWSP}.conf`, line: 0 },
+          code: "untrustedFile",
+          params: { file: `~/.ssh/config.d/<b>evil${RLO}${ZWSP}.conf` },
+        },
+        ...Array.from({ length: 50 }, (_, i): ConfigWarning => ({
+          location: { file: "~/.ssh/config.d/junk.conf", line: i + 1 },
+          code: "badLine",
+          params: { text: "?" },
+        })),
+      ],
+      droppedWarnings: 1234,
     },
   }),
 };

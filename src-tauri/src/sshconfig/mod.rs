@@ -172,6 +172,8 @@ pub struct ParsedConfig {
     pub(crate) system: Option<ParsedFile>,
     /// Warnings found while loading (bad lines, include problems, untrusted files, Match).
     pub(crate) warnings: Vec<ConfigWarning>,
+    /// `badLine` warnings left out of `warnings` by the per-file cap (all files together).
+    pub(crate) dropped_warnings: u32,
     /// Every file that was read successfully, in read order.
     pub(crate) files_read: Vec<PathBuf>,
     /// Directory part of every `Include` pattern (watched even without matches).
@@ -185,6 +187,7 @@ impl PartialEq for ParsedConfig {
         self.user == other.user
             && self.system == other.system
             && self.warnings == other.warnings
+            && self.dropped_warnings == other.dropped_warnings
             && self.files_read == other.files_read
             && self.include_dirs == other.include_dirs
     }
@@ -195,13 +198,14 @@ pub fn load(source: &dyn ConfigSource, env: &ConfigEnv) -> ParsedConfig {
     let mut loader = parser::Loader::new(source, env);
     let user = loader.load_main(&env.user_config, ConfigScope::User);
     let system = loader.load_main(&env.system_config, ConfigScope::System);
-    let (warnings, files_read, include_dirs) = loader.finish();
+    let loaded = loader.finish();
     ParsedConfig {
         user,
         system,
-        warnings,
-        files_read,
-        include_dirs,
+        warnings: loaded.warnings,
+        dropped_warnings: loaded.dropped_warnings,
+        files_read: loaded.files_read,
+        include_dirs: loaded.include_dirs,
         env: env.clone(),
     }
 }
