@@ -7,6 +7,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Connection tabs with the same name are told apart: the copies show "name (2)", "name (3)", and a closed number is
+  reused. A tab you renamed keeps only its name.
+- The update dialog shows the release notes with simple formatting (headings, lists, code, and links to the Shellfin
+  repository and website).
+- The bookmark dialog shows the User from your SSH config as the placeholder of the User field when the host is an
+  SSH config host.
+
+### Fixed
+
+- Syntax colours in the editor now meet a 4.5:1 contrast on the selection and the current line in the light theme, and
+  comments do in the dark theme.
+- "Reconnect to apply changes" no longer opens a second connection when the same bookmark is opened from the sidebar
+  while it reconnects, and a duplicated tab keeps its place, name and number.
+
 ## [0.1.0] - 2026-10-22
 
 First release. Supported platforms: Windows 10/11 x64 and ARM64 (NSIS installer), Linux x64 (AppImage, deb,
