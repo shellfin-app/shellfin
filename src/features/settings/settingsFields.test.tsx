@@ -71,7 +71,6 @@ describe("settings dialog: new fields", () => {
       onStartup: "welcome",
       notifyOnDisconnect: false,
       autoUpdate: true,
-      updateChannel: "stable",
     });
     expect(saved?.files).toMatchObject({ foldersFirst: false, confirmDelete: false });
     expect(saved?.terminal).toMatchObject({ cursorStyle: "bar", bell: "visual", rightClick: "paste", lineHeight: 1.5 });

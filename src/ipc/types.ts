@@ -104,7 +104,6 @@ export type * from "./bindings/UiSettings";
 export type * from "./bindings/WindowState";
 export type * from "./bindings/MenuActionPayload";
 // Updater.
-export type * from "./bindings/UpdateChannel";
 export type * from "./bindings/UpdateCheckOutcome";
 export type * from "./bindings/UpdateInfo";
 export type * from "./bindings/UpdateInstallKind";

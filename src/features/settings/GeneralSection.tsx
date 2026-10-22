@@ -1,7 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { Checkbox, Select, Setting } from "../../components/Field";
 import { LANGUAGE_ENDONYMS, SUPPORTED_LANGUAGES } from "../../i18n";
-import type { ConfirmQuit, StartupAction, UpdateChannel } from "../../ipc/types";
+import type { ConfirmQuit, StartupAction } from "../../ipc/types";
 import { CONFIRM_QUIT } from "../../lib/identifiers";
 import type { SectionProps } from "./settingsFields";
 
@@ -51,12 +51,6 @@ export function GeneralSection({ form, patch }: SectionProps) {
         checked={form.autoUpdate}
         onChange={(autoUpdate) => patch({ autoUpdate })}
       />
-      <Setting label={t("settings.updateChannel")} info={t("settings.updateChannelInfo")}>
-        <Select value={form.updateChannel} onChange={(e) => patch({ updateChannel: e.target.value as UpdateChannel })}>
-          <option value="stable">{t("settings.updateChannelStable")}</option>
-          <option value="experimental">{t("settings.updateChannelExperimental")}</option>
-        </Select>
-      </Setting>
     </fieldset>
   );
 }

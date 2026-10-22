@@ -2,7 +2,7 @@
 // shellfin-app/homebrew-tap; `.github/workflows/homebrew-tap.yml` renders a cask when a release is PUBLISHED and
 // pushes it there. Commands:
 //
-//   render  Print/write the cask of a release: `shellfin` (stable) or `shellfin@experimental` (pre-release).
+//   render  Print/write the `shellfin` cask of a stable release (a pre-release fails).
 //     node scripts/homebrew-cask.mjs render --repo <owner/name> --tag <vX.Y.Z> --prerelease <true|false>
 //          --sums SHA256SUMS --conf src-tauri/tauri.conf.json --out <file> [--notarized <true|false>]
 //     The sha256 is taken from the release's SHA256SUMS (the workflow verifies that file's attestation first); the
@@ -16,9 +16,12 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
-import { compareSemver, channelsFor, parseSemver } from "./updater-manifest.mjs";
+import { assertStableRelease, compareSemver, parseSemver } from "./updater-manifest.mjs";
 
 export const APP_ID = "app.shellfin.desktop";
+/** The one cask of the tap and its file. */
+export const CASK_TOKEN = "shellfin";
+export const CASK_FILE = `${CASK_TOKEN}.rb`;
 export const DESCRIPTION = "Cross-platform SSH client with terminals, SFTP file tree and editor";
 export const HOMEPAGE = "https://shellfin.app/";
 
@@ -64,17 +67,15 @@ const ZAP = [
 ];
 
 /**
- * Render a cask. `experimental` selects the token `shellfin@experimental`. The stanza order follows `brew style`.
- * `url` must be the release's aarch64 DMG; it is written with `#{version}` interpolation.
+ * Render the cask of a stable release. The stanza order follows `brew style`. `url` must be the release's aarch64
+ * DMG; it is written with `#{version}` interpolation.
  */
-export function renderCask({ repo, version, sha256, experimental, macos, notarized }) {
+export function renderCask({ repo, version, sha256, macos, notarized }) {
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo ?? "")) throw new Error(`invalid repository: ${repo}`);
-  if (!parseSemver(version)) throw new Error(`not a SemVer version: ${version}`);
+  assertStableRelease(version, false);
   if (!/^[0-9a-f]{64}$/.test(sha256 ?? "")) throw new Error("sha256 must be 64 lowercase hex digits");
-  const other = experimental ? "shellfin" : "shellfin@experimental";
-  const token = experimental ? "shellfin@experimental" : "shellfin";
   const lines = [
-    `cask "${token}" do`,
+    `cask "${CASK_TOKEN}" do`,
     `  version "${version}"`,
     `  sha256 "${sha256}"`,
     ``,
@@ -88,7 +89,6 @@ export function renderCask({ repo, version, sha256, experimental, macos, notariz
     `  end`,
     ``,
     `  auto_updates true`,
-    `  conflicts_with cask: "${other}"`,
     `  depends_on arch: :arm64`,
     `  depends_on macos: ${macos}`,
     ``,
@@ -112,13 +112,6 @@ export function renderCask({ repo, version, sha256, experimental, macos, notariz
   return lines.join("\n");
 }
 
-/** Cask token and file name for a release: a pre-release (SemVer suffix or GitHub flag) is the experimental cask. */
-export function caskFor(version, githubPrerelease) {
-  const experimental = !channelsFor(version, githubPrerelease).includes("stable");
-  const token = experimental ? "shellfin@experimental" : "shellfin";
-  return { experimental, token, fileName: `${token}.rb` };
-}
-
 /** The `version "..."` of a cask file's text, or null. */
 export function caskVersion(text) {
   const m = /^\s*version "([^"]+)"\s*$/m.exec(String(text ?? ""));
@@ -139,8 +132,7 @@ export function tapReadme(repo = "shellfin-app/shellfin") {
     `Casks for [Shellfin](${HOMEPAGE}) (https://github.com/${repo}). Written by the release workflow of the main repository; do not edit by hand.`,
     "",
     "```sh",
-    "brew install --cask shellfin-app/tap/shellfin               # stable",
-    "brew install --cask shellfin-app/tap/shellfin@experimental  # pre-releases (conflicts with the stable cask)",
+    `brew install --cask shellfin-app/tap/${CASK_TOKEN}`,
     "```",
     "",
     "Apple Silicon only. Shellfin updates itself; Homebrew does not fight it (`auto_updates true`).",
@@ -165,19 +157,18 @@ function main(argv) {
     if (!a.tag?.startsWith("v")) throw new Error(`invalid tag: ${a.tag}`);
     if (a.prerelease !== "true" && a.prerelease !== "false") throw new Error("--prerelease must be true or false");
     const version = a.tag.slice(1);
-    const { experimental, token, fileName } = caskFor(version, a.prerelease === "true");
+    assertStableRelease(version, a.prerelease === "true");
     const dmg = `Shellfin_${version}_aarch64.dmg`;
     const conf = JSON.parse(readFileSync(a.conf, "utf8"));
     const cask = renderCask({
       repo: a.repo,
       version,
       sha256: sha256FromSums(readFileSync(a.sums, "utf8"), dmg),
-      experimental,
       macos: macosRequirement(conf?.bundle?.macOS?.minimumSystemVersion),
       notarized: a.notarized === "true",
     });
     writeFileSync(a.out, cask);
-    console.log(`${token} ${fileName}`);
+    console.log(`${CASK_TOKEN} ${CASK_FILE}`);
     return;
   }
   if (command === "newer") {

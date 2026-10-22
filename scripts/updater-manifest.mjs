@@ -7,13 +7,16 @@
 //     node scripts/updater-manifest.mjs assemble --dir <artifacts> --repo <owner/name> --tag <vX.Y.Z>
 //          --conf src-tauri/tauri.conf.json --changelog CHANGELOG.md --out latest.json
 //
-//   channels  Decide which channel files a PUBLISHED release updates and write them: a stable release (no SemVer
-//             pre-release part and not marked as a pre-release on GitHub) -> stable.json and experimental.json; any
-//             pre-release -> experimental.json only. A channel file is only written when the new version is
-//             SemVer-greater than the one it holds, so republishing an old release can never downgrade anyone.
+//   channels  Decide which update manifests a PUBLISHED release updates and write them: stable.json (read by the app)
+//             and experimental.json (its legacy mirror, see MANIFEST_FILES). Only a stable release is accepted (no
+//             SemVer pre-release part and not marked as a pre-release on GitHub); a pre-release fails. A file is only
+//             written when the new version is SemVer-greater than the one it holds, so republishing an old release
+//             can never downgrade anyone.
 //     node scripts/updater-manifest.mjs channels --manifest latest.json --tag <vX.Y.Z> --prerelease <true|false>
-//          --current <dir with the current stable.json / experimental.json, if any> --out <dir>
-//     Prints the written file names, one per line.
+//          --listed <file: asset names of the `updater` release, one per line; empty when it does not exist>
+//          --current <dir with the downloaded stable.json / experimental.json> --out <dir>
+//     A file the listing names must have been downloaded and be a readable manifest, else the command fails (see
+//     currentManifests). Prints the written file names, one per line.
 //
 //   notes     Write the CHANGELOG section of a version as the GitHub release notes (nothing when it has none).
 //     node scripts/updater-manifest.mjs notes --changelog CHANGELOG.md --tag <vX.Y.Z> --out release-notes.md
@@ -31,7 +34,13 @@ export const PLATFORMS = {
   "linux-x86_64": /_amd64\.AppImage$/,
 };
 
-export const CHANNELS = ["stable", "experimental"];
+/**
+ * The update manifests every stable release writes: `stable.json`, the one the app reads, and `experimental.json`, a
+ * legacy mirror of it. Every install of the former experimental channel still reads `experimental.json` until it
+ * updates: the 0.2.0-experimental.1 build, and 0.1.0/0.1.1 installs whose update channel setting is "Experimental".
+ * So it must keep receiving every stable release and must never be deleted.
+ */
+export const MANIFEST_FILES = ["stable.json", "experimental.json"];
 /** Longest release notes put into a manifest (the app shows at most 10 000 characters). */
 export const MAX_NOTES_CHARS = 8000;
 /** Asset names GitHub serves unchanged (no spaces or characters it would rewrite). */
@@ -170,25 +179,54 @@ export function assembleManifest({ files, readSig, repo, tag, pubkey, notes, pub
 
 // ---- channels -------------------------------------------------------------------------------------------------
 
-/** A stable release reaches both channels; anything marked or versioned as a pre-release only `experimental`. */
-export function channelsFor(version, githubPrerelease) {
+/** Throws unless `version` is a stable release: SemVer without a pre-release part, not marked as one on GitHub. */
+export function assertStableRelease(version, githubPrerelease) {
   const v = parseSemver(version);
   if (!v) throw new Error(`not a SemVer version: ${version}`);
-  return githubPrerelease || v.pre.length > 0 ? ["experimental"] : ["stable", "experimental"];
+  if (v.pre.length > 0) throw new Error(`${version} is a pre-release version: only stable releases are published`);
+  if (githubPrerelease) throw new Error(`${version} is marked as a pre-release on GitHub: only stable releases are published`);
 }
 
-/** Write a channel file only when the new version is strictly newer than the one it holds (or it holds none). */
+/** Write a manifest file only when the new version is strictly newer than the one it holds (or it holds none). */
 export function shouldWrite(newVersion, current) {
   const old = current && typeof current.version === "string" ? current.version : null;
   if (!old || !parseSemver(old)) return true;
   return compareSemver(newVersion, old) > 0;
 }
 
-/** The channel files (`{ name, manifest }`) a published release writes, given the current ones (or `null`). */
-export function channelUpdates(manifest, githubPrerelease, currentByChannel) {
-  return channelsFor(manifest.version, githubPrerelease)
-    .filter((ch) => shouldWrite(manifest.version, currentByChannel[ch] ?? null))
-    .map((ch) => ({ name: `${ch}.json`, manifest }));
+/**
+ * The current manifests by file name, given the asset names the `updater` release lists and `readDownloaded(name)`,
+ * which returns the parsed downloaded copy or `null`. Only a file the release does not list counts as missing
+ * (`null`). A listed file that was not downloaded or holds no manifest with a SemVer version throws: a failed or
+ * partial download must never make an existing manifest look missing, which would let an older release overwrite it.
+ */
+export function currentManifests(listedNames, readDownloaded) {
+  const listed = new Set(listedNames);
+  const current = {};
+  for (const name of MANIFEST_FILES) {
+    if (!listed.has(name)) {
+      current[name] = null;
+      continue;
+    }
+    const m = readDownloaded(name);
+    if (!m || typeof m.version !== "string" || !parseSemver(m.version)) {
+      throw new Error(`${name} is listed on the updater release but its download is missing or not a manifest`);
+    }
+    current[name] = m;
+  }
+  return current;
+}
+
+/**
+ * The manifest files (`{ name, manifest }`) a published stable release writes, given the current ones by file name
+ * (missing or `null` when there is none). Throws for a pre-release.
+ */
+export function manifestUpdates(manifest, githubPrerelease, currentByFile) {
+  assertStableRelease(manifest.version, githubPrerelease);
+  return MANIFEST_FILES.filter((name) => shouldWrite(manifest.version, currentByFile[name] ?? null)).map((name) => ({
+    name,
+    manifest,
+  }));
 }
 
 // ---- CLI ------------------------------------------------------------------------------------------------------
@@ -253,21 +291,25 @@ function main(argv) {
       throw new Error(`${a.manifest} is for version ${manifest.version}, not the release ${a.tag}`);
     }
     if (a.prerelease !== "true" && a.prerelease !== "false") throw new Error("--prerelease must be true or false");
-    const current = {};
-    for (const ch of CHANNELS) {
-      const p = a.current ? join(a.current, `${ch}.json`) : null;
-      current[ch] = p && existsSync(p) ? readJson(p) : null;
-    }
+    if (a.listed === undefined || a.current === undefined) throw new Error("--listed and --current are required");
+    const listed = readFileSync(a.listed, "utf8")
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean);
+    const current = currentManifests(listed, (name) => {
+      const p = join(a.current, name);
+      return existsSync(p) ? readJson(p) : null;
+    });
     mkdirSync(a.out, { recursive: true });
-    for (const { name, manifest: m } of channelUpdates(manifest, a.prerelease === "true", current)) {
+    for (const { name, manifest: m } of manifestUpdates(manifest, a.prerelease === "true", current)) {
       writeFileSync(join(a.out, name), `${JSON.stringify(m, null, 2)}\n`);
       console.log(name);
     }
     return;
   }
   if (command === "notes") {
-    // The GitHub release notes: the CHANGELOG section of this version. Writes nothing when there is none (pre-release
-    // tags usually have no section); the release workflow then falls back to generated notes.
+    // The GitHub release notes: the CHANGELOG section of this version. Writes nothing when there is none; the release
+    // workflow then falls back to generated notes.
     const notes = notesFromChangelog(readFileSync(a.changelog, "utf8"), a.tag.replace(/^v/, ""));
     if (notes === null) {
       console.log(`no CHANGELOG section for ${a.tag}`);

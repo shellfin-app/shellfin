@@ -140,7 +140,6 @@ export function makeSettings(): Settings {
       onStartup: "welcome",
       notifyOnDisconnect: false,
       autoUpdate: true,
-      updateChannel: "stable",
     },
     terminal: {
       fontSize: 13,

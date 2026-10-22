@@ -46,8 +46,8 @@ Website: <https://shellfin.app>
 - **Desktop UX:** frameless window with an in-app menu bar (native menu on macOS), command palette, layout-independent
   keyboard shortcuts, a maximizable terminal panel, UI in English and Ukrainian (switchable in Settings; more
   languages welcome, see CONTRIBUTING).
-- **Updates:** signed automatic updates (Windows, macOS, Linux AppImage) from a stable or an experimental channel;
-  checks can be turned off, and nothing is installed without your OK. `.deb`/`.rpm` installs get a download link.
+- **Updates:** signed automatic updates (Windows, macOS, Linux AppImage); checks can be turned off, and nothing is
+  installed without your OK. `.deb`/`.rpm` installs get a download link.
   See [Updates](#updates).
 
 Not in v1: port-forwarding UI, split panes, `ProxyCommand`, SSH host certificates, FIDO keys, GSSAPI, X11/agent
@@ -90,12 +90,13 @@ PC". Choose **More info**, then **Run anyway**. Verify the download first (see b
 With [Homebrew](https://brew.sh) (Apple Silicon):
 
 ```sh
-brew install --cask shellfin-app/tap/shellfin               # stable
-brew install --cask shellfin-app/tap/shellfin@experimental  # pre-releases (replaces the stable cask)
+brew install --cask shellfin-app/tap/shellfin
 ```
 
 Shellfin updates itself, so Homebrew does not manage later versions (`auto_updates`); `brew upgrade --cask` also
-works. Or open the DMG and drag Shellfin to Applications.
+works. Or open the DMG and drag Shellfin to Applications. The `shellfin@experimental` cask is no longer updated; if
+you installed it, switch with
+`brew uninstall --cask shellfin@experimental && brew install --cask shellfin-app/tap/shellfin`.
 
 *Builds without Apple notarization:* until releases are notarized they are only ad-hoc signed, so macOS asks for
 confirmation on the first start. On macOS 15 and later: try to open Shellfin once, then open **System Settings >
@@ -128,9 +129,10 @@ On Windows PowerShell, `Get-FileHash <file> -Algorithm SHA256` prints the hash t
 
 Shellfin checks for signed updates a few seconds after startup and then once a day (Settings > General; also Help >
 "Check for updates…"). Nothing is installed without your confirmation, and every download is verified against the
-Shellfin release key. Two channels: **Stable** (default) and **Experimental** (pre-releases and newer stable releases).
-Switching back to Stable never downgrades. Windows, macOS and the Linux AppImage update in place; `.deb` and `.rpm`
-installs only show a link to the release page.
+Shellfin release key. There is one update channel with stable releases only. If you run the former experimental build
+(0.2.0-experimental.1) or a 0.1.x install set to "Experimental", you need to do nothing: it moves to the stable channel
+automatically with the 0.2.0 release.
+Windows, macOS and the Linux AppImage update in place; `.deb` and `.rpm` installs only show a link to the release page.
 
 Each release also carries third-party licence notices (`THIRD_PARTY_NOTICES.txt`, installed next to the app) and
 CycloneDX SBOMs.

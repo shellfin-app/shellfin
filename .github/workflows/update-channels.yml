@@ -1,12 +1,15 @@
 # Update channels (§9.8, §11.3). The app reads its updates from a permanent GitHub release with the tag
 # `updater` (a pre-release, never "latest"; title "Update channels — do not delete"):
-#   .../releases/download/updater/stable.json        <- every stable release
-#   .../releases/download/updater/experimental.json  <- every release, including pre-releases
-# This workflow copies the `latest.json` of a release into the channel files when a maintainer
-# PUBLISHES that release (never for a draft, so a draft never reaches users), or when it is run by hand
-# for an already published tag. A stable release (no SemVer pre-release part and not marked as a
-# pre-release) writes both files; a pre-release writes experimental.json only. A channel file is only
-# replaced by a SemVer-greater version, so republishing an old release cannot downgrade anyone.
+#   .../releases/download/updater/stable.json        <- every release; the file the app reads
+#   .../releases/download/updater/experimental.json  <- the same, a legacy mirror: installs of the former
+#                                                       experimental channel (0.2.0-experimental.1, and 0.1.x set to
+#                                                       "Experimental") still read it, so it must never be deleted
+# This workflow copies the `latest.json` of a release into both files when a maintainer PUBLISHES that
+# release (never for a draft, so a draft never reaches users), or when it is run by hand for an already
+# published tag. Only stable releases are accepted: a tag other than vX.Y.Z, or a release marked as a
+# pre-release on GitHub, fails the run and writes nothing. Each file is only replaced by a SemVer-greater
+# version, so republishing an old release cannot downgrade anyone; a file the `updater` release lists but
+# that cannot be downloaded or read fails the run (it is never treated as missing).
 # It needs no signing secret: the manifest only references the already signed artifacts.
 name: Update channels
 
@@ -16,7 +19,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Published release tag, e.g. v0.2.0 or v0.3.0-experimental.1"
+        description: "Published release tag, e.g. v0.2.0"
         required: true
         type: string
 
@@ -50,7 +53,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.release.tag_name }}
-        # The same tag shapes as release.yml `verify` (the input of a manual run is untrusted): the `case` rejects
+        # The same tag shape as release.yml `verify` (the input of a manual run is untrusted): the `case` rejects
         # every character a release tag cannot contain (grep is line-based), numbers have no leading zeros.
         run: |
           n='(0|[1-9][0-9]*)'
@@ -58,19 +61,26 @@ jobs:
             *[!0-9A-Za-z.-]*) ok=false ;;
             *) ok=true ;;
           esac
-          if [ "$ok" != true ] || ! printf '%s' "$TAG" | grep -Eq "^v$n\.$n\.$n(-experimental\.$n)?\$"; then
-            printf '::error::not a release tag (vX.Y.Z or vX.Y.Z-experimental.N): %q\n' "$TAG"; exit 1
+          if [ "$ok" != true ] || ! printf '%s' "$TAG" | grep -Eq "^v$n\.$n\.$n\$"; then
+            printf '::error::not a stable release tag (vX.Y.Z): %q; pre-releases are not published to the update manifests\n' "$TAG"; exit 1
           fi
           info="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease)"
           if [ "$(jq -r .isDraft <<< "$info")" != "false" ]; then
-            echo "::error::$TAG is a draft: channels are only updated from published releases"; exit 1
+            echo "::error::$TAG is a draft: the update manifests are only updated from published releases"; exit 1
+          fi
+          if [ "$(jq -r .isPrerelease <<< "$info")" != "false" ]; then
+            echo "::error::$TAG is marked as a pre-release: remove the mark (stable releases only), then run this workflow by hand"; exit 1
           fi
           {
             echo "tag=$TAG"
-            echo "prerelease=$(jq -r .isPrerelease <<< "$info")"
+            echo "prerelease=false"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Download the release manifest and the current channel files
+      # Only a 404 means "no `updater` release yet"; any other API error fails. Every manifest the release lists
+      # is downloaded without ignoring errors, so a transient failure cannot make an existing file look missing
+      # (the next step also checks each listed file was downloaded and is a manifest).
+      - name: Download the release manifest and the current update manifests
+        id: current
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -78,37 +88,50 @@ jobs:
         run: |
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern latest.json --dir release-manifest
           mkdir -p current
-          if gh release view updater --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/updater" --jq '.assets[].name' > listed.txt 2> api-error.txt; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
             for f in stable.json experimental.json; do
-              gh release download updater --repo "$GITHUB_REPOSITORY" --pattern "$f" --dir current || true
+              if grep -Fxq "$f" listed.txt; then
+                gh release download updater --repo "$GITHUB_REPOSITORY" --pattern "$f" --dir current
+              fi
             done
+          elif grep -q 'HTTP 404' api-error.txt; then
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            : > listed.txt
+            echo "no updater release yet"
+          else
+            cat api-error.txt >&2
+            echo "::error::could not list the assets of the updater release"; exit 1
           fi
           ls -l release-manifest current
+          cat listed.txt
 
-      # Which files to write, and never a downgrade (scripts/updater-manifest.mjs `channels`).
-      - name: Decide the channel files
+      # Which files to write, and never a downgrade (scripts/updater-manifest.mjs `channels`; it refuses a
+      # pre-release, and a listed manifest that is missing or unreadable, too).
+      - name: Decide the files to write
         shell: bash
         env:
           TAG: ${{ steps.release.outputs.tag }}
           PRERELEASE: ${{ steps.release.outputs.prerelease }}
         run: |
           node scripts/updater-manifest.mjs channels --manifest release-manifest/latest.json --tag "$TAG" \
-            --prerelease "$PRERELEASE" --current current --out channels | tee channels.txt
+            --prerelease "$PRERELEASE" --listed listed.txt --current current --out channels | tee channels.txt
 
-      - name: Publish the channel files
+      - name: Publish the update manifests
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.release.outputs.tag }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          UPDATER_EXISTS: ${{ steps.current.outputs.exists }}
         run: |
           if [ ! -s channels.txt ]; then
-            echo "Nothing to update: the channels already hold the same or a newer version than $TAG."; exit 0
+            echo "Nothing to update: the update manifests already hold the same or a newer version than $TAG."; exit 0
           fi
-          if ! gh release view updater --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+          if [ "$UPDATER_EXISTS" = "false" ]; then
             gh release create updater --repo "$GITHUB_REPOSITORY" --target "$DEFAULT_BRANCH" \
               --prerelease --latest=false --title "Update channels — do not delete" \
-              --notes "Holds stable.json and experimental.json, the update manifests read by Shellfin. Written by the Update channels workflow; do not delete or edit by hand."
+              --notes "Holds stable.json, the update manifest read by Shellfin, and experimental.json, its legacy mirror for older builds. Written by the Update channels workflow; do not delete or edit by hand."
           fi
           while IFS= read -r f; do
             gh release upload updater "channels/$f" --repo "$GITHUB_REPOSITORY" --clobber

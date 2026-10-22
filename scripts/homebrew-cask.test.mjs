@@ -4,7 +4,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
-  caskFor,
+  CASK_FILE,
+  CASK_TOKEN,
   caskVersion,
   isNewer,
   macosRequirement,
@@ -46,7 +47,7 @@ describe("sha256FromSums", () => {
 
 describe("renderCask", () => {
   it("renders the stable cask", () => {
-    const text = renderCask({ ...base, experimental: false });
+    const text = renderCask(base);
     expect(text.startsWith('cask "shellfin" do\n')).toBe(true);
     expect(text).toContain('  version "0.2.0"');
     expect(text).toContain(`  sha256 "${HASH}"`);
@@ -54,7 +55,8 @@ describe("renderCask", () => {
       '  url "https://github.com/shellfin-app/shellfin/releases/download/v#{version}/Shellfin_#{version}_aarch64.dmg"',
     );
     expect(text).toContain("  auto_updates true");
-    expect(text).toContain('  conflicts_with cask: "shellfin@experimental"');
+    expect(text).not.toContain("conflicts_with");
+    expect(text).not.toContain("experimental");
     expect(text).toContain("  depends_on arch: :arm64");
     expect(text).toContain("  depends_on macos: :big_sur");
     expect(text).toContain('  app "Shellfin.app"');
@@ -67,20 +69,18 @@ describe("renderCask", () => {
     expect(text.endsWith("end\n")).toBe(true);
   });
 
-  it("renders the experimental cask with the reverse conflict", () => {
-    const text = renderCask({ ...base, version: "0.3.0-experimental.1", experimental: true });
-    expect(text.startsWith('cask "shellfin@experimental" do\n')).toBe(true);
-    expect(text).toContain('  conflicts_with cask: "shellfin"');
-    expect(text).not.toContain('cask: "shellfin@experimental"');
+  it("refuses a pre-release version", () => {
+    expect(() => renderCask({ ...base, version: "0.3.0-experimental.1" })).toThrow(/pre-release/);
+    expect(() => renderCask({ ...base, version: "0.3.0-rc.1" })).toThrow(/pre-release/);
   });
 
   it("drops the caveats once the app is notarized", () => {
-    expect(renderCask({ ...base, experimental: false, notarized: true })).not.toContain("caveats");
+    expect(renderCask({ ...base, notarized: true })).not.toContain("caveats");
   });
 
   it("keeps Homebrew's stanza order", () => {
-    const text = renderCask({ ...base, experimental: false });
-    const order = ["version ", "sha256 ", "url ", "name ", "desc ", "homepage ", "livecheck ", "auto_updates ", "conflicts_with ", "depends_on arch", "depends_on macos", "app ", "zap ", "caveats "];
+    const text = renderCask(base);
+    const order = ["version ", "sha256 ", "url ", "name ", "desc ", "homepage ", "livecheck ", "auto_updates ", "depends_on arch", "depends_on macos", "app ", "zap ", "caveats "];
     const at = order.map((s) => text.indexOf(`\n  ${s}`));
     expect(at.every((i) => i > 0)).toBe(true);
     expect([...at].sort((x, y) => x - y)).toEqual(at);
@@ -88,32 +88,33 @@ describe("renderCask", () => {
   });
 
   it("refuses bad input", () => {
-    expect(() => renderCask({ ...base, experimental: false, sha256: "abc" })).toThrow(/sha256/);
-    expect(() => renderCask({ ...base, experimental: false, version: "1.2" })).toThrow(/SemVer/);
-    expect(() => renderCask({ ...base, experimental: false, repo: "evil/x/../y" })).toThrow(/repository/);
+    expect(() => renderCask({ ...base, sha256: "abc" })).toThrow(/sha256/);
+    expect(() => renderCask({ ...base, version: "1.2" })).toThrow(/SemVer/);
+    expect(() => renderCask({ ...base, repo: "evil/x/../y" })).toThrow(/repository/);
   });
 });
 
-describe("caskFor / never downgrade", () => {
-  it("picks the cask by pre-release state", () => {
-    expect(caskFor("0.2.0", false)).toMatchObject({ token: "shellfin", fileName: "shellfin.rb" });
-    expect(caskFor("0.3.0-experimental.1", false)).toMatchObject({ token: "shellfin@experimental" });
-    expect(caskFor("0.3.0", true)).toMatchObject({ experimental: true });
+describe("one cask / never downgrade", () => {
+  it("has a single cask", () => {
+    expect(CASK_TOKEN).toBe("shellfin");
+    expect(CASK_FILE).toBe("shellfin.rb");
   });
 
   it("writes only a strictly newer version", () => {
-    const old = renderCask({ ...base, experimental: false });
+    const old = renderCask(base);
     expect(caskVersion(old)).toBe("0.2.0");
     expect(isNewer("0.2.1", old)).toBe(true);
     expect(isNewer("0.2.0", old)).toBe(false);
     expect(isNewer("0.1.9", old)).toBe(false);
-    expect(isNewer("0.2.0", renderCask({ ...base, version: "0.2.0-experimental.2", experimental: true }))).toBe(true);
+    expect(isNewer("0.2.0", 'cask "shellfin" do\n  version "0.2.0-experimental.2"\nend\n')).toBe(true);
     expect(isNewer("0.1.0", "")).toBe(true);
   });
 });
 
 describe("tapReadme", () => {
-  it("documents both install commands", () => {
-    expect(tapReadme()).toContain("brew install --cask shellfin-app/tap/shellfin@experimental");
+  it("documents the one install command", () => {
+    const readme = tapReadme();
+    expect(readme).toContain("brew install --cask shellfin-app/tap/shellfin\n");
+    expect(readme).not.toContain("experimental");
   });
 });

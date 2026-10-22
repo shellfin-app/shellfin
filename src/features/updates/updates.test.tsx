@@ -363,7 +363,7 @@ describe("Linux .deb/.rpm (no self-update)", () => {
 });
 
 describe("settings: General", () => {
-  it("has one row per setting: automatic checks and the channel, saved with the rest", async () => {
+  it("has one row per setting: automatic checks only, saved with the rest", async () => {
     const { user, backend } = setupApp();
     const update = vi.spyOn(backend, "settingsUpdate");
     await user.click(screen.getByRole("button", { name: "Settings" }));
@@ -371,13 +371,11 @@ describe("settings: General", () => {
     await user.click(within(dialog).getByRole("tab", { name: "General" }));
     const auto = within(dialog).getByRole("checkbox", { name: "Check for updates automatically" });
     expect(auto).toHaveProperty("checked", true);
-    const channel = within(dialog).getByLabelText("Update channel");
-    expect(channel).toHaveProperty("value", "stable");
-    expect(within(channel).getAllByRole("option").map((o) => o.textContent)).toEqual(["Stable", "Experimental"]);
+    expect(within(dialog).queryByLabelText("Update channel")).toBeNull();
     await user.click(auto);
-    await user.selectOptions(channel, "Experimental");
     await user.click(within(dialog).getByRole("button", { name: "Save" }));
     await waitFor(() => expect(update).toHaveBeenCalledOnce());
-    expect(update.mock.calls[0]?.[0].general).toMatchObject({ autoUpdate: false, updateChannel: "experimental" });
+    expect(update.mock.calls[0]?.[0].general).toMatchObject({ autoUpdate: false });
+    expect(update.mock.calls[0]?.[0].general).not.toHaveProperty("updateChannel");
   });
 });

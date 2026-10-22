@@ -3,11 +3,13 @@
 import { Buffer } from "node:buffer";
 import { describe, expect, it } from "vitest";
 import {
+  MANIFEST_FILES,
   assembleManifest,
-  channelUpdates,
-  channelsFor,
+  assertStableRelease,
   compareSemver,
+  currentManifests,
   keyIdOfPubkey,
+  manifestUpdates,
   notesFromChangelog,
   parseSignature,
   shouldWrite,
@@ -146,16 +148,41 @@ describe("assemble latest.json", () => {
   });
 });
 
-describe("channel files of a published release", () => {
+describe("update manifests of a published release", () => {
   const manifest = (version) => ({ version, notes: "", pub_date: "2026-10-21T12:00:00Z", platforms: {} });
 
-  it("stable releases write both channels; pre-releases only experimental", () => {
-    expect(channelsFor("0.2.0", false)).toEqual(["stable", "experimental"]);
-    expect(channelsFor("0.2.0-experimental.1", false)).toEqual(["experimental"]);
-    expect(channelsFor("0.2.0-rc.1", false)).toEqual(["experimental"]);
+  it("accepts only stable releases", () => {
+    expect(() => assertStableRelease("0.2.0", false)).not.toThrow();
+    expect(() => assertStableRelease("0.2.0-experimental.1", false)).toThrow(/pre-release version/);
+    expect(() => assertStableRelease("0.2.0-rc.1", false)).toThrow(/pre-release version/);
     // Marked as a pre-release on GitHub, even without a SemVer suffix.
-    expect(channelsFor("0.2.0", true)).toEqual(["experimental"]);
-    expect(() => channelsFor("latest", false)).toThrow();
+    expect(() => assertStableRelease("0.2.0", true)).toThrow(/marked as a pre-release/);
+    expect(() => assertStableRelease("latest", false)).toThrow(/SemVer/);
+    // A pre-release writes nothing at all.
+    expect(() => manifestUpdates(manifest("0.3.0-experimental.1"), false, {})).toThrow();
+    expect(() => manifestUpdates(manifest("0.3.0"), true, {})).toThrow();
+  });
+
+  it("keeps experimental.json as the legacy mirror of stable.json", () => {
+    expect(MANIFEST_FILES).toEqual(["stable.json", "experimental.json"]);
+  });
+
+  it("treats only unlisted manifests as missing; a listed one must have been downloaded intact", () => {
+    const downloaded = { "stable.json": manifest("0.2.0"), "experimental.json": manifest("0.2.0") };
+    const read = (name) => downloaded[name] ?? null;
+    expect(currentManifests(["stable.json", "experimental.json", "other.txt"], read)).toEqual(downloaded);
+    // No `updater` release yet (empty listing), or a release without the mirror: those files are missing.
+    expect(currentManifests([], read)).toEqual({ "stable.json": null, "experimental.json": null });
+    expect(currentManifests(["stable.json"], read)).toEqual({ "stable.json": manifest("0.2.0"), "experimental.json": null });
+    // A listed file whose download failed, or that is not a manifest, fails instead of being overwritten.
+    expect(() => currentManifests(["stable.json", "experimental.json"], (n) => (n === "stable.json" ? read(n) : null))).toThrow(
+      /experimental\.json is listed/,
+    );
+    expect(() => currentManifests(["stable.json"], () => ({ version: "garbage" }))).toThrow(/stable\.json is listed/);
+    expect(() => currentManifests(["stable.json"], () => ["not", "a", "manifest"])).toThrow(/stable\.json is listed/);
+    // With a failed download treated as missing, republishing 0.1.0 would have overwritten 0.2.0; now it cannot.
+    const current = currentManifests(["stable.json", "experimental.json"], read);
+    expect(manifestUpdates(manifest("0.1.0"), false, current)).toEqual([]);
   });
 
   it("never regresses a channel: only strictly newer versions are written", () => {
@@ -168,17 +195,22 @@ describe("channel files of a published release", () => {
     expect(shouldWrite("0.2.0-experimental.3", manifest("0.2.0"))).toBe(false);
   });
 
-  it("stable after an experimental build updates both; an old stable republished changes nothing", () => {
-    const current = { stable: manifest("0.1.0"), experimental: manifest("0.2.0-experimental.2") };
-    expect(channelUpdates(manifest("0.2.0"), false, current).map((u) => u.name)).toEqual(["stable.json", "experimental.json"]);
-    // A newer experimental build than stable: experimental only.
-    expect(channelUpdates(manifest("0.3.0-experimental.1"), true, current).map((u) => u.name)).toEqual(["experimental.json"]);
-    // A stable release older than the experimental build: stable moves, experimental keeps the newer build.
-    const ahead = { stable: manifest("0.1.0"), experimental: manifest("0.3.0-experimental.1") };
-    expect(channelUpdates(manifest("0.2.0"), false, ahead).map((u) => u.name)).toEqual(["stable.json"]);
+  it("a stable release updates both files; the old experimental build moves to it; nothing is downgraded", () => {
+    const names = (updates) => updates.map((u) => u.name);
+    // Today's state: experimental.json still holds the 0.2.0-experimental.1 pre-release; 0.2.0 replaces it.
+    const current = { "stable.json": manifest("0.1.1"), "experimental.json": manifest("0.2.0-experimental.1") };
+    expect(names(manifestUpdates(manifest("0.2.0"), false, current))).toEqual(["stable.json", "experimental.json"]);
+    // A stable release older than what the legacy mirror holds: only stable.json moves.
+    const ahead = { "stable.json": manifest("0.1.0"), "experimental.json": manifest("0.3.0-experimental.1") };
+    expect(names(manifestUpdates(manifest("0.2.0"), false, ahead))).toEqual(["stable.json"]);
     // Republishing 0.1.0 later: nothing is written.
-    expect(channelUpdates(manifest("0.1.0"), false, { stable: manifest("0.2.0"), experimental: manifest("0.2.0") })).toEqual([]);
-    // First release ever: both files are created.
-    expect(channelUpdates(manifest("0.1.0"), false, {}).map((u) => u.name)).toEqual(["stable.json", "experimental.json"]);
+    const newer = { "stable.json": manifest("0.2.0"), "experimental.json": manifest("0.2.0") };
+    expect(manifestUpdates(manifest("0.1.0"), false, newer)).toEqual([]);
+    // First release ever, or a missing mirror: the files are created.
+    expect(names(manifestUpdates(manifest("0.1.0"), false, {}))).toEqual(["stable.json", "experimental.json"]);
+    const noMirror = { "stable.json": manifest("0.2.0"), "experimental.json": null };
+    expect(names(manifestUpdates(manifest("0.2.1"), false, noMirror))).toEqual(["stable.json", "experimental.json"]);
+    // Every written file carries the release's manifest unchanged.
+    expect(manifestUpdates(manifest("0.2.0"), false, {}).every((u) => u.manifest.version === "0.2.0")).toBe(true);
   });
 });

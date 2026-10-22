@@ -1,14 +1,13 @@
 //! Signed self-update (`docs/ARCHITECTURE.md` §9.8, §11.3).
 //!
 //! Everything runs in Rust; the WebView has no `updater:` permission and talks to the four app
-//! commands in `commands/update.rs`. The official `tauri-plugin-updater` fetches the channel
+//! commands in `commands/update.rs`. The official `tauri-plugin-updater` fetches the update
 //! manifest over HTTPS, downloads the artifact and verifies its minisign signature against the
 //! public key compiled into the app (`plugins.updater.pubkey`, `requireSignedVersion`).
 //!
 //! - **Guard** ([`check_allowed`]): never in dev/debug builds, never in `e2e` builds, never
-//!   without an HTTPS endpoint for the selected channel.
-//! - **Channels**: `general.updateChannel` picks `stable.json` or `experimental.json` from the
-//!   configured endpoints ([`endpoint_for`]) at every check, so a switch applies at the next check.
+//!   without an HTTPS `stable.json` endpoint.
+//! - **One channel**: the configured endpoint whose file is `stable.json` ([`stable_endpoint`]).
 //! - **Schedule** ([`run_schedule`]): first check 15 s after startup, then every 24 h of wall-clock
 //!   time (an hourly tick survives sleep/hibernate), only while `general.autoUpdate` is on.
 //! - **Skip**: an automatic check never announces the skipped version ([`should_announce`]); a
@@ -33,9 +32,11 @@ use url::Url;
 
 use crate::error::{AppError, ErrorCode};
 use crate::ipc::dto::{
-    Platform, UpdateChannel, UpdateCheckOutcome, UpdateInfo, UpdateInstallKind, UpdateProgress,
-    events,
+    Platform, UpdateCheckOutcome, UpdateInfo, UpdateInstallKind, UpdateProgress, events,
 };
+
+/// The update manifest's file name, the last path segment of the endpoint the updater reads.
+pub const MANIFEST_FILE: &str = "stable.json";
 
 /// First automatic check after startup.
 pub const FIRST_CHECK_DELAY: Duration = Duration::from_secs(15);
@@ -95,16 +96,16 @@ pub fn configured_endpoints(updater_config: Option<&Value>) -> Vec<Url> {
         .collect()
 }
 
-/// The configured endpoint of `channel`: the one whose last path segment is the channel file
-/// (`stable.json` / `experimental.json`).
-pub fn endpoint_for(endpoints: &[Url], channel: UpdateChannel) -> Option<Url> {
+/// The configured endpoint the updater reads: the HTTPS one whose last path segment is
+/// [`MANIFEST_FILE`].
+pub fn stable_endpoint(endpoints: &[Url]) -> Option<Url> {
     endpoints
         .iter()
         .find(|u| {
             u.scheme() == "https"
                 && u.path_segments()
                     .and_then(|mut s| s.next_back())
-                    .is_some_and(|last| last == channel.file_name())
+                    .is_some_and(|last| last == MANIFEST_FILE)
         })
         .cloned()
 }
@@ -121,7 +122,7 @@ pub fn build_allows_updates(flavor: BuildFlavor) -> Result<(), Disabled> {
 }
 
 /// The guard: dev/debug and `e2e` builds never check; neither does a build without an HTTPS
-/// endpoint for the channel.
+/// manifest endpoint.
 pub fn check_allowed(flavor: BuildFlavor, endpoint: Option<&Url>) -> Result<Url, Disabled> {
     build_allows_updates(flavor)?;
     endpoint
@@ -397,17 +398,11 @@ fn info_for(update: &Update, install: UpdateInstallKind) -> Result<UpdateInfo, A
     })
 }
 
-/// One check of the channel's manifest. `Ok(None)`: up to date.
-async fn check<R: Runtime>(
-    app: &AppHandle<R>,
-    channel: UpdateChannel,
-) -> Result<Option<(Update, UpdateInfo)>, AppError> {
+/// One check of the update manifest. `Ok(None)`: up to date.
+async fn check<R: Runtime>(app: &AppHandle<R>) -> Result<Option<(Update, UpdateInfo)>, AppError> {
     let endpoints = configured_endpoints(updater_config(app).as_ref());
-    let endpoint = check_allowed(
-        BuildFlavor::current(),
-        endpoint_for(&endpoints, channel).as_ref(),
-    )
-    .map_err(|d| AppError::new(ErrorCode::UpdatesDisabled).with_detail(format!("{d:?}")))?;
+    let endpoint = check_allowed(BuildFlavor::current(), stable_endpoint(&endpoints).as_ref())
+        .map_err(|d| AppError::new(ErrorCode::UpdatesDisabled).with_detail(format!("{d:?}")))?;
     let updater = app
         .updater_builder()
         .endpoints(vec![endpoint])
@@ -422,11 +417,6 @@ async fn check<R: Runtime>(
     Ok(Some((update, info)))
 }
 
-fn channel_of<R: Runtime>(app: &AppHandle<R>) -> Option<UpdateChannel> {
-    app.try_state::<crate::app_state::AppState>()
-        .map(|s| s.stores.settings().general.update_channel)
-}
-
 /// `update_check` (manual): reports the update even if its version was skipped.
 pub async fn manual_check<R: Runtime>(
     app: &AppHandle<R>,
@@ -435,15 +425,14 @@ pub async fn manual_check<R: Runtime>(
     if state.busy() {
         return Err(AppError::new(ErrorCode::UpdateInProgress));
     }
-    let channel = channel_of(app).unwrap_or_default();
-    match check(app, channel).await? {
+    match check(app).await? {
         Some((update, info)) => {
-            tracing::info!(version = %info.version, ?channel, "update available (manual check)");
+            tracing::info!(version = %info.version, "update available (manual check)");
             state.set_current(Some(update));
             Ok(UpdateCheckOutcome::Available { update: info })
         }
         None => {
-            tracing::info!(?channel, "no update available (manual check)");
+            tracing::info!("no update available (manual check)");
             state.set_current(None);
             Ok(UpdateCheckOutcome::UpToDate)
         }
@@ -458,8 +447,7 @@ async fn automatic_check<R: Runtime>(app: &AppHandle<R>) {
     if state.updates.busy() {
         return;
     }
-    let channel = state.stores.settings().general.update_channel;
-    match check(app, channel).await {
+    match check(app).await {
         Ok(Some((update, info))) => {
             let skipped = state
                 .stores
@@ -470,13 +458,13 @@ async fn automatic_check<R: Runtime>(app: &AppHandle<R>) {
                 tracing::info!(version = %info.version, "update available but skipped by the user");
                 return;
             }
-            tracing::info!(version = %info.version, ?channel, "update available");
+            tracing::info!(version = %info.version, "update available");
             state.updates.set_current(Some(update));
             if let Err(e) = app.emit(events::UPDATE_AVAILABLE, info) {
                 tracing::warn!(error = %e, "failed to emit update:available");
             }
         }
-        Ok(None) => tracing::info!(?channel, "no update available"),
+        Ok(None) => tracing::info!("no update available"),
         Err(e) => {
             tracing::warn!(code = ?e.kind, detail = ?e.detail, "automatic update check failed")
         }
@@ -484,7 +472,7 @@ async fn automatic_check<R: Runtime>(app: &AppHandle<R>) {
 }
 
 /// Start the automatic-check loop (called from `setup`). Dev/debug and e2e builds start no
-/// loop at all; the full guard (with the channel endpoint) runs again at every check.
+/// loop at all; the full guard (with the manifest endpoint) runs again at every check.
 pub fn spawn_scheduler<R: Runtime>(app: &AppHandle<R>) {
     if let Err(d) = build_allows_updates(BuildFlavor::current()) {
         tracing::info!(reason = ?d, "automatic update checks are off in this build");
@@ -619,13 +607,12 @@ mod tests {
     fn endpoints() -> Vec<Url> {
         configured_endpoints(Some(&json!({ "endpoints": [
             "https://github.com/shellfin-app/shellfin/releases/download/updater/stable.json",
-            "https://github.com/shellfin-app/shellfin/releases/download/updater/experimental.json",
         ]})))
     }
 
     #[test]
     fn guard_refuses_dev_e2e_and_missing_endpoints() {
-        let stable = endpoint_for(&endpoints(), UpdateChannel::Stable);
+        let stable = stable_endpoint(&endpoints());
         assert_eq!(
             check_allowed(RELEASE, stable.as_ref()).unwrap().as_str(),
             "https://github.com/shellfin-app/shellfin/releases/download/updater/stable.json"
@@ -677,40 +664,41 @@ mod tests {
     }
 
     #[test]
-    fn endpoint_selection_follows_the_channel() {
-        let eps = endpoints();
+    fn only_the_stable_manifest_endpoint_is_used() {
         assert!(
-            endpoint_for(&eps, UpdateChannel::Stable)
+            stable_endpoint(&endpoints())
                 .unwrap()
                 .as_str()
                 .ends_with("/updater/stable.json")
         );
-        assert!(
-            endpoint_for(&eps, UpdateChannel::Experimental)
-                .unwrap()
-                .as_str()
-                .ends_with("/updater/experimental.json")
-        );
-        // Only an exact last path segment matches; a missing channel has no endpoint.
-        let only_stable = configured_endpoints(Some(&json!({ "endpoints": [
-            "https://example.com/stable.json",
-            "https://example.com/experimental.json.bak",
-            "https://example.com/not-experimental.json",
+        // Only an exact last path segment matches: the legacy `experimental.json` mirror and
+        // look-alike names are never read, even when configured first.
+        let others = configured_endpoints(Some(&json!({ "endpoints": [
+            "https://example.com/experimental.json",
+            "https://example.com/stable.json.bak",
+            "https://example.com/not-stable.json",
+            "https://example.com/stable.json/",
         ]})));
-        assert!(endpoint_for(&only_stable, UpdateChannel::Experimental).is_none());
+        assert!(stable_endpoint(&others).is_none());
         assert_eq!(
-            check_allowed(
-                RELEASE,
-                endpoint_for(&only_stable, UpdateChannel::Experimental).as_ref()
-            ),
+            check_allowed(RELEASE, stable_endpoint(&others).as_ref()),
             Err(Disabled::NoEndpoint)
         );
-        assert!(endpoint_for(&[], UpdateChannel::Stable).is_none());
+        let mixed = configured_endpoints(Some(&json!({ "endpoints": [
+            "https://example.com/experimental.json",
+            "https://example.com/updater/stable.json",
+        ]})));
+        assert_eq!(
+            stable_endpoint(&mixed).unwrap().as_str(),
+            "https://example.com/updater/stable.json"
+        );
+        assert!(stable_endpoint(&[]).is_none());
     }
 
-    /// The shipped config: both channel endpoints on the official repository (HTTPS), the
-    /// release public key, signed versions required, NSIS passive mode, and updater artifacts
-    /// off by default (CI builds without the signing key; the release workflow turns them on).
+    /// The shipped config: exactly one endpoint, `stable.json` on the official repository
+    /// (HTTPS), the release public key, signed versions required, NSIS passive mode, and updater
+    /// artifacts off by default (CI builds without the signing key; the release workflow turns
+    /// them on).
     #[test]
     fn shipped_tauri_conf_is_the_trusted_updater_config() {
         let text = std::fs::read_to_string(
@@ -720,25 +708,18 @@ mod tests {
         let conf: Value = serde_json::from_str(&text).unwrap();
         let updater = &conf["plugins"]["updater"];
         let eps = configured_endpoints(Some(updater));
-        assert_eq!(eps.len(), 2, "{updater}");
+        assert_eq!(eps.len(), 1, "{updater}");
         assert_eq!(
             updater["endpoints"].as_array().unwrap().len(),
-            2,
+            1,
             "no non-HTTPS endpoint"
         );
-        let base = format!(
-            "{}/releases/download/updater/",
-            env!("CARGO_PKG_REPOSITORY")
-        );
         assert_eq!(
-            endpoint_for(&eps, UpdateChannel::Stable).unwrap().as_str(),
-            format!("{base}stable.json")
-        );
-        assert_eq!(
-            endpoint_for(&eps, UpdateChannel::Experimental)
-                .unwrap()
-                .as_str(),
-            format!("{base}experimental.json")
+            stable_endpoint(&eps).unwrap().as_str(),
+            format!(
+                "{}/releases/download/updater/stable.json",
+                env!("CARGO_PKG_REPOSITORY")
+            )
         );
         assert_eq!(
             updater["pubkey"],

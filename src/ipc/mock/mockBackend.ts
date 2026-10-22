@@ -1283,7 +1283,7 @@ export class MockBackend implements Backend {
   probeCount = 0;
 
   // ---- updates (models the updater contract, src-tauri/src/updater.rs) ----
-  /** The update the channel manifest offers (`null` = up to date). Tests set it directly. */
+  /** The update `stable.json` offers (`null` = up to date). Tests set it directly. */
   publishedUpdate: UpdateInfo | null = null;
   /** The version stored by "Skip this version". */
   skippedUpdateVersion: string | null = null;
