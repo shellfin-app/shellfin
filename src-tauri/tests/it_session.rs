@@ -921,6 +921,28 @@ mod unix_agent {
         let guard = AgentGuard(child);
         for _ in 0..50 {
             if sock.exists() {
+                // ssh-agent creates its socket 0600. For another user's agent, open it up so the connect succeeds
+                // and the owner check (not plain EACCES) is what rejects it.
+                if let Some(user) = as_user {
+                    let opened = if unsafe { libc::geteuid() } == 0 {
+                        std::fs::set_permissions(
+                            sock,
+                            std::os::unix::fs::PermissionsExt::from_mode(0o666),
+                        )
+                        .is_ok()
+                    } else {
+                        quiet(
+                            Command::new("sudo")
+                                .args(["-n", "-u", user, "chmod", "666"])
+                                .arg(sock),
+                        )
+                        .status()
+                        .is_ok_and(|s| s.success())
+                    };
+                    if !opened {
+                        return None;
+                    }
+                }
                 return Some(guard);
             }
             std::thread::sleep(Duration::from_millis(100));
