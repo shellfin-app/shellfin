@@ -7,7 +7,7 @@ body:
     attributes:
       value: |
         Thanks for the idea. Please check the v1 scope in the README and `docs/ARCHITECTURE.md` (section 1.1) first;
-        some things, such as port-forwarding UI, ProxyCommand and auto-update, are deliberately out of scope for v1
+        some things, such as port-forwarding UI, ProxyCommand and split panes, are deliberately out of scope for v1
         but can still be discussed for later.
   - type: textarea
     id: problem

@@ -1,6 +1,6 @@
 # Contributing to Shellfin
 
-Thank you for your interest. Shellfin is in early development (pre-alpha), so the architecture is still moving.
+Thank you for your interest. Shellfin is at an early release stage (0.x), so the architecture is still moving.
 For anything bigger than a small fix, please open an issue or a discussion first so we can agree on the approach
 before you invest time.
 
@@ -43,7 +43,7 @@ Frontend:
 npm run lint          # ESLint, zero warnings allowed
 npm run typecheck
 npm run test          # Vitest
-npm run i18n:check    # translation keys match the code
+npm run i18n:check    # translation keys match the code, menu bar mnemonics are unique
 npm run build         # type check + production bundle + "no mock backend in the bundle" check
 npm run test:freeze   # bundle still works with Object.prototype frozen (as Tauri does at runtime)
 ```
@@ -55,7 +55,9 @@ tests. If you use an AI coding agent, point it at [AGENTS.md](AGENTS.md).
 Also checked in CI: bindings drift (see below), `npm run notices:check` (the third-party licence notices are
 regenerated from the lockfiles; after a dependency change run `npm run notices`, which needs
 `cargo install cargo-about --version 0.9.2 --locked --features cli` and `npm ci`), `cargo check` on the minimum
-Rust version, `actionlint`, `zizmor`, `gitleaks`, `cargo deny`, `cargo audit` and `npm audit`. On a pull request CI
+Rust version, `actionlint`, `zizmor`, `gitleaks`, `cargo deny`, `cargo audit`, `npm audit`, a guard that `rsa`
+resolves to exactly one 0.10.x, no inline `<script>`/`<style>` in `dist/index.html`, and a rendered and
+`brew style`-checked Homebrew cask (`scripts/homebrew-cask.mjs`). On a pull request CI
 skips the jobs your changes cannot affect (for example the Rust and installer jobs for a change under `src/` only; the
 build configuration such as `vite.config.ts`, `tsconfig*.json` or `package.json` still runs the installer builds; rules
 in `.github/scripts/ci-changes.sh`) and runs again when you change the pull request's base branch; `ci-ok` sums up the

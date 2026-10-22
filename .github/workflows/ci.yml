@@ -158,7 +158,7 @@ jobs:
       - name: Bindings drift check (src/ipc/bindings must match the Rust DTOs)
         run: node scripts/bindings-check.mjs
 
-      # THIRD_PARTY_NOTICES.txt (shipped in the installers, §11.5) and the installer licence page are
+      # THIRD_PARTY_NOTICES.txt (shipped in the installers, §11.6) and the installer licence page are
       # generated from Cargo.lock and package-lock.json; a dependency change must regenerate them.
       - name: Licence notices are up to date
         run: npm run notices:check

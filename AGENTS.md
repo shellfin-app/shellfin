@@ -17,15 +17,15 @@ Repository: `shellfin-app/shellfin`, site <https://shellfin.app>, app id `app.sh
 
 | Path | What |
 |---|---|
-| `src-tauri/src/` | Rust core. `commands/` thin Tauri commands (+ `names.rs` command list), `ssh/` connect/auth/agent/prompts, `session/` supervisor, state machine, reconnect, `terminal/`, `sftp/` (listing, save, transfer, throttle), `sshconfig/`, `known_hosts/`, `storage/` (bookmarks/settings/recents JSON), `platform/` (local path allowlist, file trust, Win32 security), `ipc/dto.rs` (all DTOs), `error.rs`, `window.rs`, `quit.rs`, `app_menu.rs`, `e2e.rs` |
+| `src-tauri/src/` | Rust core. `commands/` thin Tauri commands (+ `names.rs` command list), `ssh/` connect/auth/agent/prompts, `session/` supervisor, state machine, reconnect, `terminal/`, `sftp/` (listing, save, transfer, throttle), `sshconfig/`, `known_hosts/`, `storage/` (bookmarks/settings/recents JSON), `platform/` (local path allowlist, file trust, Win32 security), `ipc/dto.rs` (all DTOs), `error.rs`, `updater.rs` (signed self-update), `secrets.rs` (OS keychain), `watcher.rs` (ssh config watcher), `logging.rs`, `notify.rs`, `external_link.rs`, `app_state.rs`, `window.rs`, `quit.rs`, `app_menu.rs`, `e2e.rs` |
 | `src-tauri/tests/` | Integration tests (`it_*.rs`, Docker sshd in `tests/sshd/`), memory tests, throwaway key fixtures |
 | `src-tauri/capabilities/main.json` | The one capability: event listen/unlisten plus one `allow-<command>` per app command |
-| `src/features/` | UI by feature: `shell`, `hosts`, `files`, `editor`, `terminal`, `session`, `transfers`, `palette`, `keys`, `settings`, `menu`, `actions`, `welcome` |
+| `src/features/` | UI by feature: `shell`, `hosts`, `files`, `editor`, `terminal`, `session`, `transfers`, `palette`, `keys`, `settings`, `menu`, `actions`, `updates`, `welcome` |
 | `src/ipc/` | `backend.ts` (interface), `tauriBackend.ts`, `mock/` (MockBackend, scenarios, FakeFs), `bindings/` (**generated**) |
 | `src/state/`, `src/lib/`, `src/components/`, `src/i18n/` | Zustand slices, pure helpers, shared components, i18next + `locales/{en,uk}/translation.json` |
-| `scripts/`, `vite-plugins/` | Build-time guards (`assert-no-mock.mjs`, `freeze-check.mjs`, `bindings-check.mjs`, `freezeSafe.ts`), the licence notice generator (`notices.mjs`) and the updater manifest tool (`updater-manifest.mjs`) |
+| `scripts/`, `vite-plugins/` | Build-time guards (`assert-no-mock.mjs`, `freeze-check.mjs`, `bindings-check.mjs`, `menu-mnemonics-check.mjs`, `freezeSafe.ts`), the woff-dropping font plugin (`woff2Only.ts`), the licence notice generator (`notices.mjs`), the updater manifest tool (`updater-manifest.mjs`) and the Homebrew cask generator (`homebrew-cask.mjs`) |
 | `THIRD_PARTY_NOTICES.txt`, `src-tauri/installer/` | **Generated** licence notices shipped with the app and the installer licence page; `npm run notices` regenerates them, never hand-edit |
-| `assets/brand/` | Logo and brand images; `docs/` architecture and smoke-run notes |
+| `assets/brand/` | Logo and brand images; `docs/` architecture, smoke-run notes and the Ukrainian glossary (`i18n-glossary-uk.md`) |
 
 Deep reference: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (§4 IPC, §5 connection lifecycle, §6 SFTP/editor,
 §7 storage, §8 frontend, §9 security, §10 testing, §11 build/release). Read the relevant section before changing
@@ -59,7 +59,7 @@ cd ..
 npm run lint               # ESLint, zero warnings
 npm run typecheck
 npm run test               # Vitest
-npm run i18n:check         # translation keys match the code
+npm run i18n:check         # translation keys match the code, menu bar mnemonics are unique
 npm run notices:check      # THIRD_PARTY_NOTICES.txt matches the lockfiles (needs cargo-about, see CONTRIBUTING)
 npm run build              # tsc + production bundle + "no mock backend in the bundle" check
 npm run test:freeze        # bundle works with Object.prototype frozen (Tauri freezePrototype)

@@ -4,7 +4,7 @@ import type { ImportInvalid } from "./ImportInvalid";
 
 export type BookmarksImportResult = { 
 /**
- * `false` = the dialog was cancelled.
+ * Always `true`: the file was already picked in `bookmarks_import_open`.
  */
 picked: boolean, added: number, replaced: number, skipped: number, invalid: Array<ImportInvalid>, 
 /**

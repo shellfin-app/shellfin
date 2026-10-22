@@ -61,8 +61,9 @@ forwarding, recursive directory transfer.
 | Linux | x64 (AppImage, deb, rpm) |
 | macOS 11+ | Apple Silicon (arm64) |
 
-32-bit Windows and Intel Macs are not supported. CI builds all of the above on every change; release builds are
-produced by a protected workflow (see [CONTRIBUTING.md](CONTRIBUTING.md#releasing)).
+32-bit Windows and Intel Macs are not supported. CI builds all of the above on every push to `main` and on pull
+requests that change the Rust core or the build configuration; release builds are produced by a protected workflow
+(see [CONTRIBUTING.md](CONTRIBUTING.md#releasing)).
 
 ## Install
 
@@ -93,8 +94,8 @@ With [Homebrew](https://brew.sh) (Apple Silicon):
 brew install --cask shellfin-app/tap/shellfin
 ```
 
-Shellfin updates itself, so Homebrew does not manage later versions (`auto_updates`); `brew upgrade --cask` also
-works. Or open the DMG and drag Shellfin to Applications. The `shellfin@experimental` cask is no longer updated; if
+Shellfin updates itself, so Homebrew does not manage later versions (`auto_updates`); `brew upgrade --cask shellfin`
+also works. Or open the DMG and drag Shellfin to Applications. The `shellfin@experimental` cask is no longer updated; if
 you installed it, switch with
 `brew uninstall --cask shellfin@experimental && brew install --cask shellfin-app/tap/shellfin`.
 
@@ -127,7 +128,7 @@ On Windows PowerShell, `Get-FileHash <file> -Algorithm SHA256` prints the hash t
 
 ### Updates
 
-Shellfin checks for signed updates a few seconds after startup and then once a day (Settings > General; also Help >
+Shellfin checks for signed updates about 15 seconds after startup and then once a day (Settings > General; also Help >
 "Check for updates…"). Nothing is installed without your confirmation, and every download is verified against the
 Shellfin release key. There is one update channel with stable releases only. If you run the former experimental build
 (0.2.0-experimental.1) or a 0.1.x install set to "Experimental", you need to do nothing: it moves to the stable channel
@@ -192,7 +193,8 @@ src-tauri/           Rust core: SSH, SFTP, config parsing, storage, Tauri comman
 docs/                Architecture reference (start with docs/ARCHITECTURE.md) and smoke-run notes
 assets/brand/        Logo and brand images
 assets/screenshots/  README screenshots (dark.png, light.png)
-scripts/             Build-time checks, licence notice and updater manifest generators used by CI and releases
+scripts/             Build-time checks, licence notice, updater manifest and Homebrew cask generators used by CI and
+                     releases
 AGENTS.md            Onboarding for AI coding agents
 ```
 

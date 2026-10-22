@@ -444,12 +444,6 @@ impl AppError {
         Self::new(ErrorCode::Internal).with_detail(detail)
     }
 
-    /// Placeholder for commands whose service lands later. Uses the
-    /// existing `internal` code so the contract stays unchanged.
-    pub fn not_implemented(command: &str) -> Self {
-        Self::internal(format!("not implemented yet: {command}"))
-    }
-
     pub fn invalid_argument(field: impl Into<String>) -> Self {
         Self::new(ErrorCode::InvalidArgument {
             field: field.into(),
@@ -593,16 +587,6 @@ mod tests {
         assert_eq!(
             to_json(&e),
             json!({ "code": "keyLoadFailed", "params": { "path": "k", "reason": "notAFile" } })
-        );
-    }
-
-    #[test]
-    fn not_implemented_uses_internal_code() {
-        let e = AppError::not_implemented("session_open");
-        assert_eq!(e.kind, ErrorCode::Internal);
-        assert_eq!(
-            to_json(&e),
-            json!({ "code": "internal", "detail": "not implemented yet: session_open" })
         );
     }
 }

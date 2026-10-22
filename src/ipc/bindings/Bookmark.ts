@@ -22,7 +22,7 @@ uploadLimitKiBps: number | null, downloadLimitKiBps: number | null,
 confirmConnect: boolean, 
 /**
  * One line (≤ 1024 chars) the frontend sends to the first terminal; never
- * logged, never imported.
+ * logged, imported only when the user opts in per import (§7.7).
  */
 startupCommand: string | null, 
 /**

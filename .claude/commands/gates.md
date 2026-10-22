@@ -1,6 +1,6 @@
 ---
 description: Run every Shellfin quality gate (Rust and frontend) and summarise the result
-allowed-tools: Bash(cd src-tauri && cargo fmt *) Bash(cd src-tauri && cargo clippy *) Bash(cd src-tauri && cargo test *) Bash(npm run notices:check) Bash(npm run lint) Bash(npm run typecheck) Bash(npm run test) Bash(npm run i18n:check) Bash(npm run build) Bash(npm run test:freeze) Bash(git status *) Bash(git diff *)
+allowed-tools: Bash(cd src-tauri && cargo fmt *) Bash(cd src-tauri && cargo clippy *) Bash(cd src-tauri && cargo test *) Bash(npm run notices:check) Bash(npm run lint) Bash(npm run typecheck) Bash(npm run test) Bash(npm run i18n:check) Bash(npm run build) Bash(npm run test:freeze) Bash(node scripts/bindings-check.mjs) Bash(docker compose -p shellfin-it -f src-tauri/tests/sshd/compose.yml down -v) Bash(git status *) Bash(git diff *)
 ---
 
 Run the quality gates from AGENTS.md, in this order, and keep going after a failure so the report is complete.
@@ -12,8 +12,9 @@ Run each command from the repository root with the `cd src-tauri && ...` form fo
 4. `cd src-tauri && cargo clippy --locked --all-targets --features e2e -- -D warnings`
 5. `cd src-tauri && cargo test --locked` (also regenerates the ts-rs bindings)
 6. `cd src-tauri && cargo test --locked --features e2e --lib e2e::`
-7. `git status --short src/ipc/bindings`: any change here means the committed bindings are out of date; report it
-   (do not hand-edit them; `npm run bindings` regenerates).
+7. `node scripts/bindings-check.mjs` (what CI and `npm run bindings:check` run after regenerating): a changed, new
+   untracked or orphan file in `src/ipc/bindings` means the committed bindings are out of date; report it (do not
+   hand-edit them; `npm run bindings` regenerates).
 8. `npm run lint`
 9. `npm run typecheck`
 10. `npm run test`

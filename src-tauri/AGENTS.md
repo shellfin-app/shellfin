@@ -17,7 +17,8 @@ Applies on top of the root [AGENTS.md](../AGENTS.md). Deep reference: `docs/ARCH
   provenance mark), `throttle`, `drops`.
 - `sshconfig/`, `known_hosts/` own parsers/writers (do not swap in russh's). `storage/` JSON files, atomic, 0600,
   validate-on-load, migrations. `platform/` is the only way to open local files (`local_path` allowlist + `file_trust`
-  on the opened handle) and holds all Win32 security code. `window.rs`, `quit.rs`, `app_menu.rs`, `e2e.rs`.
+  on the opened handle) and holds all Win32 security code. `updater.rs` signed self-update (ARCHITECTURE §9.8).
+  `window.rs`, `quit.rs`, `app_menu.rs`, `e2e.rs`.
 - `ipc/dto.rs` holds every DTO. Outbound types derive `Serialize + TS`, inbound `Deserialize + TS`; secrets are
   `Secret<T>` (inbound only, zeroized, `Debug` masked). Keep the list of secret-bearing fields exhaustive.
 
@@ -49,8 +50,9 @@ Applies on top of the root [AGENTS.md](../AGENTS.md). Deep reference: `docs/ARCH
 
 ## Rules that bite
 
-- Lints deny `unwrap_used`, `expect_used`, `std::process::Command` (`clippy.toml`) and, in `ssh/`, `sftp/`,
-  `sshconfig/`, `known_hosts/`, slice indexing. `panic = "unwind"` is required (supervisors contain panics).
+- Lints deny `unwrap_used`, `expect_used` (`[lints.clippy]` in `Cargo.toml`), `std::process::Command::new`
+  (`disallowed-methods` in `clippy.toml`) and, in `ssh/`, `sftp/`, `sshconfig/`, `known_hosts/`, slice indexing.
+  `panic = "unwind"` is required (supervisors contain panics).
 - Never log secrets, terminal data, file contents or kbd-int answers. Panic hook logs the location only.
 - Remote paths: POSIX only, absolute, no NUL, <= 4096 bytes; refuse U+FFFD paths for file operations.
 - `e2e` is a test-only feature that redirects all user state; it must never reach a release build (see `e2e.rs`,
