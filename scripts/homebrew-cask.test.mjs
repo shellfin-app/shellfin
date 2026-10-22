@@ -14,12 +14,12 @@ import {
 } from "./homebrew-cask.mjs";
 
 const HASH = "a".repeat(64);
-const base = { repo: "shellfin-app/shellfin", version: "0.2.0", sha256: HASH, macos: ">= :big_sur", notarized: false };
+const base = { repo: "shellfin-app/shellfin", version: "0.2.0", sha256: HASH, macos: ":big_sur", notarized: false };
 
 describe("macosRequirement", () => {
   it("maps the bundle minimum to a Homebrew symbol", () => {
-    expect(macosRequirement("11.0")).toBe(">= :big_sur");
-    expect(macosRequirement("14")).toBe(">= :sonoma");
+    expect(macosRequirement("11.0")).toBe(":big_sur");
+    expect(macosRequirement("14")).toBe(":sonoma");
     expect(() => macosRequirement("10.15")).toThrow(/no Homebrew macOS symbol/);
     expect(() => macosRequirement(undefined)).toThrow();
   });
@@ -27,7 +27,7 @@ describe("macosRequirement", () => {
   it("matches tauri.conf.json", () => {
     const dir = dirname(fileURLToPath(import.meta.url));
     const conf = JSON.parse(readFileSync(join(dir, "..", "src-tauri", "tauri.conf.json"), "utf8"));
-    expect(macosRequirement(conf.bundle.macOS.minimumSystemVersion)).toMatch(/^>= :[a-z_]+$/);
+    expect(macosRequirement(conf.bundle.macOS.minimumSystemVersion)).toMatch(/^:[a-z_]+$/);
   });
 });
 
@@ -56,9 +56,9 @@ describe("renderCask", () => {
     expect(text).toContain("  auto_updates true");
     expect(text).toContain('  conflicts_with cask: "shellfin@experimental"');
     expect(text).toContain("  depends_on arch: :arm64");
-    expect(text).toContain('  depends_on macos: ">= :big_sur"');
+    expect(text).toContain("  depends_on macos: :big_sur");
     expect(text).toContain('  app "Shellfin.app"');
-    expect(text).toContain('  homepage "https://shellfin.app"');
+    expect(text).toContain('  homepage "https://shellfin.app/"');
     expect(text).toContain("  livecheck do\n    skip ");
     expect(text).toContain('"~/Library/Application Support/app.shellfin.desktop",');
     expect(text).toContain('"~/Library/Logs/app.shellfin.desktop",');

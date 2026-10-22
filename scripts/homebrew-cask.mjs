@@ -20,7 +20,7 @@ import { compareSemver, channelsFor, parseSemver } from "./updater-manifest.mjs"
 
 export const APP_ID = "app.shellfin.desktop";
 export const DESCRIPTION = "Cross-platform SSH client with terminals, SFTP file tree and editor";
-export const HOMEPAGE = "https://shellfin.app";
+export const HOMEPAGE = "https://shellfin.app/";
 
 /** Homebrew's macOS symbols by major version. */
 export const MACOS_NAMES = {
@@ -32,12 +32,15 @@ export const MACOS_NAMES = {
   26: "tahoe",
 };
 
-/** `bundle.macOS.minimumSystemVersion` ("11.0") -> `>= :big_sur`. Throws for a version Homebrew has no symbol for. */
+/**
+ * `bundle.macOS.minimumSystemVersion` ("11.0") -> `:big_sur`. Homebrew's style check wants the bare symbol, which
+ * already means "this version or newer". Throws for a version Homebrew has no symbol for.
+ */
 export function macosRequirement(minimumSystemVersion) {
   const major = Number(String(minimumSystemVersion ?? "").split(".")[0]);
   const name = MACOS_NAMES[major];
   if (!name) throw new Error(`no Homebrew macOS symbol for minimumSystemVersion ${minimumSystemVersion}`);
-  return `>= :${name}`;
+  return `:${name}`;
 }
 
 /** The hash of `fileName` in a `sha256sum` file; throws unless exactly one well-formed line names it. */
@@ -87,7 +90,7 @@ export function renderCask({ repo, version, sha256, experimental, macos, notariz
     `  auto_updates true`,
     `  conflicts_with cask: "${other}"`,
     `  depends_on arch: :arm64`,
-    `  depends_on macos: "${macos}"`,
+    `  depends_on macos: ${macos}`,
     ``,
     `  app "Shellfin.app"`,
     ``,
