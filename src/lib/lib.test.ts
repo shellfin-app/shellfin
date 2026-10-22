@@ -33,6 +33,27 @@ describe("displayServerText (§9.5)", () => {
     expect(displayServerText("x\u{1F600}y", 100)).toBe("x\u{1F600}y"); // ordinary astral characters are untouched
     expect(displayServerText("café 日本 ❤️", 100)).toBe("café 日本 ❤️"); // text and emoji stay intact
   });
+  it("escapes variation selectors 1-14 but keeps the text/emoji presentation selectors", () => {
+    expect(displayServerText("a︀b", 100)).toBe("a⟨U+FE00⟩b");
+    expect(displayServerText("a︍b", 100)).toBe("a⟨U+FE0D⟩b");
+    expect(displayServerText("a︎b", 100)).toBe("a︎b");
+    expect(displayServerText("a️b", 100)).toBe("a️b");
+    expect(displayServerText("❤️", 100)).toBe("❤️");
+    expect(displayServerText("a︀.txt", 100)).not.toBe(displayServerText("a.txt", 100));
+    expect(displayServerText("a\u{E0100}b\u{E01EF}c", 100)).toBe("a⟨U+E0100⟩b⟨U+E01EF⟩c"); // VS17-256 via the tag range
+    for (let cp = 0xfe00; cp <= 0xfe0f; cp++) {
+      const ch = String.fromCodePoint(cp);
+      const shown = displayServerText(ch, 100);
+      expect(shown === ch).toBe(cp >= 0xfe0e);
+    }
+  });
+  it("counts escape markers as characters when truncating", () => {
+    // the limit applies to the escaped text (each marker is 8 code points), as for every other escape
+    expect(displayServerText("︀︁︂", 3)).toBe("⟨U…");
+    expect(displayServerText("︀︁", 9)).toBe("⟨U+FE00⟩…");
+    expect(displayServerText("︀︁", 16)).toBe("⟨U+FE00⟩⟨U+FE01⟩");
+    expect(displayServerText("ab︀cd", 100)).toBe("ab⟨U+FE00⟩cd");
+  });
   it("truncates with an ellipsis", () => {
     expect(displayServerText("abcdefghij", 5)).toBe("abcd…");
     expect(displayServerText("abc", 5)).toBe("abc");
