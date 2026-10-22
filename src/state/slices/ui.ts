@@ -1,4 +1,4 @@
-import type { AppError, BookmarksExportResult, BookmarksImportResult, WindowState } from "../../ipc/types";
+import type { AppError, BookmarksExportResult, BookmarksImportPreview, BookmarksImportResult, WindowState } from "../../ipc/types";
 import { loadLayoutPrefs } from "../layoutPrefs";
 import type { SliceCreator } from "./types";
 
@@ -12,8 +12,10 @@ export type BookmarksIoResult =
 
 /** Modal dialogs driven by the store (prompts are driven by the prompts slice, not by this). */
 export type DialogState =
-  /** Bookmark import / export: options first (conflict strategy, format), then the native file dialog. */
-  | { kind: "bookmarksIo"; mode: "import" | "export" }
+  /** Bookmark export options (format), then the native Save dialog. */
+  | { kind: "bookmarksIo" }
+  /** Bookmark import review after the file was picked: nothing is saved until the user confirms (`token` = pending import). */
+  | { kind: "bookmarksImport"; preview: BookmarksImportPreview; token: string }
   | { kind: "bookmarksIoResult"; result: BookmarksIoResult }
   /**
    * `prefill`: a `[user@]host[:port]` spec for a new bookmark (quick connect -> "Save as bookmark", "Edit connection").

@@ -104,6 +104,94 @@ describe("MockBackend", () => {
     }
   });
 
+  describe("bookmark import (open / apply / cancel)", () => {
+    it("open previews without writing; apply consumes the token; a second apply is a token error", async () => {
+      const backend = new MockBackend({ scenario: "importStartupCommands" });
+      const before = (await backend.bookmarksGet()).bookmarks.length;
+      const preview = await backend.bookmarksImportOpen("t");
+      expect(preview).toMatchObject({ picked: true, bookmarks: 4, conflicts: 1 });
+      expect(preview.invalid).toHaveLength(1);
+      expect(preview.startupCommands.map((c) => [c.name === "pi-home", c.exists])).toEqual([
+        [false, false],
+        [true, true],
+        [false, false],
+      ]);
+      expect((await backend.bookmarksGet()).bookmarks.length).toBe(before);
+      const token = preview.token ?? "";
+      await backend.bookmarksImportApply(token, "skip", false);
+      await expect(backend.bookmarksImportApply(token, "skip", false)).rejects.toMatchObject({
+        error: { code: "invalidArgument", params: { field: "token" } },
+      });
+    });
+
+    it("keep=false strips the commands and names them; keep=true imports the valid ones", async () => {
+      const backend = new MockBackend();
+      backend.importFile = {
+        bookmarks: [
+          { name: "a", host: "a.example.com", startupCommand: "uptime" },
+          { name: "b", host: "b.example.com", startupCommand: "bad\ncommand" },
+        ],
+      };
+      let preview = await backend.bookmarksImportOpen("t");
+      expect(preview.startupCommands.map((c) => c.name)).toEqual(["a"]); // an invalid command is not offered
+      let result = await backend.bookmarksImportApply(preview.token ?? "", "skip", false);
+      expect(result.startupCommandsStripped).toEqual(["a", "b"]);
+      expect((await backend.bookmarksGet()).bookmarks.find((x) => x.name === "a")?.startupCommand).toBeNull();
+
+      backend.importFile = { bookmarks: [{ name: "c", host: "c.example.com", startupCommand: "uptime" }] };
+      preview = await backend.bookmarksImportOpen("t");
+      result = await backend.bookmarksImportApply(preview.token ?? "", "skip", true);
+      expect(result.startupCommandsStripped).toEqual([]);
+      expect((await backend.bookmarksGet()).bookmarks.find((x) => x.name === "c")?.startupCommand).toBe("uptime");
+    });
+
+    it("replace never overwrites a bookmark this import added (a later same-name entry is skipped, like the backend)", async () => {
+      const backend = new MockBackend();
+      backend.importFile = {
+        bookmarks: [
+          { name: "dupe", host: "a.example.com", startupCommand: "first" },
+          { name: "DUPE", host: "b.example.com", startupCommand: "second" },
+        ],
+      };
+      const preview = await backend.bookmarksImportOpen("t");
+      const result = await backend.bookmarksImportApply(preview.token ?? "", "replace", true);
+      expect(result).toMatchObject({ added: 1, replaced: 0, skipped: 1 });
+      const dupe = (await backend.bookmarksGet()).bookmarks.filter((x) => x.name.toLowerCase() === "dupe");
+      expect(dupe.map((x) => [x.host, x.startupCommand])).toEqual([["a.example.com", "first"]]);
+    });
+
+    it("a wrong token still consumes the pending import; cancel is idempotent and token-bound", async () => {
+      const backend = new MockBackend();
+      const first = await backend.bookmarksImportOpen("t");
+      await expect(backend.bookmarksImportApply("nope", "skip", false)).rejects.toMatchObject({ error: { code: "invalidArgument" } });
+      await expect(backend.bookmarksImportApply(first.token ?? "", "skip", false)).rejects.toMatchObject({ error: { code: "invalidArgument" } });
+
+      const second = await backend.bookmarksImportOpen("t");
+      await backend.bookmarksImportCancel("other");
+      await backend.bookmarksImportCancel(second.token ?? "");
+      await backend.bookmarksImportCancel(second.token ?? "");
+      await expect(backend.bookmarksImportApply(second.token ?? "", "skip", false)).rejects.toMatchObject({ error: { code: "invalidArgument" } });
+    });
+
+    it("open refuses a read-only store before the dialog, leaving nothing pending", async () => {
+      const backend = new MockBackend();
+      const first = await backend.bookmarksImportOpen("t");
+      (await backend.bookmarksGet()).readOnly = true;
+      await expect(backend.bookmarksImportOpen("t")).rejects.toMatchObject({ error: { code: "storageReadOnly" } });
+      await expect(backend.bookmarksImportApply(first.token ?? "", "skip", false)).rejects.toMatchObject({ error: { code: "invalidArgument" } });
+    });
+
+    it("a new open replaces the pending import; a cancelled dialog has no token", async () => {
+      const backend = new MockBackend();
+      const first = await backend.bookmarksImportOpen("t");
+      const second = await backend.bookmarksImportOpen("t");
+      expect(second.token).not.toBe(first.token);
+      await expect(backend.bookmarksImportApply(first.token ?? "", "skip", false)).rejects.toMatchObject({ error: { code: "invalidArgument" } });
+      backend.importFile = null;
+      expect(await backend.bookmarksImportOpen("t")).toMatchObject({ picked: false, token: null });
+    });
+  });
+
   it("session_close emits recents:changed", async () => {
     const backend = new MockBackend();
     const { id } = await connect(backend);

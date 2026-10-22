@@ -54,7 +54,9 @@ app_commands![
     hosts::recents_get,
     hosts::recents_clear,
     hosts::bookmarks_export,
-    hosts::bookmarks_import,
+    hosts::bookmarks_import_open,
+    hosts::bookmarks_import_apply,
+    hosts::bookmarks_import_cancel,
     settings::settings_get,
     settings::settings_update,
     settings::settings_reset,
@@ -191,7 +193,7 @@ mod acl_tests {
             "duplicate handler command"
         );
         assert_eq!(handler, names());
-        assert_eq!(COMMAND_NAMES.len(), 67);
+        assert_eq!(COMMAND_NAMES.len(), 69);
     }
 
     /// Updater: the WebView reaches the updater only through our four commands.

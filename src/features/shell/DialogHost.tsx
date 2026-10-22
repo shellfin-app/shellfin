@@ -126,9 +126,8 @@ export function DialogHost() {
       {dialog?.kind === "closeSession" ? <CloseSessionDialog key={dialog.sessionId} sessionId={dialog.sessionId} reopen={dialog.reopen} /> : null}
       <LazyDialogBoundary key={`io:${kind ?? ""}`} onError={closeLazyDialog}>
         <Suspense fallback={null}>
-          {dialog?.kind === "bookmarksIo" ? (
-            dialog.mode === "import" ? <ImportBookmarksDialog key="import" /> : <ExportBookmarksDialog key="export" />
-          ) : null}
+          {dialog?.kind === "bookmarksIo" ? <ExportBookmarksDialog key="export" /> : null}
+          {dialog?.kind === "bookmarksImport" ? <ImportBookmarksDialog key={dialog.token} preview={dialog.preview} token={dialog.token} /> : null}
           {dialog?.kind === "bookmarksIoResult" ? <BookmarksIoResultDialog result={dialog.result} /> : null}
         </Suspense>
       </LazyDialogBoundary>

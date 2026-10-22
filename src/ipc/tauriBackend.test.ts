@@ -56,7 +56,13 @@ const ROWS: Row[] = [
   ["recents_get", (b) => b.recentsGet(), []],
   ["recents_clear", (b) => b.recentsClear(), []],
   ["bookmarks_export", (b) => b.bookmarksExport("json", "t"), ["dialogTitle", "format"]],
-  ["bookmarks_import", (b) => b.bookmarksImport("skip", "t"), ["dialogTitle", "strategy"]],
+  ["bookmarks_import_open", (b) => b.bookmarksImportOpen("t"), ["dialogTitle"]],
+  [
+    "bookmarks_import_apply",
+    (b) => b.bookmarksImportApply("k", "skip", false),
+    ["keepStartupCommands", "strategy", "token"],
+  ],
+  ["bookmarks_import_cancel", (b) => b.bookmarksImportCancel("k"), ["token"]],
   ["settings_get", (b) => b.settingsGet(), []],
   ["settings_update", (b) => b.settingsUpdate({} as never), ["settings"]],
   ["settings_reset", (b) => b.settingsReset(), []],
@@ -110,7 +116,7 @@ describe("TauriBackend command mapping", () => {
 
   it("covers exactly the commands listed in src-tauri/src/commands/names.rs", () => {
     expect(ROWS.map(([cmd]) => cmd).sort()).toEqual([...rustCommands].sort());
-    expect(rustCommands.length).toBe(67);
+    expect(rustCommands.length).toBe(69);
   });
 
   for (const [command, run, keys] of ROWS) {

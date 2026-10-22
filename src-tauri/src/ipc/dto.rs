@@ -1614,6 +1614,39 @@ pub struct ImportInvalid {
     pub code: ImportInvalidCode,
 }
 
+/// A valid startup command found in the import file (shown before anything is saved, so the
+/// user can decide whether to keep the file's commands). `Debug`-masked, never logged.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ImportStartupCommand {
+    /// The bookmark's name in the file (it may still be renamed by `duplicate`).
+    pub name: String,
+    pub command: SensitiveText,
+    /// A bookmark with this name (case-insensitive) already exists in the store (the same test
+    /// as `BookmarksImportPreview.conflicts`): `skip` skips the entry, `replace` replaces it.
+    pub exists: bool,
+}
+
+/// What `bookmarks_import_open` found in the chosen file; nothing has been written yet.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct BookmarksImportPreview {
+    /// `false` = the dialog was cancelled (`token` is then `null`).
+    pub picked: bool,
+    /// Pass to `bookmarks_import_apply` / `bookmarks_import_cancel`; single use.
+    pub token: Option<String>,
+    /// Bookmarks that passed validation.
+    pub bookmarks: u32,
+    /// Valid bookmarks whose name (case-insensitive) already exists in the store.
+    pub conflicts: u32,
+    /// Entries rejected while parsing the file.
+    pub invalid: Vec<ImportInvalid>,
+    /// Valid bookmarks that carry a valid startup command (file order).
+    pub startup_commands: Vec<ImportStartupCommand>,
+}
+
 #[derive(Debug, Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
@@ -1627,7 +1660,8 @@ pub struct BookmarksImportResult {
     /// The store after the import when something changed.
     pub bookmarks: Option<BookmarksDto>,
     /// Names of imported (added or replaced) bookmarks whose `startupCommand` was
-    /// dropped (startup commands are never imported).
+    /// dropped (not imported unless the user opts in per import; an invalid one is always
+    /// dropped).
     pub startup_commands_stripped: Vec<String>,
 }
 

@@ -67,3 +67,10 @@
 .facts__value { overflow-wrap: anywhere; word-break: break-all; }
 .facts__value--strong { color: var(--text-bright); }
 .dialog__close { margin-left: auto; align-self: flex-start; }
+
+/* Bookmark import review: the startup commands of the file (untrusted text, wrapped, never cut by layout). */
+/* flex-shrink: 0 so a short window scrolls the dialog body instead of squeezing the list to nothing. */
+.bookmarks-io__commands { max-height: 220px; overflow-y: auto; flex-shrink: 0; }
+.bookmarks-io__commands li { overflow-wrap: anywhere; }
+.bookmarks-io__commands code { overflow-wrap: anywhere; white-space: pre-wrap; }
+.bookmarks-io__mark { color: var(--text-muted); }
