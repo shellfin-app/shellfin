@@ -1,8 +1,9 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { setBackend } from "../../ipc";
 import { useStore } from "../../state/store";
 import { setupApp } from "../../test/harness";
+import { editConnection } from "../session/editConnection";
 import { refreshBookmarks } from "./hostActions";
 
 afterEach(() => setBackend(null));
@@ -198,5 +199,47 @@ describe("BookmarkDialog", () => {
     }
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("dialog", { name: "New connection" })).toBeNull();
+  });
+});
+
+describe("BookmarkDialog: User placeholder", () => {
+  const DEFAULT = "Your local user name";
+  const userInput = (dialog: HTMLElement) => within(dialog).getByLabelText("User", { selector: "input" }) as HTMLInputElement;
+
+  it("shows the SSH config User when the host is an alias, typed by hand", async () => {
+    const { user } = setupApp();
+    const dialog = await openNewDialog(user);
+    expect(userInput(dialog).placeholder).toBe(DEFAULT);
+    await fill(user, dialog, { Host: "staging-db" });
+    expect(userInput(dialog).placeholder).toBe("postgres (from SSH config)");
+    await user.type(within(dialog).getByLabelText("Host", { selector: "input" }), "x");
+    expect(userInput(dialog).placeholder).toBe(DEFAULT);
+  });
+
+  it("matches the alias ignoring surrounding spaces and case", async () => {
+    const { user } = setupApp();
+    const dialog = await openNewDialog(user);
+    await fill(user, dialog, { Host: " Staging-DB" });
+    expect(userInput(dialog).placeholder).toBe("postgres (from SSH config)");
+  });
+
+  it("shows it right away for an ssh-config prefill", async () => {
+    setupApp();
+    act(() => useStore.getState().addSession("cfg1", { kind: "sshConfig", alias: "bastion" }, "bastion"));
+    act(() => editConnection("cfg1"));
+    const dialog = await screen.findByRole("dialog", { name: "New connection" });
+    expect(userInput(dialog).placeholder).toBe("jump (from SSH config)");
+  });
+
+  it("keeps the default for an alias without User", async () => {
+    const { user } = setupApp();
+    act(() => {
+      const cfg = useStore.getState().sshConfig;
+      if (!cfg) throw new Error("no ssh config");
+      useStore.setState({ sshConfig: { ...cfg, hosts: cfg.hosts.map((h) => (h.alias === "bastion" ? { ...h, user: null } : h)) } });
+    });
+    const dialog = await openNewDialog(user);
+    await fill(user, dialog, { Host: "bastion" });
+    expect(userInput(dialog).placeholder).toBe(DEFAULT);
   });
 });

@@ -28,6 +28,7 @@ import {
 } from "../../lib/bookmarkForm";
 import type { BandwidthField } from "../../lib/bandwidth";
 import { parseHostSpec } from "../../lib/hostSpec";
+import { displayServerText } from "../../lib/serverText";
 import { reportError } from "../../lib/reportError";
 import { useStore } from "../../state/store";
 import { canReplaceSession } from "../session/editConnection";
@@ -129,6 +130,11 @@ export function BookmarkDialog({
   const warnForget = editing !== null && bindingChanged(editing, form);
   const groups = bookmarks?.groups ?? [];
   const jumpHosts = (sshHosts ?? []).filter((h) => h.alias !== editing?.name);
+  // The host field names an SSH config alias: its `User` applies when this field stays empty (placeholder only).
+  // Trimmed and case-insensitive, like the submit and the backend's alias de-duplication.
+  const hostAlias = form.host.trim().toLowerCase();
+  const configUserRaw = (sshHosts ?? []).find((h) => h.alias.toLowerCase() === hostAlias)?.user;
+  const configUser = configUserRaw ? displayServerText(configUserRaw, 64) : null;
   const jumpBookmarks = (bookmarks?.bookmarks ?? []).filter((b) => b.id !== editing?.id);
 
   const validate = (action: SubmitAction = SUBMIT_ACTION.connect): boolean => {
@@ -281,7 +287,7 @@ export function BookmarkDialog({
             <Input
               mono
               value={form.user}
-              placeholder={t("connect.userPlaceholder")}
+              placeholder={configUser === null ? t("connect.userPlaceholder") : t("connect.userPlaceholderSshConfig", { user: configUser })}
               onChange={(e) => patch({ user: e.target.value })}
               autoComplete="off"
               spellCheck={false}

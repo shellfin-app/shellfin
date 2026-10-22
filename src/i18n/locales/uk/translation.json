@@ -321,7 +321,8 @@
     },
     "uploadLimit": "Обмеження вивантаження",
     "user": "Користувач",
-    "userPlaceholder": "Ваше локальне ім'я користувача"
+    "userPlaceholder": "Ваше локальне ім'я користувача",
+    "userPlaceholderSshConfig": "{{user}} (з конфігурації SSH)"
   },
   "connectConfirm": {
     "action": "Підключитися",

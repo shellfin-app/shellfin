@@ -295,7 +295,8 @@
     },
     "uploadLimit": "Upload limit",
     "user": "User",
-    "userPlaceholder": "Your local user name"
+    "userPlaceholder": "Your local user name",
+    "userPlaceholderSshConfig": "{{user}} (from SSH config)"
   },
   "connectConfirm": {
     "action": "Connect",
