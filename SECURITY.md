@@ -2,8 +2,9 @@
 
 ## Supported versions
 
-Shellfin has not had a release yet. Until the first release, only the latest commit on the `main` branch is
-supported; fixes are made there. Once releases exist, this section will list the supported release lines.
+Only the latest stable release (`vX.Y.Z`) is supported; security fixes ship as a new stable release. Experimental
+pre-releases (`vX.Y.Z-experimental.N`) are not patched themselves: fixes reach them through a newer pre-release or a
+newer stable release.
 
 ## Reporting a vulnerability
 

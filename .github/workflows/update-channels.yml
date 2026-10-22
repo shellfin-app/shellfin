@@ -50,9 +50,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.release.tag_name }}
+        # The same tag shapes as release.yml `verify` (the input of a manual run is untrusted): the `case` rejects
+        # every character a release tag cannot contain (grep is line-based), numbers have no leading zeros.
         run: |
-          if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
-            echo "::error::not a release tag: $TAG"; exit 1
+          n='(0|[1-9][0-9]*)'
+          case "$TAG" in
+            *[!0-9A-Za-z.-]*) ok=false ;;
+            *) ok=true ;;
+          esac
+          if [ "$ok" != true ] || ! printf '%s' "$TAG" | grep -Eq "^v$n\.$n\.$n(-experimental\.$n)?\$"; then
+            printf '::error::not a release tag (vX.Y.Z or vX.Y.Z-experimental.N): %q\n' "$TAG"; exit 1
           fi
           info="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease)"
           if [ "$(jq -r .isDraft <<< "$info")" != "false" ]; then

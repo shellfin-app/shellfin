@@ -98,24 +98,63 @@ described in section 10.2 of [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
   `feat(sftp): add atomic save` or `fix(ui): keep terminal scrollback on tab switch`. Common types: `feat`,
   `fix`, `docs`, `refactor`, `test`, `build`, `ci`, `chore`.
 - Keep pull requests focused and small enough to review. Link the issue they address.
+- Open feature pull requests against `experimental` and fixes for the released version against `main` (see
+  [Branches](#branches)).
 - There is no Contributor License Agreement and no DCO sign-off requirement.
 - Fill in the pull request template. In short, before requesting review: all gates above pass, new behaviour has
   tests, user-facing text is translated via i18n, bindings are regenerated if Rust DTOs changed, documentation
   and `CHANGELOG.md` (under `[Unreleased]`) are updated where relevant.
 
+## Branches
+
+- `main` holds the stable releases (`vX.Y.Z`, stable update channel) and receives only finished work and hotfixes.
+- `experimental` is the long-lived branch of the next minor version. Its pre-releases (`vX.Y.Z-experimental.N`) reach
+  the experimental update channel only.
+- Features: branch `feat/<issue>-<slug>` off `experimental` and open the pull request against `experimental`.
+- Hotfixes: branch off `main` and open the pull request against `main`. Dependabot opens its pull requests against
+  `main` too. Both reach `experimental` through the next sync.
+- Syncing `main` into `experimental` (after hotfixes, Dependabot updates or a stable release) happens on a branch made
+  from `experimental`, with the conflicts resolved locally:
+
+  ```sh
+  git fetch origin
+  git switch -c sync/main-YYYY-MM-DD origin/experimental
+  git merge origin/main
+  ```
+
+  Resolve the version fields to the `experimental` version, then the lockfiles (regenerate them instead of merging
+  them by hand), then run `npm run notices` (the notices name the app version) and the gates. Push the branch and
+  open a pull request `sync/main-YYYY-MM-DD` -> `experimental`; merge it with **Create a merge commit**. Never use
+  GitHub's "Resolve conflicts" or "Update branch" on a pull request whose head is `main`: they commit the merge of
+  `experimental` onto `main`.
+- A version is finished by a pull request `experimental` -> `main` that sets the version `X.Y.Z` and the changelog
+  (see Releasing). Merge it with **Create a merge commit**, never squash or rebase (the repository allows all three, so
+  choose it explicitly): otherwise `main` does not contain the `experimental` history and the next sync conflicts on
+  every file both branches changed. `experimental` survives that merge only because its ruleset forbids deletion
+  (see the [repository settings](#repository-settings-checklist)); the repository deletes merged head branches.
+
 ## Releasing
 
-Maintainers only. The version comes from `package.json` (`tauri.conf.json` reads it). Bump it (also in
-`src-tauri/Cargo.toml` and the lockfiles), rename `[Unreleased]` in `CHANGELOG.md` to `## [X.Y.Z] - YYYY-MM-DD` (add a
-fresh empty `[Unreleased]` above it and the link definitions at the bottom), and merge that to `main` first. Wait for
-the CI run of the merge commit to finish: the release refuses a commit without a green CI run.
+Maintainers only. The version comes from `package.json` (`tauri.conf.json` reads it). Stable releases are tagged on
+`main`, pre-releases on `experimental` (see below). For a stable release, bump the version to `X.Y.Z` (also in
+`src-tauri/Cargo.toml` and the lockfiles; run `npm run notices`, the notices name the version), rename `[Unreleased]`
+in `CHANGELOG.md` to `## [X.Y.Z] - YYYY-MM-DD` (add a fresh empty `[Unreleased]` above it and the link definitions at
+the bottom), and merge that to `main` first: for a new minor version through the pull request `experimental` ->
+`main`, for a hotfix through its own pull request against `main`. Wait for the CI run of the merge commit to finish:
+the release only accepts a commit with a successful CI run of a push to `main` (for a pre-release: to `main` or
+`experimental`), that is the commit that was pushed as the tip of the branch, never a commit from inside a merged
+pull request.
 
 1. Tag the merge commit: `git tag -s v0.1.0 && git push origin v0.1.0`. The tag must equal
-   `v<package.json version>` (the workflow fails otherwise).
-2. `.github/workflows/release.yml` first checks that the tagged commit is on `main` and that its CI run succeeded
-   (`verify`). The build jobs then run in the protected `release` environment; a reviewer has to approve them.
-   For each platform (Windows x64 and Windows ARM64 with an NSIS installer only, no MSI; Linux x64; macOS arm64; no
-   32-bit Windows, no Intel Mac) the order is fixed: **build, then checks, then upload**. The checks: no
+   `v<package.json version>` and have exactly the form `vX.Y.Z` or `vX.Y.Z-experimental.N` (decimal numbers without
+   leading zeros); the workflow fails otherwise.
+2. `.github/workflows/release.yml` first checks the tag's form, that the tagged commit is on `main` (for a
+   pre-release tag: on `experimental` or `main`) and that a CI run of a push to one of those branches succeeded for
+   that commit (`verify`). The build jobs then run in the `release` environment, which holds the signing secrets and
+   accepts only `v*` tags. With a single maintainer there is no reviewer gate: `verify` and the tag ruleset are the
+   automated gates, and the draft is reviewed and published by hand (steps 3 and 4). For each platform (Windows
+   x64 and Windows ARM64 with an NSIS installer only, no MSI; Linux x64; macOS arm64; no 32-bit Windows, no Intel
+   Mac) the order is fixed: **build, then checks, then upload**. The checks: no
    `SHELLFIN_E2E_ROOT` marker in any release binary and no `e2e` feature in the build arguments, no
    `__shellfin_mock_backend__` marker in the embedded `dist/`, `VITE_BACKEND` unset. Binaries are built with a pinned
    compiler (`src-tauri/rust-toolchain.toml`), `--remap-path-prefix` and `SOURCE_DATE_EPOCH`, so they contain no
@@ -135,20 +174,27 @@ the CI run of the merge commit to finish: the release refuses a commit without a
    If it failed (or to redo it), run "Update channels" by hand with the tag. Never delete the `updater` release
    (a pre-release titled "Update channels — do not delete"): installed apps read
    `https://github.com/shellfin-app/shellfin/releases/download/updater/stable.json` and `.../experimental.json`.
+5. After a stable release, sync `main` into `experimental` (see [Branches](#branches)). After a new minor version
+   `X.Y.0`, also move `experimental` to the next one, `X.(Y+1).0-experimental.1`.
 
 ### Experimental (pre-release) builds
 
-Use a SemVer pre-release version, by convention `X.Y.Z-experimental.N` (for example `0.3.0-experimental.1`), in
-`package.json` and `src-tauri/Cargo.toml`, and tag `vX.Y.Z-experimental.N`. The release workflow builds only the
-AppImage on Linux (plus the same installers as for a stable release elsewhere) and creates the draft already marked as
-a **pre-release**; keep that mark when you publish. Never mark a pre-release as "latest". Publishing then updates `experimental.json` only. Users on the
-experimental channel also get every stable release that is newer than their build (`0.3.0` is newer than
-`0.3.0-experimental.4`); users switching back to stable never get a downgrade, they wait for the next stable release.
+Pre-releases are cut from `experimental` (a pre-release tag on `main` is accepted too). The version is
+`X.Y.Z-experimental.N` (for example `0.3.0-experimental.1`; `N` counts up from 1 for each pre-release of `X.Y.Z`) in
+`package.json`, `src-tauri/Cargo.toml` and the lockfiles (run `npm run notices` as for a stable release). Merge the
+bump to `experimental`, wait for the CI run of that push, and tag the commit it ran on (the tip of `experimental`)
+`vX.Y.Z-experimental.N`; other pre-release suffixes such as `-rc.1` are refused. The release workflow builds only the
+AppImage on Linux (plus the same installers as for a stable release elsewhere) and creates the draft already marked
+as a **pre-release**; keep that mark when you publish. Never mark a pre-release as "latest". Publishing then updates
+`experimental.json` only. Users on the experimental channel also get every stable release that is newer than their
+build (`0.3.0` is newer than `0.3.0-experimental.4`); users switching back to stable never get a downgrade, they wait
+for the next stable release.
 
-### Publish-day checklist (once, before the first push and tag)
+### Repository settings checklist
 
-Settings of the `shellfin-app/shellfin` repository that the files in this repository rely on. Nothing here can be
-committed.
+Settings of the `shellfin-app/shellfin` repository that the files in this repository rely on. This is the intended
+configuration, not a record of the live state: some items may still have to be configured, so check them in Settings
+before relying on them. Nothing here can be committed.
 
 - **Security:** enable "Private vulnerability reporting" (`SECURITY.md` links to `/security/advisories/new`). Make sure
   `security@shellfin.app` and `conduct@shellfin.app` (Code of Conduct reports) receive mail, for example as forwards.
@@ -156,9 +202,13 @@ committed.
   as "used in tests".
 - **Community:** enable Discussions (issue template links and the first lines of this file point to it). Create the
   team `@shellfin-app/maintainers` with write access; otherwise `.github/CODEOWNERS` is silently ignored.
-- **Branch protection** for `main` (ruleset): pull request required, linear history, and the required status checks
-  `checks`, `msrv`, `homebrew-cask`, `workflows`, `unit-native`, `integration`, `security` and `build` (every CI job
-  except the schedule-only run).
+- **Branch rulesets** for `main` and `experimental`: no deletion, no force push. Add `refs/heads/experimental` to the
+  ruleset **before** creating the branch: the repository deletes the head branch of a merged pull request, so
+  without the ruleset the first `experimental` -> `main` merge would delete `experimental`. Do not require a linear
+  history (the merges between the two branches are merge commits, see [Branches](#branches)). Recommended, not
+  required by the workflows: a pull request for every change and the required status checks `checks`, `msrv`,
+  `homebrew-cask`, `workflows`, `unit-native`, `integration`, `security` and `build` (every CI job except the
+  schedule-only run).
 - **Homebrew tap:** create the public, empty repository `shellfin-app/homebrew-tap`. Create a fine-grained personal
   access token (or a GitHub App token) with **Contents: read and write on that repository only**, and add it as the
   secret `HOMEBREW_TAP_TOKEN` of the `release` environment. `.github/workflows/homebrew-tap.yml` then pushes
@@ -167,9 +217,12 @@ committed.
   secret it only prints a notice. Once releases are notarized, run the renderer with `--notarized true` (edit the
   workflow step) to drop the "Open Anyway" caveat.
 - **Tag protection:** a tag ruleset for `v*` (only maintainers create it; no deletion, no force update).
-- **`release` environment** (Settings, Environments): required reviewers, "Prevent self-review", deployment tags
-  limited to `v*`. Secrets of that environment: `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
-  (below); optionally the Apple (`APPLE_*`), Azure (`AZURE_*`) and GPG (`GPG_*`) secrets listed further down.
+- **`release` environment** (Settings, Environments): deployment tags limited to `v*`. With a single maintainer it
+  has no required reviewers (GitHub does not let you approve your own run once "Prevent self-review" is set); the
+  gates are `verify`, the tag ruleset and publishing the draft by hand. When there is a second maintainer, add
+  required reviewers with "Prevent self-review". Secrets of that environment: `TAURI_SIGNING_PRIVATE_KEY` and
+  `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (below); optionally the Apple (`APPLE_*`), Azure (`AZURE_*`) and GPG (`GPG_*`)
+  secrets listed further down.
 - **Actions:** workflows run with a read-only default token (Settings, Actions, General); the workflows grant what
   they need per job.
 
