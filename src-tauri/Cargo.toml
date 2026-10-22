@@ -1,6 +1,6 @@
 [package]
 name = "shellfin"
-version = "0.1.0"
+version = "0.1.1"
 description = "Shellfin — cross-platform SSH client with terminals, SFTP file tree and editor"
 edition = "2024"
 rust-version = "1.90"          # tauri 2.12 MSRV; File::lock needs ≥ 1.89; builds use rust-toolchain.toml

@@ -7,6 +7,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-22
+
 ### Changed
 
 - Connection tabs with the same name are told apart: the copies show "name (2)", "name (3)", and a closed number is
@@ -173,5 +175,6 @@ rpm) and macOS 11+ on Apple Silicon (DMG). 32-bit Windows and Intel Macs are not
 - Dual licensing under MIT OR Apache-2.0, contribution guide, security policy, code of conduct and `AGENTS.md`
   onboarding for AI coding agents.
 
-[Unreleased]: https://github.com/shellfin-app/shellfin/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/shellfin-app/shellfin/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/shellfin-app/shellfin/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/shellfin-app/shellfin/releases/tag/v0.1.0
