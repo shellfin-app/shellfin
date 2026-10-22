@@ -7,6 +7,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Security
+
+- Remote names that contain invisible variation selectors (U+FE00 to U+FE0D) are now shown with a visible marker, so two different names no longer look identical. Emoji keep working.
+
 ## [0.1.1] - 2026-10-22
 
 ### Changed

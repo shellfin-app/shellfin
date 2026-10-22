@@ -2,8 +2,9 @@
 // through displayServerText: C0/C1 controls and bidi controls become visible escapes, then it is truncated.
 
 // Code point ranges: C0 (0-1F), DEL + C1 (7F-9F), plus the characters that render as nothing or reorder text (the
-// same set as the Rust `is_deceptive_char`, ssh/shellquote.rs, minus the variation selectors U+FE00-FE0F, which emoji
-// need): soft hyphen, combining grapheme joiner, Hangul/Khmer/Mongolian fillers and selectors, zero-width space and
+// same set as the Rust `is_deceptive_char`, ssh/shellquote.rs, minus the text/emoji presentation selectors U+FE0E and
+// U+FE0F, which emoji need; the variation selectors U+FE00-FE0D are escaped because they make two different names look
+// identical, and the supplementary ones U+E0100-E01EF fall inside the tag range below): soft hyphen, combining grapheme joiner, Hangul/Khmer/Mongolian fillers and selectors, zero-width space and
 // joiners, LRM/RLM, bidi embeddings and isolates, line/paragraph separators, word joiner and invisible operators,
 // BOM, interlinear annotation marks and Unicode tag characters.
 // Listed as numbers (not as literal or escaped characters in a regex) so editors/formatters cannot strip or
@@ -21,6 +22,7 @@ const CONTROL_RANGES: readonly (readonly [number, number])[] = [
   [0x2028, 0x202e],
   [0x2060, 0x206f],
   [0x3164, 0x3164],
+  [0xfe00, 0xfe0d],
   [0xfeff, 0xfeff],
   [0xffa0, 0xffa0],
   [0xfff0, 0xfffb],
