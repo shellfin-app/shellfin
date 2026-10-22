@@ -9,7 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Security
 
-- Remote names that contain invisible variation selectors (U+FE00 to U+FE0D) are now shown with a visible marker, so two different names no longer look identical. Emoji keep working.
+- Remote names that contain invisible variation selectors (U+FE00 to U+FE0D) are now shown with a visible marker, so two different names no longer look identical. The text and emoji presentation selectors (U+FE0E and U+FE0F) are shown with a marker too unless they really change how the preceding emoji looks, so emoji names keep working and names such as report.pdf and a report.pdf with a hidden selector stay distinguishable.
 
 ## [0.1.1] - 2026-10-22
 

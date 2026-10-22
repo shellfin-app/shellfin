@@ -31,20 +31,46 @@ describe("displayServerText (§9.5)", () => {
     expect(displayServerText("a⁦b⁧c⁨d⁩e", 100)).toBe("a⟨U+2066⟩b⟨U+2067⟩c⟨U+2068⟩d⟨U+2069⟩e");
     expect(displayServerText("a\u{E0041}b", 100)).toBe("a⟨U+E0041⟩b"); // Unicode tag characters (astral)
     expect(displayServerText("x\u{1F600}y", 100)).toBe("x\u{1F600}y"); // ordinary astral characters are untouched
-    expect(displayServerText("café 日本 ❤️", 100)).toBe("café 日本 ❤️"); // text and emoji stay intact
+    expect(displayServerText("café 日本 ❤️", 100)).toBe("café 日本 ❤️"); // text and emoji stay intact
   });
-  it("escapes variation selectors 1-14 but keeps the text/emoji presentation selectors", () => {
+  it("escapes variation selectors 1-14 always", () => {
     expect(displayServerText("a︀b", 100)).toBe("a⟨U+FE00⟩b");
     expect(displayServerText("a︍b", 100)).toBe("a⟨U+FE0D⟩b");
-    expect(displayServerText("a︎b", 100)).toBe("a︎b");
-    expect(displayServerText("a️b", 100)).toBe("a️b");
-    expect(displayServerText("❤️", 100)).toBe("❤️");
+    expect(displayServerText("❤︀", 100)).toBe("❤⟨U+FE00⟩");
     expect(displayServerText("a︀.txt", 100)).not.toBe(displayServerText("a.txt", 100));
     expect(displayServerText("a\u{E0100}b\u{E01EF}c", 100)).toBe("a⟨U+E0100⟩b⟨U+E01EF⟩c"); // VS17-256 via the tag range
-    for (let cp = 0xfe00; cp <= 0xfe0f; cp++) {
+    for (let cp = 0xfe00; cp <= 0xfe0d; cp++) {
       const ch = String.fromCodePoint(cp);
-      const shown = displayServerText(ch, 100);
-      expect(shown === ch).toBe(cp >= 0xfe0e);
+      expect(displayServerText(ch, 100)).not.toBe(ch);
+      expect(displayServerText(`❤${ch}`, 100)).toBe(`❤⟨U+${cp.toString(16).toUpperCase()}⟩`);
+    }
+  });
+  it("keeps U+FE0E/FE0F only where they change the presentation of the previous character", () => {
+    expect(displayServerText("❤️", 100)).toBe("❤️"); // text-default emoji -> emoji style
+    expect(displayServerText("©️", 100)).toBe("©️");
+    expect(displayServerText("1️⃣", 100)).toBe("1️⃣"); // keycap sequences
+    expect(displayServerText("#️⃣", 100)).toBe("#️⃣");
+    expect(displayServerText("\u{1F600}︎", 100)).toBe("\u{1F600}︎"); // emoji-default -> text style
+  });
+  it("escapes presentation selectors that change nothing, so look-alike names differ", () => {
+    expect(displayServerText("a️", 100)).toBe("a⟨U+FE0F⟩");
+    expect(displayServerText("a︎", 100)).toBe("a⟨U+FE0E⟩");
+    expect(displayServerText("1️", 100)).toBe("1⟨U+FE0F⟩"); // no keycap
+    expect(displayServerText("1︎⃣", 100)).toBe("1⟨U+FE0E⟩⃣");
+    expect(displayServerText("\u{1F600}️", 100)).toBe("\u{1F600}⟨U+FE0F⟩"); // already emoji style
+    expect(displayServerText("❤︎", 100)).toBe("❤⟨U+FE0E⟩"); // already text style
+    expect(displayServerText("❤️️", 100)).toBe("❤️⟨U+FE0F⟩"); // doubled
+    expect(displayServerText("️", 100)).toBe("⟨U+FE0F⟩"); // at the start
+    expect(displayServerText("​️", 100)).toBe("⟨U+200B⟩⟨U+FE0F⟩"); // after an escaped character
+    const pairs: [string, string][] = [
+      ["report.pdf", "report️.pdf"],
+      ["a.txt", "a︎.txt"],
+      ["file1", "file1️"],
+      ["\u{1F600}", "\u{1F600}️"],
+      ["❤", "❤︎"],
+    ];
+    for (const [plain, spoof] of pairs) {
+      expect(displayServerText(spoof, 100)).not.toBe(displayServerText(plain, 100));
     }
   });
   it("counts escape markers as characters when truncating", () => {
