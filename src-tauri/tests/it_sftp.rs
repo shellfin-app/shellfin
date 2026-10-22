@@ -1,7 +1,8 @@
 //! Integration cases (§10.2) against the Docker sshd: listing (truncation, symlinks,
 //! lossy names), file operations, text reads (encodings, binary, size limit), saves (atomic with
 //! mode kept, in place when the owner differs, group kept or in place, rename fallback, symlink,
-//! conflict detection), uploads (conflict → `transfer_retry` with overwrite, cancel cleanup) and
+//! conflict detection, read errors of the check passed through), uploads (conflict →
+//! `transfer_retry` with overwrite, cancel cleanup, in place with times kept) and
 //! downloads (`.part` + rename, Mark-of-the-Web on Windows, cancel cleanup).
 //! Headless: `SessionManager` + in-memory sinks, private temp home (as `it_terminal.rs`).
 #![cfg(feature = "it")]
@@ -794,6 +795,36 @@ async fn save_keeps_owner_and_group() {
     e.manager.close(&s.id, None).await;
 }
 
+/// §6.4 conflict check: only a successful read with another hash is `remoteChanged`. A file the
+/// user can no longer read (write-only for the owner) fails the check's read with
+/// `permissionDenied`, which passes through unchanged; nothing is written.
+#[tokio::test(flavor = "multi_thread")]
+async fn save_conflict_check_read_error_is_not_a_conflict() {
+    let e = env(support::USER);
+    let s = connect(&e).await;
+    let sftp = sftp(&s).await;
+    let dir = workdir(&sftp, support::USER).await;
+
+    let path = format!("{dir}/write-only.txt");
+    user_sh(support::USER, &format!("printf 'a\\n' > '{path}'"));
+    let doc = sftp.read_text(&path, None, LIMIT).await.unwrap();
+    // The sshd's SFTP server runs as the user, so its read of the file is refused.
+    user_sh(support::USER, &format!("chmod 0200 '{path}'"));
+    let err = save::save_text(&sftp, &save_req(&path, "b\n", Some(doc.etag)), LIMIT)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(code(&err), ErrorCode::PermissionDenied { path: p } if *p == path),
+        "{err:?}"
+    );
+    assert_eq!(root_sh(&format!("cat '{path}'")), "a\n");
+    assert_eq!(owner_mode(&path), "tester:tester 200");
+    assert_eq!(leftovers(&dir), "");
+
+    root_sh(&format!("rm -rf '{dir}'"));
+    e.manager.close(&s.id, None).await;
+}
+
 /// Uploads set the remote mtime/atime from the local file and
 /// downloads the local ones from the remote file (unless `preserveTimestamps` is off); a
 /// download chosen in the Save dialog is never skipped by `onConflict = skip`; listings carry
@@ -802,7 +833,7 @@ async fn save_keeps_owner_and_group() {
 async fn settings_v3_timestamps_skip_fix_and_owner_names() {
     use shellfin_lib::commands::transfer::download_conflict;
     use shellfin_lib::ipc::dto::ConflictPolicy;
-    use std::time::{Duration as StdDuration, UNIX_EPOCH};
+    use std::time::UNIX_EPOCH;
 
     let e = env(support::USER);
     let s = connect(&e).await;
@@ -837,7 +868,7 @@ async fn settings_v3_timestamps_skip_fix_and_owner_names() {
     // Upload (new file, atomic path): remote times = local times.
     let src = local.path().join("old.txt");
     std::fs::write(&src, b"from 2001\n").unwrap();
-    let at = |s: u64| UNIX_EPOCH + StdDuration::from_secs(s);
+    let at = |s: u64| UNIX_EPOCH + Duration::from_secs(s);
     std::fs::File::options()
         .write(true)
         .open(&src)
@@ -979,6 +1010,118 @@ async fn settings_v3_timestamps_skip_fix_and_owner_names() {
     assert!(entry.uid.is_some() && entry.gid.is_some());
     let stat = sftp.entry(&remote).await.unwrap();
     assert_eq!((stat.owner, stat.group), (None, None));
+    e.manager.close(&s.id, None).await;
+}
+
+/// §6.6 `preserveTimestamps` on the in-place upload path: an own file in a directory the user
+/// cannot write (no temp file) gets the local mtime; a foreign file (temp file owned by the user
+/// ⇒ in place) is written although the server refuses its times. Both keep inode, owner, group
+/// and mode.
+#[tokio::test(flavor = "multi_thread")]
+async fn upload_in_place_preserves_timestamps() {
+    use std::time::UNIX_EPOCH;
+
+    let e = env(support::USER);
+    let s = connect(&e).await;
+    let sftp = sftp(&s).await;
+    let dir = workdir(&sftp, support::USER).await;
+    let local = tempfile::tempdir().unwrap();
+    let transfers = e.manager.transfers().clone();
+    let rec = Arc::new(Recorder::default());
+    let sink: Arc<dyn TransferSink> = rec.clone();
+    let remote_mtime = |p: &str| -> u64 {
+        root_sh(&format!("stat -c %Y '{p}'"))
+            .trim()
+            .parse()
+            .unwrap()
+    };
+    let inode = |p: &str| root_sh(&format!("stat -c %i '{p}'")).trim().to_owned();
+    let at = |s: u64| UNIX_EPOCH + Duration::from_secs(s);
+
+    // Own file in a root-owned 0755 directory: the temp file cannot be created ⇒ in place.
+    let locked = format!("{dir}/locked");
+    let own = format!("{locked}/own.txt");
+    root_sh(&format!(
+        "mkdir '{locked}' && chmod 0755 '{locked}' && printf 'old\\n' > '{own}' \
+         && chown tester:tester '{own}' && chmod 0644 '{own}'"
+    ));
+    let before = inode(&own);
+    let src = local.path().join("own.txt");
+    std::fs::write(&src, b"new own\n").unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&src)
+        .unwrap()
+        .set_modified(at(1_234_567_890))
+        .unwrap();
+    let local_mtime = std::fs::metadata(&src)
+        .unwrap()
+        .modified()
+        .unwrap()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let id = transfers.start(
+        s.handle.clone(),
+        TransferSpec::Upload {
+            local: src,
+            remote_dir: locked.clone(),
+        },
+        true,
+        sink.clone(),
+    );
+    match rec.finished(&id).await {
+        TransferEvent::Done { entry, .. } => {
+            assert_eq!(entry.unwrap().mtime, Some(1_234_567_890));
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(remote_mtime(&own), local_mtime);
+    assert_eq!(inode(&own), before);
+    assert_eq!(root_sh(&format!("cat '{own}'")), "new own\n");
+    assert_eq!(owner_mode(&own), "tester:tester 644");
+    assert_eq!(leftovers(&locked), "");
+
+    // Foreign file (group-writable): written in place; the refused times do not fail it.
+    let foreign = format!("{dir}/foreign.txt");
+    root_sh(&format!(
+        "printf 'old\\n' > '{foreign}' && chown {}:tester '{foreign}' && chmod 0664 '{foreign}'",
+        support::USER_2FA
+    ));
+    let before = inode(&foreign);
+    let src = local.path().join("foreign.txt");
+    std::fs::write(&src, b"new foreign\n").unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&src)
+        .unwrap()
+        .set_modified(at(1_234_567_890))
+        .unwrap();
+    let id = transfers.start(
+        s.handle.clone(),
+        TransferSpec::Upload {
+            local: src,
+            remote_dir: dir.clone(),
+        },
+        true,
+        sink.clone(),
+    );
+    assert!(
+        matches!(rec.finished(&id).await, TransferEvent::Done { .. }),
+        "{:?}",
+        rec.of(&id)
+    );
+    // The server refuses times on a file the user does not own; the upload still succeeds.
+    assert_ne!(remote_mtime(&foreign), 1_234_567_890);
+    assert_eq!(inode(&foreign), before);
+    assert_eq!(root_sh(&format!("cat '{foreign}'")), "new foreign\n");
+    assert_eq!(
+        owner_mode(&foreign),
+        format!("{}:tester 664", support::USER_2FA)
+    );
+    assert_eq!(leftovers(&dir), "");
+
+    root_sh(&format!("rm -rf '{dir}'"));
     e.manager.close(&s.id, None).await;
 }
 
@@ -1477,11 +1620,11 @@ async fn fifos_and_devices_are_refused() {
     e.manager.close(&s.id, None).await;
 }
 
-/// `expected: null` onto an existing file ⇒ `remoteChanged` (force writes).
-/// Note: oversized text ⇒ `fileTooLarge`. a move into a missing folder names
-/// that folder. a burst of uploads runs ≤ 3 at a time and the tree keeps working.
+/// A save with `expected: null` onto an existing file ⇒ `remoteChanged` (force writes);
+/// oversized text ⇒ `fileTooLarge` (the encoded size counts); a move into a missing folder names
+/// that folder; a burst of uploads runs ≤ 3 at a time and the tree keeps working.
 #[tokio::test(flavor = "multi_thread")]
-async fn review_3b_save_rename_and_burst() {
+async fn save_conflict_size_limit_rename_missing_dir_and_upload_burst() {
     let e = env(support::USER);
     let s = connect(&e).await;
     let sftp = sftp(&s).await;
