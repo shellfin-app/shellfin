@@ -1,0 +1,377 @@
+# Installs Debian packages (the Tauri Linux prerequisites) with the downloaded .deb files cached (§11.2).
+# The runners' Ubuntu mirror sometimes serves the ~50 MB of packages at a few KB/s; with the debs restored apt only
+# fetches the package lists. apt itself does not re-check a deb that is already in /var/cache/apt/archives (apt 2.4
+# compares only its size), so the restored debs are verified first: after `apt-get update`, apt prints the SHA256 of
+# every deb the install needs, taken from the signed package lists, and only restored files with exactly that name and
+# hash are kept. Everything else (tampered, stale, unlisted) is deleted and downloaded again, and anything unexpected
+# in apt's output trusts no restored file at all. The cache can therefore only save downloads, never change what is
+# installed. It is written only by the caller that passes `save: "true"` (one job), only on a push to `main` and only
+# on a miss: pull requests read the `main` cache and never add their own (cache quota, §11.2).
+# Download and install are separate. apt fails over to the next entry of the runner's mirror list
+# (/etc/apt/apt-mirrors.txt, `mirror+file:` sources) only on errors, never on a slow but live transfer, so every
+# apt-get that downloads runs under `timeout`: the first `apt-get update` (`update-timeout`) and the package download
+# (`--download-only`, `download-timeout`). When one of them fails or times out, the fallback starts (once): the Ubuntu
+# archive is switched to other mirrors (mirrors.edge.kernel.org first, then archive.ubuntu.com, then
+# security.ubuntu.com): the runner's mirror list is rewritten, or, if no source uses it, only the URI fields that name
+# a *.archive.ubuntu.com host are pointed at that list (other hosts, third-party repositories, comments and options
+# stay as they are). It switches only on amd64 and i386 (the only architectures that archive carries) and never
+# overwrites a mirror list that names other hosts; otherwise the sources stay unchanged. From then on
+# `fallback-timeout` bounds all remaining network work: `apt-get update` on the new mirrors, the download (resuming
+# from the debs and partial files already fetched) and one more update and download if that fails before the
+# deadline. The install itself never downloads (`--no-download`). The mirror does not change what is installed: apt
+# checks every deb against the signed package lists. Budget: the caller's step `timeout-minutes: 15` covers the cache
+# restore, at most update-timeout + download-timeout + fallback-timeout of apt network time (2 + 4 + 5 = 11 min by
+# default; a fallback started by the update replaces the download bound, it is never added to it), the verification,
+# the install, the prune and the save. Every action is pinned to a full commit SHA (Dependabot `github-actions` scans
+# this directory too).
+name: Linux build prerequisites
+description: apt-get install of the given packages, with /var/cache/apt/archives/*.deb cached and verified
+
+inputs:
+  packages:
+    description: Space-separated Debian package names
+    required: true
+  save:
+    description: '"true": save the apt cache on a cache miss of a push to `main` (give it to one job only)'
+    required: false
+    default: "false"
+  update-timeout:
+    description: Seconds the first `apt-get update` may take before apt is switched to other Ubuntu mirrors
+    required: false
+    default: "120"
+  download-timeout:
+    description: Seconds the first package download may take before apt is switched to other Ubuntu mirrors
+    required: false
+    default: "240"
+  fallback-timeout:
+    description: >-
+      Seconds for everything after the switch to other mirrors (`apt-get update`, the download, one retry); the step
+      fails after that
+    required: false
+    default: "300"
+
+runs:
+  using: composite
+  steps:
+    - name: apt cache key
+      id: key
+      shell: bash
+      env:
+        PACKAGES: ${{ inputs.packages }}
+      run: |
+        # actions/cache runs as the runner user and must be able to write the restored debs (apt runs as root).
+        sudo chown "$(id -u):$(id -g)" /var/cache/apt/archives
+        # Docker's Debian/Ubuntu images delete downloaded debs after each install (this file); the runner VMs do not
+        # ship it, but make sure nothing removes them before they are saved.
+        sudo rm -f /etc/apt/apt.conf.d/docker-clean
+        # shellcheck disable=SC2086 # one package per line, sorted: the key changes only when the set does
+        list="$(printf '%s\n' $PACKAGES | sort -u)"
+        hash="$(printf '%s\n' "$list" | sha256sum | cut -c1-16)"
+        # The image version last: a new runner image restores the previous image's debs (restore-keys) and saves
+        # its own set.
+        prefix="apt-$RUNNER_OS-$RUNNER_ARCH-${ImageOS:-unknown}-$hash-"
+        echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
+        echo "key=$prefix${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
+
+    - name: Restore the apt archive
+      id: restore
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: /var/cache/apt/archives/*.deb
+        key: ${{ steps.key.outputs.key }}
+        restore-keys: ${{ steps.key.outputs.prefix }}
+
+    - name: apt-get install (restored debs verified first)
+      shell: bash
+      env:
+        PACKAGES: ${{ inputs.packages }}
+        ARCHIVES: /var/cache/apt/archives
+        APT_ETC: /etc/apt
+        UPDATE_TIMEOUT: ${{ inputs.update-timeout }}
+        DOWNLOAD_TIMEOUT: ${{ inputs.download-timeout }}
+        FALLBACK_TIMEOUT: ${{ inputs.fallback-timeout }}
+      run: |
+        for t in "$UPDATE_TIMEOUT" "$DOWNLOAD_TIMEOUT" "$FALLBACK_TIMEOUT"; do
+          if ! [[ "$t" =~ ^[1-9][0-9]{0,4}$ ]]; then
+            echo "::error::update-timeout, download-timeout and fallback-timeout must be whole seconds (1-99999)"
+            exit 1
+          fi
+        done
+        # Retries and per-request timeouts for a failing mirror; `timeout` bounds every apt-get that downloads (a slow
+        # but live transfer never hits Acquire::http::Timeout), the caller's `timeout-minutes` bounds the rest.
+        # Keep-Downloaded-Packages (apt-get's default, set explicitly): the debs stay in the archive for the save.
+        opts=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30
+          -o APT::Keep-Downloaded-Packages=true)
+        # Both run as root so `timeout` can stop apt and its download methods (exit code 124, or 137 after
+        # --kill-after). Downloaded debs and partial files stay for a retry.
+        update() { # seconds
+          sudo timeout --kill-after=15 "$1" apt-get "${opts[@]}" update
+        }
+        download() { # seconds
+          # shellcheck disable=SC2086 # word splitting of the package list is intended
+          sudo timeout --kill-after=15 "$1" apt-get "${opts[@]}" install --download-only -y --no-install-recommends \
+            $PACKAGES
+        }
+        outcome() { # exit-code seconds
+          if [ "$1" -eq 124 ] || [ "$1" -eq 137 ]; then echo "took longer than ${2}s"; else echo "failed (exit $1)"; fi
+        }
+
+        # apt sources: one-line files (`deb`/`deb-src`, optional [options], then the URI field) and deb822 *.sources
+        # files (the URIs field, continuation lines included). Only those URI fields are read or changed; comments,
+        # option values and suites stay as they are. An Ubuntu archive URI is any *.archive.ubuntu.com host with the
+        # path /ubuntu (security.ubuntu.com, ports and third-party repositories never match). mode=scan prints "list"
+        # if a URI is the mirror list and "archive <file>" for each file with an archive URI; mode=rewrite prints the
+        # one file with its archive URIs replaced by the list (one list entry per field, never a duplicate).
+        # shellcheck disable=SC2016 # awk code, not shell expansions
+        sources_awk='
+          BEGIN {
+            archive = "^https?://([a-z0-9-]+[.])*archive[.]ubuntu[.]com/ubuntu/?$"
+            m1 = "mirror+file:" list
+            m2 = "mirror+file://" list
+          }
+          function fix(s,   n, a, i, out) {
+            n = split(s, a)
+            out = ""
+            for (i = 1; i <= n; i++) {
+              if (a[i] ~ archive) {
+                hit = 1
+                changed = 1
+                if (!seen) { out = out " " m1; seen = 1 }
+              } else if (a[i] == m1 || a[i] == m2) {
+                uses = 1
+                if (seen) changed = 1
+                else { out = out " " a[i]; seen = 1 }
+              } else {
+                out = out " " a[i]
+              }
+            }
+            return out
+          }
+          FNR == 1 { deb822 = FILENAME ~ /[.]sources$/; field = 0 }
+          {
+            line = $0
+            changed = 0
+            hit = 0
+            drop = 0
+            if (line ~ /^[[:space:]]*#/) {
+              # a comment: never read, never changed
+            } else if (!deb822) {
+              if (match(line, /^[[:space:]]*deb(-src)?[[:space:]]+([[][^]#]*[]][[:space:]]*)?/)) {
+                pre = substr(line, 1, RLENGTH)
+                rest = substr(line, RLENGTH + 1)
+                if (match(rest, /^[^[:space:]]+/)) {
+                  seen = 0
+                  tail = substr(rest, RLENGTH + 1)
+                  new = fix(substr(rest, 1, RLENGTH))
+                  if (changed) line = pre substr(new, 2) tail
+                }
+              }
+            } else if (line !~ /[^[:space:]]/) {
+              field = 0
+            } else if (line ~ /^[^[:space:]]/) {
+              field = tolower(line) ~ /^uris:/
+              seen = 0
+              if (field) {
+                new = fix(substr(line, 6))
+                if (changed) line = substr(line, 1, 5) new
+              }
+            } else if (field) {
+              new = fix(line)
+              if (changed) { line = new; drop = new == "" }
+            }
+            if (mode == "scan" && hit && !(FILENAME in found)) { found[FILENAME] = 1; print "archive " FILENAME }
+            if (mode == "rewrite" && !drop) print line
+          }
+          END { if (mode == "scan" && uses) print "list" }'
+        mirrors="$APT_ETC/apt-mirrors.txt"
+        ubuntu_re='^https?://([a-z0-9-]+[.])*(archive|security)[.]ubuntu[.]com/ubuntu/?$'
+        # The fallback starts once, when the first `apt-get update` or the first download fails or times out, and
+        # gets `fallback-timeout` (until $deadline) for all remaining network work.
+        fallback=false
+        deadline=0
+        start_fallback() { # what failed
+          fallback=true
+          deadline=$((SECONDS + FALLBACK_TIMEOUT))
+          echo "::warning::$1; switching to other Ubuntu mirrors"
+          local arch scan l f uri entries=0 other=0 uses_list=false sources=() archive_files=()
+          arch="$(dpkg --print-architecture 2> /dev/null || true)"
+          if [ "$arch" != amd64 ] && [ "$arch" != i386 ]; then
+            echo "::warning::the Ubuntu archive carries amd64 and i386 only, this runner is ${arch:-unknown}:" \
+              "retrying with the sources unchanged"
+            return 0
+          fi
+          for f in "$APT_ETC/sources.list" "$APT_ETC"/sources.list.d/*.list "$APT_ETC"/sources.list.d/*.sources; do
+            if [ -f "$f" ]; then sources+=("$f"); fi
+          done
+          if [ "${#sources[@]}" -gt 0 ]; then
+            scan="$(awk -v mode=scan -v list="$mirrors" "$sources_awk" "${sources[@]}")"
+            while IFS= read -r l; do
+              case "$l" in
+                list) uses_list=true ;;
+                "archive "*) archive_files+=("${l#archive }") ;;
+              esac
+            done <<< "$scan"
+          fi
+          if [ "$uses_list" = false ] && [ "${#archive_files[@]}" -eq 0 ]; then
+            echo "::warning::no source uses $mirrors or the Ubuntu archive: retrying with the sources unchanged"
+            return 0
+          fi
+          # Never overwrite a list that names other hosts, nor guess the hosts of an empty one that a source uses.
+          if [ -f "$mirrors" ]; then
+            while read -r uri _ || [ -n "$uri" ]; do
+              case "$uri" in "" | "#"*) continue ;; esac
+              entries=$((entries + 1))
+              if ! [[ "$uri" =~ $ubuntu_re ]]; then other=$((other + 1)); fi
+            done < "$mirrors"
+          fi
+          if [ "$other" -gt 0 ] || { [ "$uses_list" = true ] && [ "$entries" -eq 0 ]; }; then
+            echo "::warning::$mirrors does not list only Ubuntu archive mirrors: retrying with the sources unchanged"
+            return 0
+          fi
+          # Same format as the runner image's list (actions/runner-images configure-apt-sources.sh): URI, a tab,
+          # priority:N; apt tries the lowest number first and moves on to the next one on an error (also a 404 from a
+          # mirror that lags behind the package lists).
+          printf '%s\tpriority:%s\n' https://mirrors.edge.kernel.org/ubuntu/ 1 https://archive.ubuntu.com/ubuntu/ 2 \
+            https://security.ubuntu.com/ubuntu/ 3 | sudo tee "$mirrors" > /dev/null
+          if [ "${#archive_files[@]}" -gt 0 ]; then
+            # Sources that name the archive directly now go through the list as well. cp onto the existing file
+            # keeps its owner and mode.
+            l="$(mktemp "${RUNNER_TEMP:-/tmp}/apt-source.XXXXXX")"
+            for f in "${archive_files[@]}"; do
+              awk -v mode=rewrite -v list="$mirrors" "$sources_awk" "$f" > "$l"
+              sudo cp -- "$l" "$f"
+            done
+            rm -f -- "$l"
+            echo "pointed the Ubuntu archive entries of ${archive_files[*]} at $mirrors"
+          fi
+          echo "apt mirror list $mirrors:"
+          cat "$mirrors"
+        }
+        # Runs update or download with what is left until $deadline; exit code 124 when nothing is left.
+        before_deadline() { # update|download
+          local left=$((deadline - SECONDS))
+          if [ "$left" -lt 1 ]; then return 124; fi
+          "$1" "$left"
+        }
+
+        rc=0
+        update "$UPDATE_TIMEOUT" || rc=$?
+        if [ "$rc" -ne 0 ]; then
+          start_fallback "apt-get update $(outcome "$rc" "$UPDATE_TIMEOUT")"
+          rc=0
+          before_deadline update || rc=$?
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::apt-get update on the other Ubuntu mirrors $(outcome "$rc" "$FALLBACK_TIMEOUT") too"
+            exit 1
+          fi
+        fi
+
+        # Move every restored deb out of the archive: apt lists (--print-uris) only the debs it would download, and it
+        # would skip a file that is already there. Anything named *.deb that is not a regular file is removed.
+        stage="$(mktemp -d "${RUNNER_TEMP:-/tmp}/apt-verify.XXXXXX")"
+        find "$ARCHIVES" -maxdepth 1 -name '*.deb' ! -type f -exec rm -rf -- {} +
+        find "$ARCHIVES" -maxdepth 1 -type f -name '*.deb' -exec mv -t "$stage" -- {} +
+        staged="$(find "$stage" -maxdepth 1 -type f -name '*.deb' | wc -l)"
+        kept=0
+        mismatched=0
+        if [ "$staged" -gt 0 ]; then
+          # One line per deb: 'URI' file-name size SHA256:hex. Acquire::ForceHash makes apt print the SHA256 (apt 2.4
+          # prints the MD5Sum otherwise); the hashes come from the package lists that `update` verified.
+          uris="$stage/uris.txt"
+          # SC2086: word splitting of the package list is intended. SC2024: the runner user writes the list into its
+          # own staging directory; only apt-get runs as root.
+          # shellcheck disable=SC2086,SC2024
+          if sudo apt-get -qq -o Acquire::ForceHash=SHA256 --print-uris install -y --no-install-recommends $PACKAGES \
+            > "$uris"; then
+            re="^'[^' ]+' ([A-Za-z0-9._+~%-]+[.]deb) [0-9]+ SHA256:([0-9a-f]{64})$"
+            declare -A want=()
+            parsed=true
+            while IFS= read -r line || [ -n "$line" ]; do
+              # Fail closed: one line in another shape, or a file name listed twice, and no restored deb is trusted.
+              if ! [[ "$line" =~ $re ]] || [ -n "${want[${BASH_REMATCH[1]}]+x}" ]; then
+                parsed=false
+                echo "::warning::unexpected apt-get --print-uris output: no restored deb is trusted"
+                break
+              fi
+              want["${BASH_REMATCH[1]}"]="${BASH_REMATCH[2]}"
+            done < "$uris"
+            if [ "$parsed" = true ]; then
+              for name in "${!want[@]}"; do
+                f="$stage/$name"
+                if [ ! -f "$f" ]; then continue; fi
+                sum="$(sha256sum < "$f")"
+                if [ "${sum%% *}" = "${want[$name]}" ]; then
+                  mv -- "$f" "$ARCHIVES/$name"
+                  kept=$((kept + 1))
+                else
+                  mismatched=$((mismatched + 1))
+                  echo "::warning::restored $name does not match the package lists; downloading it again"
+                fi
+              done
+            fi
+          else
+            echo "::warning::apt-get --print-uris failed: no restored deb is trusted"
+          fi
+        fi
+        rm -rf -- "$stage"
+        echo "restored debs: $staged, verified and kept: $kept, hash mismatches: $mismatched (all others deleted)"
+
+        rc=0
+        if [ "$fallback" = false ]; then
+          download "$DOWNLOAD_TIMEOUT" || rc=$?
+          if [ "$rc" -ne 0 ]; then start_fallback "the package download $(outcome "$rc" "$DOWNLOAD_TIMEOUT")"; fi
+        else
+          # The fallback already started at the update: download from the other mirrors and, if that fails, retry
+          # there (never a second switch), all within the same fallback time.
+          before_deadline download || rc=$?
+          if [ "$rc" -ne 0 ]; then
+            echo "::warning::the package download from the other Ubuntu mirrors $(outcome "$rc" "$FALLBACK_TIMEOUT")"
+          fi
+        fi
+        if [ "$rc" -ne 0 ]; then
+          # Retry (update, then download) unless the fallback time is used up.
+          if [ "$((deadline - SECONDS))" -ge 1 ]; then
+            rc=0
+            before_deadline update || rc=$?
+            if [ "$rc" -ne 0 ]; then
+              echo "::warning::apt-get update on the other mirrors $(outcome "$rc" "$FALLBACK_TIMEOUT")"
+            fi
+            rc=0
+            before_deadline download || rc=$?
+          fi
+          if [ "$rc" -ne 0 ]; then
+            if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+              why="took longer than ${FALLBACK_TIMEOUT}s (with apt-get update)"
+            else
+              why="failed (exit $rc)"
+            fi
+            echo "::error::the package download from the other Ubuntu mirrors $why too"
+            exit 1
+          fi
+        fi
+
+        # Everything the install needs is in the archive now; --no-download makes a missing deb an error instead of
+        # a new, unbounded download.
+        # shellcheck disable=SC2086 # word splitting of the package list is intended
+        sudo apt-get "${opts[@]}" --no-download install -y --no-install-recommends $PACKAGES
+        n="$(find "$ARCHIVES" -maxdepth 1 -name '*.deb' | wc -l)"
+        echo "$n debs in $ARCHIVES"
+        if [ "$n" -eq 0 ]; then echo "::warning::apt kept no downloaded packages: nothing to cache"; fi
+
+    # autoclean drops the debs that the current package lists no longer offer, so the saved archive does not grow with
+    # every runner image.
+    - name: Prune outdated debs
+      if: >-
+        inputs.save == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+        steps.restore.outputs.cache-hit != 'true'
+      shell: bash
+      run: sudo apt-get autoclean
+
+    - name: Save the apt archive
+      if: >-
+        inputs.save == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+        steps.restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: /var/cache/apt/archives/*.deb
+        key: ${{ steps.key.outputs.key }}
