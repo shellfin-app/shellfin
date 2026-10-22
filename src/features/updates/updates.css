@@ -19,15 +19,15 @@
   margin: 10px 0 4px; font-size: calc(12.5px * var(--ui-scale, 1)); font-weight: 600; color: var(--text-bright);
   line-height: 1.4;
 }
-/* Three compact levels. `###` is what the CHANGELOG uses most ("Added", "Changed", "Fixed"): a small section label. */
+/* Three compact levels. `###` is what the CHANGELOG uses most ("Added", "Changed", "Fixed"): a small section label.
+   Sentence case and --text-secondary (not uppercase muted) so it reads as content, unlike `.update__notes-title`. */
 .update__md-h--1 {
   margin-top: 12px; padding-bottom: 3px; border-bottom: 1px solid var(--border);
   font-size: calc(14.5px * var(--ui-scale, 1)); font-weight: 700;
 }
 .update__md-h--2 { font-size: calc(13px * var(--ui-scale, 1)); }
 .update__md-h--3 {
-  margin-top: 8px; font-size: calc(12px * var(--ui-scale, 1)); color: var(--text-muted);
-  text-transform: uppercase; letter-spacing: .04em;
+  margin-top: 8px; font-size: calc(12px * var(--ui-scale, 1)); color: var(--text-secondary);
 }
 .update__notes > .update__md-h:first-child { margin-top: 0; }
 .update__notes code {

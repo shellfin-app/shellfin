@@ -7,3 +7,8 @@ src/ipc/bindings/** text eol=lf
 *.woff2 binary
 # Test-only key fixtures: byte-identical on every OS (parsed by tests, compiled in via include_str!).
 src-tauri/tests/fixtures/keys/** text eol=lf
+# Generated and shipped (installer resources and licence page): LF in the repository and in every checkout.
+# Existing checkouts keep their CRLF files until they are rewritten: delete both files, then
+# `git restore THIRD_PARTY_NOTICES.txt src-tauri/installer/LICENSE.txt`.
+THIRD_PARTY_NOTICES.txt text eol=lf
+src-tauri/installer/LICENSE.txt text eol=lf

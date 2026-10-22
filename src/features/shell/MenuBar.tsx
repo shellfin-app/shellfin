@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { Icon } from "../../components/Icon";
 import { MENUS, MENU_IDS, shortcutLabel, type MenuId } from "../../lib/actionIds";
 import { SEL_MENU_ITEM } from "../../lib/domIds";
+import { mnemonicChar, mnemonicOf } from "../../lib/menuMnemonic";
 import { useStore } from "../../state/store";
 import { isModalOpen } from "../session/promptVisibility";
 import { ACTIONS, actionEnabled, actionLabel, runAction } from "../actions/registry";
@@ -21,7 +22,7 @@ function inTerminal(el: Element | null): boolean {
 
 /** The label with its mnemonic letter (first letter) marked. */
 function MenuLabel({ text }: { text: string }) {
-  const first = Array.from(text)[0] ?? "";
+  const first = mnemonicChar(text);
   return (
     <>
       <span className="menubar__mnemonic">{first}</span>
@@ -237,14 +238,13 @@ export function MenuBar() {
       }
       if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && e.getModifierState("AltGraph") !== true && e.key.length === 1) {
         const letter = e.key.toLowerCase();
-        const first = (text: string) => Array.from(text)[0]?.toLowerCase();
         // The mnemonic is the first letter of the translated name; with another keyboard layout than the UI language
         // (Ukrainian UI on a Latin layout and the reverse) the physical key of the English name's first letter works too.
         const physical = /^Key([A-Z])$/.exec(e.code)?.[1]?.toLowerCase();
         const english = i18next.getFixedT("en");
         const hit =
-          MENU_IDS.find((id) => first(t(`menubar.${id}`)) === letter) ??
-          (physical === undefined ? undefined : MENU_IDS.find((id) => first(english(`menubar.${id}`)) === physical));
+          MENU_IDS.find((id) => mnemonicOf(t(`menubar.${id}`)) === letter) ??
+          (physical === undefined ? undefined : MENU_IDS.find((id) => mnemonicOf(english(`menubar.${id}`)) === physical));
         if (hit) {
           e.preventDefault();
           remember();

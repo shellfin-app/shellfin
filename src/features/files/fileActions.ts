@@ -340,12 +340,13 @@ export function requestDelete(sessionId: string, path: string, entry: "file" | "
   store.openDialog(deleteEntryDialog(sessionId, path, entry));
 }
 
-/** True if showing `s` needs no escaping (no control or bidi characters). */
+/** True if showing `s` needs no escaping (it contains nothing `displayServerText` escapes). */
 function isPlainText(s: string): boolean {
   return displayServerText(s, Number.MAX_SAFE_INTEGER) === s;
 }
 
-/** Copies a remote path. A path with control or bidi characters is copied in its escaped, visible form. */
+/** Copies a remote path. A path with characters that `displayServerText` escapes (control, bidi,
+ * invisible or variation-selector characters) is copied in its escaped, visible form. */
 export function copyPath(path: string): void {
   const text = isPlainText(path) ? path : displayServerText(path, Number.MAX_SAFE_INTEGER);
   navigator.clipboard.writeText(text).catch(() => undefined);
