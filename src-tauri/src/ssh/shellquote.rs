@@ -37,7 +37,7 @@ const FALLBACK_TAIL: &str = r#"")" 2>/dev/null; exec "${SHELL:-/bin/sh}" -l'"#;
 pub const MAX_CWD_BYTES: usize = 4096;
 
 /// `exec /bin/sh -c 'cd -- "$(printf "<P>")" && exec "${SHELL:-/bin/sh}" -l'` where `<P>` is
-/// every UTF-8 byte of `path` as `\NNN`. `path` must be absolute and free of NUL/C0 controls
+/// every UTF-8 byte of `path` as `\NNN`. `path` must be absolute and free of NUL/C0/DEL controls
 /// (`$(…)` would also strip trailing newlines) — callers map errors to
 /// `invalidArgument{field:"cwd"}`.
 pub fn cd_wrapper(path: &str) -> Result<String, QuoteError> {
@@ -68,7 +68,7 @@ fn wrap(path: &str, tail: &str) -> Result<String, QuoteError> {
     Ok(out)
 }
 
-/// POSIX single-quoting: `'` → `'\''`. NUL/C0 rejected.
+/// POSIX single-quoting: `'` → `'\''`. NUL/C0/DEL rejected.
 pub fn posix_quote(s: &str) -> Result<String, QuoteError> {
     if has_controls(s) {
         return Err(QuoteError::ControlCharacters);
@@ -77,7 +77,7 @@ pub fn posix_quote(s: &str) -> Result<String, QuoteError> {
 }
 
 /// PowerShell single-quoting: `'` → `''` (also the typographic quotes PowerShell treats as
-/// quote characters). NUL/C0 rejected.
+/// quote characters). NUL/C0/DEL rejected.
 pub fn powershell_quote(s: &str) -> Result<String, QuoteError> {
     if has_controls(s) {
         return Err(QuoteError::ControlCharacters);

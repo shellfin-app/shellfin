@@ -209,7 +209,7 @@ pub fn signal_name(sig: &Sig) -> String {
 }
 
 /// The command for `term_open(cwd)` (§4.5): `None` ⇒ login shell; a cwd is allowed only on
-/// POSIX sessions and must pass `cd_wrapper` (absolute, no NUL/C0) ⇒ else
+/// POSIX sessions and must pass `cd_wrapper` (absolute, no NUL/C0/DEL) ⇒ else
 /// `invalidArgument{field:"cwd"}`.
 pub fn shell_command(
     cwd: Option<&str>,
@@ -229,7 +229,7 @@ pub fn shell_command(
 }
 
 /// Never an error. A cwd is used only on a
-/// POSIX session and only when it is absolute, ≤ 4096 bytes and free of NUL/C0 controls;
+/// POSIX session and only when it is absolute, ≤ 4096 bytes and free of NUL/C0/DEL controls;
 /// otherwise the login shell starts in home (`None`). A usable cwd gets the
 /// [`cd_wrapper_or_home`](crate::ssh::shellquote::cd_wrapper_or_home) wrapper, so a folder that
 /// cannot be entered also ends in home.
