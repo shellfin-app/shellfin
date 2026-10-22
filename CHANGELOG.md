@@ -13,6 +13,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   import. The bookmarks and their commands are listed before anything is saved. By default startup commands are still
   dropped, and a command that is not a single valid line is always dropped.
 
+### Removed
+
+- The experimental update channel and its "Update channel" setting: there is one update channel, with stable
+  releases only. A saved channel choice is ignored. Experimental builds (0.2.0-experimental.1) and 0.1.x installs set
+  to "Experimental" move to the stable channel with the next release, 0.2.0, without any action. The Homebrew cask `shellfin@experimental` is no longer updated; switch
+  with `brew uninstall --cask shellfin@experimental && brew install --cask shellfin-app/tap/shellfin`.
+
 ### Security
 
 - Remote names that contain invisible variation selectors (U+FE00 to U+FE0D) are now shown with a visible marker,

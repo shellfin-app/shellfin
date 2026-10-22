@@ -2,9 +2,9 @@
 
 ## Supported versions
 
-Only the latest stable release (`vX.Y.Z`) is supported; security fixes ship as a new stable release. Experimental
-pre-releases (`vX.Y.Z-experimental.N`) are not patched themselves: fixes reach them through a newer pre-release or a
-newer stable release.
+Only the latest release (`vX.Y.Z`) is supported; security fixes ship as a new release. There are no pre-releases any
+more: the former experimental build (`0.2.0-experimental.1`) is not supported and moves to the next release through
+the updater.
 
 ## Reporting a vulnerability
 

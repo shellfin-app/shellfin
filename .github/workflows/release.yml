@@ -15,13 +15,12 @@
 # TAURI_SIGNING_PRIVATE_KEY / _PASSWORD. With the key, the build also produces signed updater
 # artifacts (NSIS .exe, .app.tar.gz, AppImage) and `updater-manifest` (no
 # secrets, contents: read) assembles `latest.json` for the draft. Users only see an update after a
-# maintainer PUBLISHES the draft: `update-channels.yml` then writes the channel files.
+# maintainer PUBLISHES the draft: `update-channels.yml` then writes the update manifests.
 # Windows ships NSIS only (x64 and ARM64): one installer type per updater key, per-user install.
-# Pre-release tags (vX.Y.Z-experimental.N) build AppImage-only on Linux and create a draft marked as a pre-release.
 #
-# Gates before anything is built (`verify`): a stable tag vX.Y.Z must be on `main`, a pre-release tag
-# vX.Y.Z-experimental.N on `experimental` or `main`, any other tag shape fails; the commit needs a successful
-# CI run of a push to one of those allowed branches (so it was once the pushed tip of a release branch).
+# Gates before anything is built (`verify`): the tag must be exactly vX.Y.Z (any other shape, including a
+# pre-release suffix, fails) and on `main`; the commit needs a successful CI run of a push to `main` (so it
+# was once the pushed tip of `main`).
 # Release notes are the CHANGELOG section of the version, when it exists (`notes`).
 name: Release
 
@@ -44,11 +43,10 @@ env:
   RUST_TOOLCHAIN: 1.99.1
 
 jobs:
-  # The tag must have an exact shape and point at a commit of its release branch (stable: `main`;
-  # pre-release: `experimental` or `main`) whose CI run for a push to one of those allowed branches
-  # succeeded, so a malformed, broken or side-branch tag cannot produce a draft release. A commit from
-  # inside a merged pull request is an ancestor of the branch but was never its pushed tip, so it has no
-  # such run and is refused. Later jobs rely on these shapes (`*-*` = pre-release).
+  # The tag must be exactly vX.Y.Z and point at a commit of `main` whose CI run for a push to `main`
+  # succeeded, so a malformed, pre-release, broken or side-branch tag cannot produce a draft release. A
+  # commit from inside a merged pull request is an ancestor of `main` but was never its pushed tip, so it
+  # has no such run and is refused.
   verify:
     runs-on: ubuntu-22.04
     timeout-minutes: 10
@@ -63,81 +61,42 @@ jobs:
 
       # grep is line-based, so the `case` first rejects every character a release tag cannot contain
       # (whitespace, newlines, shell metacharacters); numbers are SemVer (no leading zeros).
-      # Output `branches`: the branches whose CI push run may vouch for the commit (next step).
       - name: Tag shape and branch
-        id: tag
         run: |
           tag="$GITHUB_REF_NAME"
           n='(0|[1-9][0-9]*)'
-          kind=invalid
+          ok=false
           case "$tag" in
             *[!0-9A-Za-z.-]*) ;;
-            *)
-              if printf '%s' "$tag" | grep -Eq "^v$n\.$n\.$n\$"; then
-                kind=stable
-              elif printf '%s' "$tag" | grep -Eq "^v$n\.$n\.$n-experimental\.$n\$"; then
-                kind=experimental
-              fi ;;
+            *) if printf '%s' "$tag" | grep -Eq "^v$n\.$n\.$n\$"; then ok=true; fi ;;
           esac
-          # 0: the tagged commit is on origin/<branch>; 1: it is not; 2: the branch cannot be fetched.
-          on_branch() {
-            git fetch --no-tags --quiet origin "refs/heads/$1" || return 2
-            git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD || return 1
-          }
-          # Why the commit is not on <branch>, from the on_branch status.
-          why() {
-            if [ "$1" -eq 2 ]; then echo "origin/$2 does not exist or cannot be fetched"; else echo "it is not a commit of $2"; fi
-          }
-          case "$kind" in
-            stable)
-              branches=main
-              rc=0; on_branch main || rc=$?
-              if [ "$rc" -ne 0 ]; then
-                echo "::error::stable tag $tag ($GITHUB_SHA) refused: $(why "$rc" main)"; exit 1
-              fi ;;
-            experimental)
-              branches="main experimental"
-              rc_main=0; on_branch main || rc_main=$?
-              if [ "$rc_main" -ne 0 ]; then
-                rc=0; on_branch experimental || rc=$?
-                if [ "$rc" -ne 0 ]; then
-                  echo "::error::pre-release tag $tag ($GITHUB_SHA) refused: $(why "$rc_main" main); $(why "$rc" experimental)"; exit 1
-                fi
-              fi ;;
-            *)
-              printf '::error::tag %q is neither vX.Y.Z nor vX.Y.Z-experimental.N (decimal numbers, no leading zeros)\n' "$tag"
-              exit 1 ;;
-          esac
-          echo "branches=$branches" >> "$GITHUB_OUTPUT"
-          echo "$kind tag $tag ($GITHUB_SHA) is on its release branch; CI push runs accepted from: $branches"
+          if [ "$ok" != true ]; then
+            printf '::error::tag %q is not vX.Y.Z (decimal numbers, no leading zeros, no pre-release suffix)\n' "$tag"
+            exit 1
+          fi
+          if ! git fetch --no-tags --quiet origin refs/heads/main; then
+            echo "::error::tag $tag ($GITHUB_SHA) refused: origin/main does not exist or cannot be fetched"; exit 1
+          fi
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD; then
+            echo "::error::tag $tag ($GITHUB_SHA) refused: it is not a commit of main"; exit 1
+          fi
+          echo "tag $tag ($GITHUB_SHA) is on main"
 
-      # Only a successful run of ci.yml for a push to an allowed branch counts, so the commit was the
-      # pushed tip of that branch (pull request runs, other branches and other workflows do not count).
-      - name: CI passed for the tagged commit on an allowed branch
+      # Only a successful run of ci.yml for a push to `main` counts, so the commit was the pushed tip
+      # of `main` (pull request runs, other branches and other workflows do not count).
+      - name: CI passed for the tagged commit on main
         env:
           GH_TOKEN: ${{ github.token }}
-          BRANCHES: ${{ steps.tag.outputs.branches }}
         run: |
-          if [ -z "$BRANCHES" ]; then
-            echo "::error::no allowed branch from the tag check"; exit 1
+          n="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&event=push&status=success&branch=main&per_page=1" --jq .total_count)" \
+            || { echo "::error::the workflow runs API failed"; exit 1; }
+          case "$n" in
+            '' | *[!0-9]*) echo "::error::unexpected answer from the workflow runs API"; exit 1 ;;
+          esac
+          if [ "$n" -lt 1 ]; then
+            echo "::error::no successful CI run of a push to main for $GITHUB_SHA: tag the commit that was pushed to main after its CI run succeeded"; exit 1
           fi
-          found=
-          for b in $BRANCHES; do
-            case "$b" in
-              main | experimental) ;;
-              *) echo "::error::unexpected branch from the tag check"; exit 1 ;;
-            esac
-            n="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&event=push&status=success&branch=$b&per_page=1" --jq .total_count)" \
-              || { echo "::error::the workflow runs API failed for $b"; exit 1; }
-            case "$n" in
-              '' | *[!0-9]*) echo "::error::unexpected answer from the workflow runs API for $b"; exit 1 ;;
-            esac
-            if [ "$n" -ge 1 ]; then found="$b"; break; fi
-          done
-          if [ -z "$found" ]; then
-            echo "::error::no successful CI run of a push to ${BRANCHES// / or } for $GITHUB_SHA: tag the commit that was pushed to the branch (the merge commit) after its CI run succeeded"; exit 1
-          fi
-          echo "successful CI run of the push to $found for $GITHUB_SHA"
+          echo "successful CI run of the push to main for $GITHUB_SHA"
 
   build:
     name: build (${{ matrix.name }})
@@ -252,12 +211,11 @@ jobs:
           fi
 
       # Release-only Tauri config: no beforeBuildCommand (built above), updater artifacts when the
-      # key exists. Pre-release versions: AppImage only on Linux.
+      # key exists.
       - name: Release build configuration
         shell: bash
         env:
           UPDATER: ${{ steps.updaterkey.outputs.enabled }}
-          TARGET_NAME: ${{ matrix.name }}
         run: |
           conf="$RUNNER_TEMP/release.conf.json"
           if [ "$RUNNER_OS" = "Windows" ]; then conf="$(cygpath -m "$conf")"; fi
@@ -269,12 +227,6 @@ jobs:
             }));
           ' "$conf" "$UPDATER"
           args="--config $conf"
-          case "$GITHUB_REF_NAME" in
-            *-*)
-              case "$TARGET_NAME" in
-                linux-x64) args="$args --bundles appimage" ;;
-              esac ;;
-          esac
           echo "RELEASE_ARGS=$args" >> "$GITHUB_ENV"
           echo "release build arguments: $args"
 
@@ -559,11 +511,8 @@ jobs:
           # The SBOMs are release files too: SHA256SUMS and the attestation cover them.
           cp -- notes-sbom/sbom/*.cdx.json release/
           ls -l release
-          # Pre-release tags build AppImage-only on Linux. Windows ships NSIS only (no .msi).
-          case "$GITHUB_REF_NAME" in
-            *-*) required="exe dmg AppImage" ;;
-            *) required="exe dmg AppImage deb rpm" ;;
-          esac
+          # Windows ships NSIS only (no .msi).
+          required="exe dmg AppImage deb rpm"
           if ls release/*.msi > /dev/null 2>&1; then
             echo "::error::an .msi was built: Windows ships NSIS only"; exit 1
           fi
@@ -607,17 +556,15 @@ jobs:
           subject-path: release/*
 
       # DRAFT only: a maintainer reviews it and publishes by hand. Never `--draft=false`. A draft
-      # reaches no user: the update channels are written only when it is published
-      # (update-channels.yml). Pre-release tags (vX.Y.Z-experimental.N) are marked as pre-releases.
+      # reaches no user: the update manifests are written only when it is published
+      # (update-channels.yml).
       - name: Create the draft release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          pre=()
-          case "$GITHUB_REF_NAME" in *-*) pre=(--prerelease) ;; esac
           # The CHANGELOG section of the version when there is one; otherwise generated notes.
           notes=(--generate-notes)
           if [ -s notes-sbom/release-notes.md ]; then notes=(--notes-file notes-sbom/release-notes.md); fi
           gh release create "$GITHUB_REF_NAME" release/* \
-            --repo "$GITHUB_REPOSITORY" --verify-tag --draft "${pre[@]}" \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --draft \
             --title "Shellfin ${GITHUB_REF_NAME#v}" "${notes[@]}"

@@ -1369,15 +1369,11 @@ mod tests {
         validate(&s).unwrap();
     }
 
-    /// Updater: `general.autoUpdate` (default on) and `general.updateChannel` (default
-    /// stable) default when missing, round-trip without a version bump, and an unknown channel
-    /// is rejected like every other enum.
+    /// Updater: `general.autoUpdate` defaults to on when missing, round-trips without a version
+    /// bump, and a value of the wrong type is rejected like every other field.
     #[test]
     fn updater_settings_default_roundtrip_and_validate() {
-        use crate::ipc::dto::UpdateChannel;
-        let d = default_settings();
-        assert!(d.general.auto_update);
-        assert_eq!(d.general.update_channel, UpdateChannel::Stable);
+        assert!(default_settings().general.auto_update);
 
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
@@ -1388,38 +1384,74 @@ mod tests {
         let (s, w) = load(dir.path());
         assert!(w.is_empty(), "{w:?}");
         assert!(s.general.auto_update);
-        assert_eq!(s.general.update_channel, UpdateChannel::Stable);
 
         let mut s = default_settings();
         s.general.auto_update = false;
-        s.general.update_channel = UpdateChannel::Experimental;
         update(dir.path(), false, &s).unwrap();
         let raw: Value =
             serde_json::from_slice(&std::fs::read(dir.path().join("settings.json")).unwrap())
                 .unwrap();
         assert_eq!(raw["version"], 1);
         assert_eq!(raw["general"]["autoUpdate"], false);
-        assert_eq!(raw["general"]["updateChannel"], "experimental");
         assert_eq!(load(dir.path()).0, s);
 
-        for bad in [
-            br#"{"version":1,"general":{"updateChannel":"beta"}}"#.as_slice(),
-            br#"{"version":1,"general":{"updateChannel":"Stable"}}"#.as_slice(),
-            br#"{"version":1,"general":{"autoUpdate":"yes"}}"#.as_slice(),
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("settings.json"),
+            br#"{"version":1,"general":{"autoUpdate":"yes"}}"#,
+        )
+        .unwrap();
+        let (s, w) = load(dir.path());
+        assert_eq!(s, default_settings());
+        assert_eq!(
+            serde_json::to_value(&w[0]).unwrap()["code"],
+            "storageCorrupt"
+        );
+    }
+
+    /// The removed `general.updateChannel` (0.1.x and 0.2.0-experimental.1 wrote `"stable"` or
+    /// `"experimental"`) is an unknown key now: any value, even garbage, loads without a warning,
+    /// quarantine or version bump, every other stored value is kept, and the next save drops it.
+    #[test]
+    fn removed_update_channel_is_ignored_on_load() {
+        for channel in [
+            r#""experimental""#,
+            r#""stable""#,
+            r#""nightly""#,
+            "42",
+            "null",
+            r#"{"x":[1,2]}"#,
         ] {
             let dir = tempfile::tempdir().unwrap();
-            std::fs::write(dir.path().join("settings.json"), bad).unwrap();
-            let (s, w) = load(dir.path());
-            assert_eq!(s, default_settings());
-            assert_eq!(
-                serde_json::to_value(&w[0]).unwrap()["code"],
-                "storageCorrupt"
+            let text = format!(
+                r#"{{"version":1,"locale":"uk","terminal":{{"fontSize":17}},
+                    "general":{{"autoUpdate":false,"updateChannel":{channel},"notifyOnDisconnect":true}}}}"#
             );
+            std::fs::write(dir.path().join("settings.json"), text).unwrap();
+            let (s, w) = load(dir.path());
+            assert!(w.is_empty(), "{channel}: {w:?}");
+            let mut expected = default_settings();
+            expected.locale = "uk".into();
+            expected.terminal.font_size = 17;
+            expected.general.auto_update = false;
+            expected.general.notify_on_disconnect = true;
+            assert_eq!(s, expected, "{channel}");
+            let names: Vec<_> = std::fs::read_dir(dir.path())
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(names, ["settings.json"], "{channel}: no quarantine copy");
+
+            update(dir.path(), false, &s).unwrap();
+            let raw: Value =
+                serde_json::from_slice(&std::fs::read(dir.path().join("settings.json")).unwrap())
+                    .unwrap();
+            assert_eq!(raw["version"], 1);
+            assert!(raw["general"].get("updateChannel").is_none(), "{raw}");
+            let (again, w) = load(dir.path());
+            assert!(w.is_empty(), "{channel}: {w:?}");
+            assert_eq!(again, expected, "{channel}");
         }
-        // Inbound (`settings_update`): an unknown channel never deserializes.
-        let mut v = serde_json::to_value(default_settings()).unwrap();
-        v["general"]["updateChannel"] = "nightly".into();
-        assert!(serde_json::from_value::<Settings>(v).is_err());
     }
 
     #[test]

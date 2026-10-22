@@ -83,7 +83,6 @@ for 21 (e.g. «Незбережені зміни в {{count}} файлі»). A U
 | dismiss (notice) | закрити / прибрати | |
 | notification | сповіщення | |
 | update (noun / verb) | оновлення / оновити(ся) | «Перевірити оновлення…», «Оновити й перезапустити» |
-| update channel | канал оновлень | values «Стабільний» / «Експериментальний» |
 | release (a version) / pre-release | випуск / попередній випуск | «сторінка випуску» |
 | release notes | примітки до випуску | dialog section title «Що нового» |
 | skip this version | пропустити цю версію | |

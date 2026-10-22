@@ -300,8 +300,8 @@ pub enum ErrorCode {
     /// keychain (`bookmark_set_password` with a password).
     SecretStorageDisabled,
     // updater (§9.8)
-    /// This build never checks for updates (dev, debug or `e2e` build, or no HTTPS endpoint for
-    /// the selected channel).
+    /// This build never checks for updates (dev, debug or `e2e` build, or no HTTPS `stable.json`
+    /// endpoint).
     UpdatesDisabled,
     /// The update manifest could not be fetched or understood (network, TLS, HTTP status, JSON,
     /// no entry for this platform).

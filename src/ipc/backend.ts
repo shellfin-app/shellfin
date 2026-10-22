@@ -210,7 +210,7 @@ export interface Backend {
   transferCancel(transferId: string): Promise<void>;
 
   // ---- updates ----
-  /** Manual "Check for updates…" on the selected channel; reports a skipped version too. */
+  /** Manual "Check for updates…"; reports a skipped version too. */
   updateCheck(): Promise<UpdateCheckOutcome>;
   /**
    * "Update and restart": download + verify `version` (must be the update last reported), then the backend starts

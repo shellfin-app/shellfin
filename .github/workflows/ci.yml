@@ -1,17 +1,16 @@
 # CI (§11.2). Every action is pinned to a full commit SHA (Dependabot `github-actions` updates
 # them; the version comment is informational). Least privilege: read-only token everywhere.
-# Push runs on both release branches: release.yml only builds a tag whose commit has a green push run.
+# Push runs on `main`, the release branch: release.yml only builds a tag whose commit has a green push run.
 # No job waits for `checks`; the gated jobs only wait for the short `changes` job. Pull requests skip jobs whose inputs did not change (`changes`, job-level `if:`, never
 # workflow `paths:`: a skipped job reports success, a path-filtered workflow leaves required checks pending); pushes,
 # dispatch and the schedule always run everything they cover. `ci-ok` is the one check to require: on a push or dispatch
 # it requires every job to succeed (a skip fails it), on a pull request it also accepts skips.
-# Caches (Rust, apt) are saved only by pushes to `main` (apt by `checks` alone); pull requests and `experimental`
-# restore them.
+# Caches (Rust, apt) are saved only by pushes to `main` (apt by `checks` alone); pull requests restore them.
 name: CI
 
 on:
   push:
-    branches: [main, experimental]
+    branches: [main]
   # `edited` on top of the default types: retargeting a pull request to another base branch is an `edited` event and
   # changes the diff that `changes` classifies, so the run must be repeated against the new base (a title or body edit
   # also triggers it; the concurrency group cancels the older run of the pull request).
@@ -239,7 +238,7 @@ jobs:
         working-directory: src-tauri
         run: cargo +1.90 check --locked --all-targets
 
-  # The Homebrew casks rendered by scripts/homebrew-cask.mjs (stable and experimental) must pass `brew style`.
+  # The Homebrew cask rendered by scripts/homebrew-cask.mjs must pass `brew style`.
   # The sha256 is a placeholder; only the shape is checked here.
   homebrew-cask:
     needs: changes
@@ -256,22 +255,17 @@ jobs:
           node-version: 24.22.1
           package-manager-cache: false
 
-      - name: Render and style-check both casks
+      - name: Render and style-check the cask
         run: |
           mkdir -p casks
           zeros="0000000000000000000000000000000000000000000000000000000000000000"
-          for t in "v0.2.0 false" "v0.3.0-experimental.1 true"; do
-            # shellcheck disable=SC2086 # splitting "tag prerelease" is intended
-            set -- $t
-            v="${1#v}"
-            printf '%s  Shellfin_%s_aarch64.dmg\n' "$zeros" "$v" > sums
-            node scripts/homebrew-cask.mjs render --repo "$GITHUB_REPOSITORY" --tag "$1" --prerelease "$2" \
-              --sums sums --conf src-tauri/tauri.conf.json --out cask.rb > token
-            read -r _ file < token
-            mv cask.rb "casks/$file"
-          done
+          printf '%s  Shellfin_0.2.0_aarch64.dmg\n' "$zeros" > sums
+          node scripts/homebrew-cask.mjs render --repo "$GITHUB_REPOSITORY" --tag v0.2.0 --prerelease false \
+            --sums sums --conf src-tauri/tauri.conf.json --out cask.rb > token
+          read -r _ file < token
+          mv cask.rb "casks/$file"
           ls casks
-          # Homebrew only checks casks that live in a tap, so put them into a throwaway local one.
+          # Homebrew only checks casks that live in a tap, so put it into a throwaway local one.
           brew tap-new --no-git shellfin-ci/check
           tap="$(brew --repository shellfin-ci/check)"
           mkdir -p "$tap/Casks"
@@ -467,8 +461,8 @@ jobs:
           targets: ${{ matrix.rust-targets }}
 
       # Pull requests: the release profile without fat LTO and with parallel codegen (the single-unit LTO link of the
-      # app alone takes several minutes per platform). Pushes to `main` and `experimental`, whose green run release.yml
-      # requires, build with the exact profile of src-tauri/Cargo.toml; strip and panic = "unwind" stay as they are.
+      # app alone takes several minutes per platform). Pushes to `main`, whose green run release.yml requires, build with
+      # the exact profile of src-tauri/Cargo.toml; strip and panic = "unwind" stay as they are.
       # No Rust cache for these builds: the `main` cache holds the exact profile, which Cargo cannot reuse here, and
       # pull requests do not save caches.
       - name: Pull request profile (no LTO, 16 codegen units)
@@ -494,23 +488,6 @@ jobs:
       - name: npm ci (no lifecycle scripts)
         run: npm ci --ignore-scripts --no-audit --no-fund
 
-      # Pre-release versions (X.Y.Z-experimental.N) build the AppImage only on Linux, as release.yml does: an rpm
-      # version cannot contain '-'.
-      - name: Bundle arguments
-        id: bundles
-        shell: bash
-        env:
-          MATRIX_ARGS: ${{ matrix.args }}
-        run: |
-          v="$(node -p "require('./package.json').version")"
-          args="$MATRIX_ARGS"
-          case "$v" in
-            "" | *[!0-9A-Za-z.+-]*) echo "::error::unexpected package.json version"; exit 1 ;;
-            *-*) if [ "$RUNNER_OS" = "Linux" ]; then args="${args:+$args }--bundles appimage"; fi ;;
-          esac
-          echo "args=$args" >> "$GITHUB_OUTPUT"
-          echo "version $v, build arguments: ${args:-(none)}"
-
       - name: Release artifacts never select MockBackend
         shell: bash
         run: |
@@ -530,7 +507,7 @@ jobs:
       # must keep this order: build → checks → upload/publish.
       - uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # action-v1.0.0
         with:
-          args: ${{ steps.bundles.outputs.args }} -- --locked
+          args: ${{ matrix.args }} -- --locked
           uploadWorkflowArtifacts: false
 
       # The e2e isolation feature (src-tauri/src/e2e.rs: SHELLFIN_E2E_ROOT redirects all user
@@ -539,7 +516,7 @@ jobs:
       - name: Release binaries are built without the e2e feature
         shell: bash
         env:
-          BUILD_ARGS: ${{ steps.bundles.outputs.args }}
+          BUILD_ARGS: ${{ matrix.args }}
         run: |
           case " $BUILD_ARGS " in *e2e*) echo "::error::e2e in the release build arguments"; exit 1;; esac
           bins="$(find src-tauri/target -type f \( -iname shellfin -o -iname shellfin.exe \) -path '*/release/*' -not -path '*/deps/*')"

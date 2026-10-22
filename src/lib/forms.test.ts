@@ -97,7 +97,6 @@ describe("settings form", () => {
       onStartup: "welcome",
       notifyOnDisconnect: false,
       autoUpdate: true,
-      updateChannel: "stable",
     },
     terminal: {
       fontSize: 13, scrollback: 10000, cursorBlink: true, copyOnSelect: false, fontFamily: null,

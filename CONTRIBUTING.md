@@ -59,7 +59,7 @@ Rust version, `actionlint`, `zizmor`, `gitleaks`, `cargo deny`, `cargo audit` an
 skips the jobs your changes cannot affect (for example the Rust and installer jobs for a change under `src/` only; the
 build configuration such as `vite.config.ts`, `tsconfig*.json` or `package.json` still runs the installer builds; rules
 in `.github/scripts/ci-changes.sh`) and runs again when you change the pull request's base branch; `ci-ok` sums up the
-run. Pushes to `main` and `experimental` always run everything, and there `ci-ok` fails if any job was skipped.
+run. Pushes to `main` always run everything, and there `ci-ok` fails if any job was skipped.
 
 Integration tests against a Docker-based `sshd` (a target host plus a bastion for ProxyJump) are behind the Cargo
 feature `it`. They need a running Docker engine; the test harness starts the fixtures from `src-tauri/tests/sshd/`
@@ -102,8 +102,7 @@ described in section 10.2 of [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
   `feat(sftp): add atomic save` or `fix(ui): keep terminal scrollback on tab switch`. Common types: `feat`,
   `fix`, `docs`, `refactor`, `test`, `build`, `ci`, `chore`.
 - Keep pull requests focused and small enough to review. Link the issue they address.
-- Open feature pull requests against `experimental` and fixes for the released version against `main` (see
-  [Branches](#branches)).
+- Open every pull request against `main` (see [Branches](#branches)).
 - There is no Contributor License Agreement and no DCO sign-off requirement.
 - Fill in the pull request template. In short, before requesting review: all gates above pass, new behaviour has
   tests, user-facing text is translated via i18n, bindings are regenerated if Rust DTOs changed, documentation
@@ -111,54 +110,40 @@ described in section 10.2 of [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Branches
 
-- `main` holds the stable releases (`vX.Y.Z`, stable update channel) and receives only finished work and hotfixes.
-- `experimental` is the long-lived branch of the next minor version. Its pre-releases (`vX.Y.Z-experimental.N`) reach
-  the experimental update channel only.
-- Features: branch `feat/<issue>-<slug>` off `experimental` and open the pull request against `experimental`.
-- Hotfixes: branch off `main` and open the pull request against `main`. Dependabot opens its pull requests against
-  `main` too. Both reach `experimental` through the next sync.
-- Syncing `main` into `experimental` (after hotfixes, Dependabot updates or a stable release) happens on a branch made
-  from `experimental`, with the conflicts resolved locally:
-
-  ```sh
-  git fetch origin
-  git switch -c sync/main-YYYY-MM-DD origin/experimental
-  git merge origin/main
-  ```
-
-  Resolve the version fields to the `experimental` version, then the lockfiles (regenerate them instead of merging
-  them by hand), then run `npm run notices` (the notices name the app version) and the gates. Push the branch and
-  open a pull request `sync/main-YYYY-MM-DD` -> `experimental`; merge it with **Create a merge commit**. Never use
-  GitHub's "Resolve conflicts" or "Update branch" on a pull request whose head is `main`: they commit the merge of
-  `experimental` onto `main`.
-- A version is finished by a pull request `experimental` -> `main` that sets the version `X.Y.Z` and the changelog
-  (see Releasing). Merge it with **Create a merge commit**, never squash or rebase (the repository allows all three, so
-  choose it explicitly): otherwise `main` does not contain the `experimental` history and the next sync conflicts on
-  every file both branches changed. `experimental` survives that merge only because its ruleset forbids deletion
-  (see the [repository settings](#repository-settings-checklist)); the repository deletes merged head branches.
+- There is one long-lived branch, `main`. Every release (`vX.Y.Z`) is tagged on it, and there is one update channel.
+- Features and fixes: branch off `main` (for example `feat/<issue>-<slug>` or `fix/<issue>-<slug>`) and open the pull
+  request against `main`. Dependabot opens its pull requests against `main` too.
+- Merge pull requests with **Rebase and merge** (the repository allows other methods, so choose it explicitly). The
+  repository deletes merged head branches.
 
 ## Releasing
 
-Maintainers only. The version comes from `package.json` (`tauri.conf.json` reads it). Stable releases are tagged on
-`main`, pre-releases on `experimental` (see below). For a stable release, bump the version to `X.Y.Z` (also in
-`src-tauri/Cargo.toml` and the lockfiles; run `npm run notices`, the notices name the version), rename `[Unreleased]`
-in `CHANGELOG.md` to `## [X.Y.Z] - YYYY-MM-DD` (add a fresh empty `[Unreleased]` above it and the link definitions at
-the bottom), and merge that to `main` first: for a new minor version through the pull request `experimental` ->
-`main`, for a hotfix through its own pull request against `main`. Wait for the CI run of the merge commit to finish:
-the release only accepts a commit with a successful CI run of a push to `main` (for a pre-release: to `main` or
-`experimental`), that is the commit that was pushed as the tip of the branch, never a commit from inside a merged
-pull request.
+Maintainers only. The version comes from `package.json` (`tauri.conf.json` reads it). Releases are tagged on `main`
+only, and there are no pre-releases. Bump the version to `X.Y.Z` (also in `src-tauri/Cargo.toml` and the lockfiles;
+run `npm run notices`, the notices name the version), rename `[Unreleased]` in `CHANGELOG.md` to
+`## [X.Y.Z] - YYYY-MM-DD` (add a fresh empty `[Unreleased]` above it and the link definitions at the bottom), and
+merge that to `main` through a pull request first. Wait for the CI run of that push to `main` to finish: the release
+only accepts a commit with a successful CI run of a push to `main`, that is the commit that was pushed as the tip of
+`main`, never a commit from inside a merged pull request.
 
-1. Tag the merge commit: `git tag -s v0.1.0 && git push origin v0.1.0`. The tag must equal
-   `v<package.json version>` and have exactly the form `vX.Y.Z` or `vX.Y.Z-experimental.N` (decimal numbers without
-   leading zeros); the workflow fails otherwise.
-2. `.github/workflows/release.yml` first checks the tag's form, that the tagged commit is on `main` (for a
-   pre-release tag: on `experimental` or `main`) and that a CI run of a push to one of those branches succeeded for
-   that commit (`verify`). The build jobs then run in the `release` environment, which holds the signing secrets and
-   accepts only `v*` tags. With a single maintainer there is no reviewer gate: `verify` and the tag ruleset are the
-   automated gates, and the draft is reviewed and published by hand (steps 3 and 4). For each platform (Windows
-   x64 and Windows ARM64 with an NSIS installer only, no MSI; Linux x64; macOS arm64; no 32-bit Windows, no Intel
-   Mac) the order is fixed: **build, then checks, then upload**. The checks: no
+1. Tag exactly the tip of `main` whose push CI run succeeded. Pull requests are rebased onto `main`, so only the last
+   rebased commit was pushed as the tip and has a push run; the commits before it have none and are refused.
+
+   ```sh
+   git fetch origin
+   git rev-parse origin/main   # must be the head SHA of the green run listed below
+   gh run list --workflow ci.yml --branch main --event push --limit 1 --json headSha,conclusion
+   git tag -s vX.Y.Z origin/main && git push origin vX.Y.Z
+   ```
+
+   The tag must equal `v<package.json version>` and have exactly the form `vX.Y.Z` (decimal numbers without leading
+   zeros, no pre-release suffix); the workflow fails otherwise.
+2. `.github/workflows/release.yml` first checks the tag's form, that the tagged commit is on `main` and that a CI run
+   of a push to `main` succeeded for that commit (`verify`). The build jobs then run in the `release` environment,
+   which holds the signing secrets and accepts only `v*` tags. With a single maintainer there is no reviewer gate:
+   `verify` and the tag ruleset are the automated gates, and the draft is reviewed and published by hand (steps 3
+   and 4). For each platform (Windows x64 and Windows ARM64 with an NSIS installer only, no MSI; Linux x64; macOS
+   arm64; no 32-bit Windows, no Intel Mac) the order is fixed: **build, then checks, then upload**. The checks: no
    `SHELLFIN_E2E_ROOT` marker in any release binary and no `e2e` feature in the build arguments, no
    `__shellfin_mock_backend__` marker in the embedded `dist/`, `VITE_BACKEND` unset. Binaries are built with a pinned
    compiler (`src-tauri/rust-toolchain.toml`), `--remap-path-prefix` and `SOURCE_DATE_EPOCH`, so they contain no
@@ -169,30 +154,19 @@ pull request.
    `latest.json` and the two CycloneDX SBOMs `shellfin-rust.cdx.json` and `shellfin-npm.cdx.json`), verify with
    `gh attestation verify <file> -R shellfin-app/shellfin` and `sha256sum -c SHA256SUMS`, check that `latest.json`
    names this version and points to this tag, and read the notes. The notes are the `CHANGELOG.md` section of the
-   version (generated notes when there is none, as for pre-releases); edit them if needed, then publish manually.
-   The workflow never publishes.
+   version (generated notes when there is none); edit them if needed, then publish manually (do not mark it as a
+   pre-release). The workflow never publishes.
 4. **Publishing is what ships the update.** A draft reaches no user. When you publish, `update-channels.yml` runs
-   and copies the release's `latest.json` into the permanent `updater` release: a stable release updates
-   `stable.json` and `experimental.json`, a pre-release only `experimental.json`. It never replaces a channel file
-   with an older or equal version, so republishing an old release is harmless. Check the run in the Actions tab.
-   If it failed (or to redo it), run "Update channels" by hand with the tag. Never delete the `updater` release
-   (a pre-release titled "Update channels — do not delete"): installed apps read
-   `https://github.com/shellfin-app/shellfin/releases/download/updater/stable.json` and `.../experimental.json`.
-5. After a stable release, sync `main` into `experimental` (see [Branches](#branches)). After a new minor version
-   `X.Y.0`, also move `experimental` to the next one, `X.(Y+1).0-experimental.1`.
-
-### Experimental (pre-release) builds
-
-Pre-releases are cut from `experimental` (a pre-release tag on `main` is accepted too). The version is
-`X.Y.Z-experimental.N` (for example `0.3.0-experimental.1`; `N` counts up from 1 for each pre-release of `X.Y.Z`) in
-`package.json`, `src-tauri/Cargo.toml` and the lockfiles (run `npm run notices` as for a stable release). Merge the
-bump to `experimental`, wait for the CI run of that push, and tag the commit it ran on (the tip of `experimental`)
-`vX.Y.Z-experimental.N`; other pre-release suffixes such as `-rc.1` are refused. The release workflow builds only the
-AppImage on Linux (plus the same installers as for a stable release elsewhere) and creates the draft already marked
-as a **pre-release**; keep that mark when you publish. Never mark a pre-release as "latest". Publishing then updates
-`experimental.json` only. Users on the experimental channel also get every stable release that is newer than their
-build (`0.3.0` is newer than `0.3.0-experimental.4`); users switching back to stable never get a downgrade, they wait
-for the next stable release.
+   and copies the release's `latest.json` into the permanent `updater` release, as `stable.json` (the manifest the
+   app reads) and as `experimental.json`. It never replaces either file with an older or equal version, so
+   republishing an old release is harmless, and it refuses a release marked as a pre-release or a tag other than
+   `vX.Y.Z`. It also fails when a manifest the `updater` release lists cannot be downloaded or read (it never treats
+   such a file as missing). Check the run in the Actions tab. If it failed (or to redo it), run "Update channels" by
+   hand with the tag. Never delete the `updater` release (a pre-release titled "Update channels — do not delete"):
+   installed apps read `https://github.com/shellfin-app/shellfin/releases/download/updater/stable.json`.
+   `experimental.json` is a legacy mirror of `stable.json` for every install of the former experimental channel
+   (the `0.2.0-experimental.1` build, and 0.1.0/0.1.1 installs set to "Experimental"), which still read
+   `.../updater/experimental.json`; never delete it either, or those installs stop receiving updates.
 
 ### Repository settings checklist
 
@@ -206,11 +180,9 @@ before relying on them. Nothing here can be committed.
   as "used in tests".
 - **Community:** enable Discussions (issue template links and the first lines of this file point to it). Create the
   team `@shellfin-app/maintainers` with write access; otherwise `.github/CODEOWNERS` is silently ignored.
-- **Branch rulesets** for `main` and `experimental`: no deletion, no force push. Add `refs/heads/experimental` to the
-  ruleset **before** creating the branch: the repository deletes the head branch of a merged pull request, so
-  without the ruleset the first `experimental` -> `main` merge would delete `experimental`. Do not require a linear
-  history (the merges between the two branches are merge commits, see [Branches](#branches)). Recommended, not
-  required by the workflows: a pull request for every change and the single required status check `ci-ok`. It fails
+- **Branch ruleset** for `main` only: no deletion, no force push. Pull requests are merged with **Rebase and merge**
+  (see [Branches](#branches)); the other merge methods may be turned off. Recommended, not required by the
+  workflows: a pull request for every change and the single required status check `ci-ok`. It fails
   when any CI job failed or was cancelled; on a pull request it passes when the jobs passed or were skipped by change
   detection, on a push it needs every job to pass (a skipped job fails it). Pull requests skip the jobs their changes
   cannot affect (a documentation-only change runs only `changes`, `workflows` and `security`), so do not require the
@@ -218,10 +190,13 @@ before relying on them. Nothing here can be committed.
 - **Homebrew tap:** create the public, empty repository `shellfin-app/homebrew-tap`. Create a fine-grained personal
   access token (or a GitHub App token) with **Contents: read and write on that repository only**, and add it as the
   secret `HOMEBREW_TAP_TOKEN` of the `release` environment. `.github/workflows/homebrew-tap.yml` then pushes
-  `Casks/shellfin.rb` (stable) or `Casks/shellfin@experimental.rb` (pre-release) when you publish a release, after
-  verifying the attestation of `SHA256SUMS`; it creates the tap README on first use and never downgrades. Without the
-  secret it only prints a notice. Once releases are notarized, run the renderer with `--notarized true` (edit the
-  workflow step) to drop the "Open Anyway" caveat.
+  `Casks/shellfin.rb` when you publish a release, after verifying the attestation of `SHA256SUMS`; it creates the
+  tap README on first use and never downgrades. Without the secret it only prints a notice. Once releases are
+  notarized, run the renderer with `--notarized true` (edit the workflow step) to drop the "Open Anyway" caveat.
+- **Retiring the experimental branch model (once):** remove `experimental` from the existing branch ruleset (or from
+  its branch condition); delete `origin/experimental` and any other branch of the experimental model (the
+  tag `v0.2.0-experimental.1` keeps its commits reachable); in the tap repository, delete
+  `Casks/shellfin@experimental.rb` and its line in the README. Keep `experimental.json` on the `updater` release.
 - **Tag protection:** a tag ruleset for `v*` (only maintainers create it; no deletion, no force update).
 - **`release` environment** (Settings, Environments): deployment tags limited to `v*`. With a single maintainer it
   has no required reviewers (GitHub does not let you approve your own run once "Prevent self-review" is set); the

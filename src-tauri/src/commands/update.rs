@@ -10,7 +10,7 @@ use crate::error::AppError;
 use crate::ipc::dto::{UpdateCheckOutcome, UpdateProgress};
 use crate::updater;
 
-/// Manual "Check for updates…": checks the selected channel now, also when automatic checks
+/// Manual "Check for updates…": checks the update manifest now, also when automatic checks
 /// are off, and reports a skipped version too. `updatesDisabled` in dev/debug/e2e builds.
 #[tauri::command]
 pub async fn update_check(

@@ -1,7 +1,7 @@
 # Homebrew tap (docs/ARCHITECTURE.md §11.3). When a maintainer PUBLISHES a release (never for a draft), this renders
 # the cask of that release and pushes it to the separate repository `shellfin-app/homebrew-tap`:
-#   brew install --cask shellfin-app/tap/shellfin               <- every stable release
-#   brew install --cask shellfin-app/tap/shellfin@experimental  <- every pre-release
+#   brew install --cask shellfin-app/tap/shellfin   <- every release
+# Only stable releases are accepted: a tag other than vX.Y.Z, or a release marked as a pre-release, fails the run.
 # The cask's sha256 comes from the release's SHA256SUMS, whose build-provenance attestation is verified first; the
 # DMG is never downloaded. A cask is only replaced by a SemVer-greater version (no downgrade). The token
 # `HOMEBREW_TAP_TOKEN` (fine-grained, contents:write on the tap repository only) is a secret of the `release`
@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Published release tag, e.g. v0.2.0 or v0.3.0-experimental.1"
+        description: "Published release tag, e.g. v0.2.0"
         required: true
         type: string
 
@@ -67,7 +67,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.release.tag_name }}
-        # The same tag shapes as release.yml `verify` (the input of a manual run is untrusted): the `case` rejects
+        # The same tag shape as release.yml `verify` (the input of a manual run is untrusted): the `case` rejects
         # every character a release tag cannot contain (grep is line-based), numbers have no leading zeros.
         run: |
           n='(0|[1-9][0-9]*)'
@@ -75,16 +75,19 @@ jobs:
             *[!0-9A-Za-z.-]*) ok=false ;;
             *) ok=true ;;
           esac
-          if [ "$ok" != true ] || ! printf '%s' "$TAG" | grep -Eq "^v$n\.$n\.$n(-experimental\.$n)?\$"; then
-            printf '::error::not a release tag (vX.Y.Z or vX.Y.Z-experimental.N): %q\n' "$TAG"; exit 1
+          if [ "$ok" != true ] || ! printf '%s' "$TAG" | grep -Eq "^v$n\.$n\.$n\$"; then
+            printf '::error::not a stable release tag (vX.Y.Z): %q; pre-releases are not published to the tap\n' "$TAG"; exit 1
           fi
           info="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease)"
           if [ "$(jq -r .isDraft <<< "$info")" != "false" ]; then
             echo "::error::$TAG is a draft: the tap is only updated from published releases"; exit 1
           fi
+          if [ "$(jq -r .isPrerelease <<< "$info")" != "false" ]; then
+            echo "::error::$TAG is marked as a pre-release: remove the mark (stable releases only), then run this workflow by hand"; exit 1
+          fi
           {
             echo "tag=$TAG"
-            echo "prerelease=$(jq -r .isPrerelease <<< "$info")"
+            echo "prerelease=false"
           } >> "$GITHUB_OUTPUT"
 
       # The attestation proves SHA256SUMS was produced by this repository's release workflow.

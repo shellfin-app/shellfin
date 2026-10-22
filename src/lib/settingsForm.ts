@@ -17,7 +17,6 @@ import type {
   TermType,
   TerminalBell,
   TerminalExitAction,
-  UpdateChannel,
 } from "../ipc/types";
 import { fieldFromKiBps, kibpsFromField, type BandwidthField } from "./bandwidth";
 import { validateFontFamily } from "./fontFamily";
@@ -108,8 +107,6 @@ export interface SettingsFormState {
   notifyOnDisconnect: boolean;
   /** Automatic update checks. */
   autoUpdate: boolean;
-  /** The channel the backend checks. */
-  updateChannel: UpdateChannel;
   // Integer fields as text (`SETTINGS_RANGES`)
   numbers: Record<string, string>;
   // Terminal
@@ -220,7 +217,6 @@ export function formFromSettings(settings: Settings): SettingsFormState {
     onStartup: settings.general.onStartup,
     notifyOnDisconnect: settings.general.notifyOnDisconnect,
     autoUpdate: settings.general.autoUpdate,
-    updateChannel: settings.general.updateChannel,
     numbers,
     terminalCursorBlink: settings.terminal.cursorBlink,
     terminalCopyOnSelect: settings.terminal.copyOnSelect,
@@ -343,7 +339,6 @@ export function settingsFromForm(base: Settings, form: SettingsFormState): Setti
         onStartup: form.onStartup,
         notifyOnDisconnect: form.notifyOnDisconnect,
         autoUpdate: form.autoUpdate,
-        updateChannel: form.updateChannel,
       },
       terminal: {
         ...base.terminal,

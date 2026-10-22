@@ -709,9 +709,6 @@ pub struct GeneralSettings {
     /// ("Check for updates…") work either way. Missing ⇒ `true`.
     #[serde(default = "default_true")]
     pub auto_update: bool,
-    /// Updater: which channel file the updater reads (applies at the next check).
-    #[serde(default)]
-    pub update_channel: UpdateChannel,
 }
 
 impl Default for GeneralSettings {
@@ -722,28 +719,6 @@ impl Default for GeneralSettings {
             on_startup: StartupAction::Welcome,
             notify_on_disconnect: false,
             auto_update: true,
-            update_channel: UpdateChannel::Stable,
-        }
-    }
-}
-
-/// Updater: `general.updateChannel`. `experimental` also receives pre-releases; a stable
-/// release reaches both channels, so experimental users get it whenever it is newer.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export)]
-pub enum UpdateChannel {
-    #[default]
-    Stable,
-    Experimental,
-}
-
-impl UpdateChannel {
-    /// The channel manifest's file name (`stable.json`, `experimental.json`).
-    pub const fn file_name(self) -> &'static str {
-        match self {
-            Self::Stable => "stable.json",
-            Self::Experimental => "experimental.json",
         }
     }
 }
