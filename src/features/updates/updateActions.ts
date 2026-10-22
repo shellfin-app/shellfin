@@ -102,6 +102,14 @@ export function openReleasePage(): void {
   guard(getBackend().appOpenExternal(url, t("help.openTitle"), t("help.openBody", { url })));
 }
 
+/**
+ * A release-notes link: `url` is the `href` of the URL the allowlist accepted (`allowedReleaseLink`), so the confirm
+ * body shows exactly what is opened. The backend re-checks the basics and confirms (§9.4).
+ */
+export function openNotesLink(url: string): void {
+  guard(getBackend().appOpenExternal(url, t("help.openTitle"), t("help.openBody", { url })));
+}
+
 /** The user cancelled the quit that "Update and restart" started: the staged update is dropped by the backend. */
 export function onUpdateQuitCancelled(): void {
   const s = useStore.getState();

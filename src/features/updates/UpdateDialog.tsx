@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/Button";
 import { Dialog } from "../../components/Dialog";
@@ -7,8 +7,9 @@ import { Progress } from "../../components/Progress";
 import { errorMessage } from "../../i18n/errorMessage";
 import { formatBytes, formatDateTime } from "../../i18n/format";
 import { guard } from "../../lib/reportError";
-import { displayName, displayServerText } from "../../lib/serverText";
+import { displayName } from "../../lib/serverText";
 import { useStore } from "../../state/store";
+import { ReleaseNotes, parseNotesForDisplay } from "./ReleaseNotes";
 import {
   cancelUpdateDownload,
   installUpdate,
@@ -18,7 +19,7 @@ import {
 } from "./updateActions";
 import "./updates.css";
 
-/** Release notes are untrusted server text: escaped, bounded, plain text (§9.5). */
+/** Release notes are untrusted server text: escaped, bounded, a small Markdown subset as React elements (§9.5). */
 export const NOTES_DISPLAY_LIMIT = 10_000;
 
 /** The update offer, the download progress and failures (§9.8). */
@@ -27,6 +28,8 @@ export function UpdateDialog() {
   const update = useStore((s) => s.update);
   const platform = useStore((s) => s.platform);
   const [busy, setBusy] = useState(false);
+  const rawNotes = update?.info.notes ?? "";
+  const notes = useMemo(() => parseNotesForDisplay(rawNotes, NOTES_DISPLAY_LIMIT), [rawNotes]);
   if (!update) return null;
   const { info, phase } = update;
   const version = displayName(info.version);
@@ -122,12 +125,12 @@ export function UpdateDialog() {
       <h3 className="update__notes-title">{t("update.notes")}</h3>
       {info.notes ? (
         <div className="update__notes" tabIndex={0} aria-label={t("update.notes")}>
-          {displayServerText(info.notes, NOTES_DISPLAY_LIMIT, true)}
+          <ReleaseNotes blocks={notes.blocks} />
         </div>
       ) : (
         <p className="dialog__hint">{t("update.noNotes")}</p>
       )}
-      {info.notesTruncated ? <p className="dialog__hint">{t("update.notesTruncated")}</p> : null}
+      {info.notesTruncated || notes.truncated ? <p className="dialog__hint">{t("update.notesTruncated")}</p> : null}
     </Dialog>
   );
 }

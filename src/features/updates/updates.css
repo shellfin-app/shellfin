@@ -1,4 +1,4 @@
-/* Update dialog. Release notes are plain text in a bounded, scrollable box. */
+/* Update dialog. Release notes: a small Markdown subset in a bounded, scrollable box. */
 .update__notes-title {
   margin: 4px 0 0; font-size: calc(12px * var(--ui-scale, 1)); font-weight: 600; color: var(--text-muted);
   text-transform: uppercase; letter-spacing: .04em;
@@ -7,8 +7,38 @@
   max-height: calc(220px * var(--ui-scale, 1)); overflow: auto; padding: 8px 10px;
   border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg);
   color: var(--code-fg); font-size: calc(12.5px * var(--ui-scale, 1)); line-height: 1.5;
-  white-space: pre-wrap; overflow-wrap: anywhere; user-select: text;
+  overflow-wrap: anywhere; user-select: text;
 }
 .update__notes:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.update__notes p { margin: 0 0 6px; }
+.update__notes ul { margin: 0 0 6px; padding-left: calc(16px * var(--ui-scale, 1)); }
+.update__notes ul ul { margin: 2px 0 0; }
+.update__notes li { margin: 0 0 2px; }
+.update__notes > :last-child { margin-bottom: 0; }
+.update__md-h {
+  margin: 10px 0 4px; font-size: calc(12.5px * var(--ui-scale, 1)); font-weight: 600; color: var(--text-bright);
+  line-height: 1.4;
+}
+/* Three compact levels. `###` is what the CHANGELOG uses most ("Added", "Changed", "Fixed"): a small section label. */
+.update__md-h--1 {
+  margin-top: 12px; padding-bottom: 3px; border-bottom: 1px solid var(--border);
+  font-size: calc(14.5px * var(--ui-scale, 1)); font-weight: 700;
+}
+.update__md-h--2 { font-size: calc(13px * var(--ui-scale, 1)); }
+.update__md-h--3 {
+  margin-top: 8px; font-size: calc(12px * var(--ui-scale, 1)); color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: .04em;
+}
+.update__notes > .update__md-h:first-child { margin-top: 0; }
+.update__notes code {
+  font-family: var(--font-mono); font-size: .95em; color: var(--text-bright); overflow-wrap: anywhere;
+}
+.update__notes strong { font-weight: 600; color: var(--text-bright); }
+.update__link {
+  display: inline; padding: 0; margin: 0; border: 0; background: none; font: inherit; cursor: pointer;
+  color: var(--link); text-decoration: underline; text-align: inherit; overflow-wrap: anywhere;
+}
+.update__link:hover { color: var(--link-hover); }
+.update__link:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 2px; }
 .update__progress { display: flex; flex-direction: column; gap: 6px; }
 .update__error { color: var(--text-bright); }
