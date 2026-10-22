@@ -10,6 +10,7 @@ import type {
   Bookmark,
   BookmarksDto,
   BookmarksExportResult,
+  BookmarksImportPreview,
   BookmarksImportResult,
   DirListing,
   EnvInfo,
@@ -99,8 +100,11 @@ export class TauriBackend implements Backend {
   recentsClear = () => call<RecentEntry[]>("recents_clear");
   bookmarksExport: Backend["bookmarksExport"] = (format, dialogTitle) =>
     call<BookmarksExportResult>("bookmarks_export", { format, dialogTitle });
-  bookmarksImport: Backend["bookmarksImport"] = (strategy, dialogTitle) =>
-    call<BookmarksImportResult>("bookmarks_import", { strategy, dialogTitle });
+  bookmarksImportOpen: Backend["bookmarksImportOpen"] = (dialogTitle) =>
+    call<BookmarksImportPreview>("bookmarks_import_open", { dialogTitle });
+  bookmarksImportApply: Backend["bookmarksImportApply"] = (token, strategy, keepStartupCommands) =>
+    call<BookmarksImportResult>("bookmarks_import_apply", { token, strategy, keepStartupCommands });
+  bookmarksImportCancel: Backend["bookmarksImportCancel"] = (token) => call<void>("bookmarks_import_cancel", { token });
   settingsGet = () => call<Settings>("settings_get");
   settingsUpdate: Backend["settingsUpdate"] = (settings) => call<Settings>("settings_update", { settings });
   settingsReset = () => call<Settings>("settings_reset");

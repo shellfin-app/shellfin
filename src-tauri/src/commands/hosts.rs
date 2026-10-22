@@ -9,8 +9,8 @@ use crate::error::{AppError, EntityKind, ErrorCode, ImportInvalidReason, IoOp};
 use crate::external_link::sanitize_dialog_text;
 use crate::ipc::dto::{
     AuthConfig, Bookmark, BookmarkExportFormat, BookmarkInput, BookmarksDto, BookmarksExportResult,
-    BookmarksImportResult, Group, GroupInput, ImportStrategy, RecentEntry, SshConfigSnapshot,
-    events,
+    BookmarksImportPreview, BookmarksImportResult, Group, GroupInput, ImportStrategy, RecentEntry,
+    SshConfigSnapshot, events,
 };
 use crate::ipc::secret::Secret;
 use crate::platform::file_trust::FileKind;
@@ -336,16 +336,17 @@ pub async fn bookmarks_export(
     })
 }
 
-/// Import bookmarks from a Shellfin JSON file chosen in the native Open dialog. The file is read
-/// through the `OsChosen` local-path rules with a 5 MiB cap, validated field by field, and applied
-/// in one atomic write. No secret is ever imported.
+/// Step 1 of a bookmark import: pick a Shellfin JSON file in the native Open dialog, read it
+/// through the `OsChosen` local-path rules with a 5 MiB cap and validate it field by field.
+/// Nothing is written: the parsed file waits in `AppState.pending_import` under the returned
+/// token (a new open drops any previous pending import, also when its dialog is cancelled).
 #[tauri::command]
-pub async fn bookmarks_import(
+pub async fn bookmarks_import_open(
     app: AppHandle,
     state: State<'_, AppState>,
-    strategy: ImportStrategy,
     dialog_title: String,
-) -> Result<BookmarksImportResult, AppError> {
+) -> Result<BookmarksImportPreview, AppError> {
+    state.pending_import.clear();
     let stores = state.stores.clone();
     if blocking(move || Ok(stores.lock_bookmarks().read_only())).await? {
         return Err(AppError::new(ErrorCode::StorageReadOnly));
@@ -363,26 +364,55 @@ pub async fn bookmarks_import(
         let _ = tx.send(picked);
     });
     let Some(picked) = rx.await.ok().flatten() else {
-        return Ok(BookmarksImportResult {
+        return Ok(BookmarksImportPreview {
             picked: false,
-            added: 0,
-            replaced: 0,
-            skipped: 0,
+            token: None,
+            bookmarks: 0,
+            conflicts: 0,
             invalid: Vec::new(),
-            bookmarks: None,
-            startup_commands_stripped: Vec::new(),
+            startup_commands: Vec::new(),
         });
     };
     let path = picked
         .into_path()
         .map_err(|e| AppError::invalid_argument("path").with_detail(e.to_string()))?;
     let stores = state.stores.clone();
-    let (outcome, dto) = blocking(move || {
+    let (parsed, mut preview) = blocking(move || {
         let bytes =
             read_local(&path, FileKind::ImportSource).map_err(|e| import_read_error(e, &path))?;
         let parsed = bookmarks::parse_import(&bytes)?;
+        let preview = stores.lock_bookmarks().import_preview(&parsed);
+        Ok((parsed, preview))
+    })
+    .await?;
+    preview.token = Some(state.pending_import.put(parsed));
+    tracing::info!(
+        bookmarks = preview.bookmarks,
+        conflicts = preview.conflicts,
+        invalid = preview.invalid.len(),
+        startup_commands = preview.startup_commands.len(),
+        "opened bookmark import"
+    );
+    Ok(preview)
+}
+
+/// Step 2: apply the pending import of `token` in one atomic write with the chosen conflict
+/// `strategy`. Its startup commands are imported only with `keep_startup_commands` (the user
+/// opted in after seeing them). The pending import is consumed by every attempt. No secret is
+/// ever imported.
+#[tauri::command]
+pub async fn bookmarks_import_apply(
+    state: State<'_, AppState>,
+    token: String,
+    strategy: ImportStrategy,
+    keep_startup_commands: bool,
+) -> Result<BookmarksImportResult, AppError> {
+    let parsed = state.pending_import.take(&token)?;
+    let stores = state.stores.clone();
+    let (outcome, dto) = blocking(move || {
         let mut store = stores.lock_bookmarks();
-        let outcome = store.import(parsed, strategy, now_ms())?;
+        // `import` refuses a read-only store (`storageReadOnly`) before changing anything.
+        let outcome = store.import(parsed, strategy, keep_startup_commands, now_ms())?;
         let dto = outcome.changed.then(|| store.dto());
         drop(store);
         forget_keychain(outcome.forget_password.clone());
@@ -413,6 +443,17 @@ pub async fn bookmarks_import(
         bookmarks: dto,
         startup_commands_stripped: outcome.startup_commands_stripped,
     })
+}
+
+/// Drop the pending import of `token` (the user closed the preview). Another or an unknown
+/// token is a no-op.
+#[tauri::command]
+pub async fn bookmarks_import_cancel(
+    state: State<'_, AppState>,
+    token: String,
+) -> Result<(), AppError> {
+    state.pending_import.cancel(&token);
+    Ok(())
 }
 
 /// Forget the recent connections (`recents.json` emptied); emits `recents:changed`.

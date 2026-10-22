@@ -1,3 +1,4 @@
+import type { BookmarksImportPreview } from "../ipc/types";
 import type { BookmarksIoResult, DialogState } from "../state/slices/ui";
 
 // Constructors for store-driven dialogs (discriminant values are identifiers, not UI copy).
@@ -42,13 +43,15 @@ export const replaceTransfersDialog = (sessionId: string): DialogState => ({ kin
 
 export const confirmCloseTerminalsDialog = (sessionId: string, termIds?: string[]): DialogState =>
   termIds === undefined ? { kind: "confirmCloseTerminals", sessionId } : { kind: "confirmCloseTerminals", sessionId, termIds };
-export const bookmarksIoDialog = (mode: "import" | "export"): DialogState => ({ kind: "bookmarksIo", mode });
+export const bookmarksIoDialog = (): DialogState => ({ kind: "bookmarksIo" });
+export const bookmarksImportDialog = (preview: BookmarksImportPreview, token: string): DialogState => ({ kind: "bookmarksImport", preview, token });
 export const bookmarksIoResultDialog = (result: BookmarksIoResult): DialogState => ({ kind: "bookmarksIoResult", result });
 
 /** `closeDialog(kind)` arguments. */
 export const DIALOG_KIND = {
   confirmCloseTerminals: "confirmCloseTerminals",
   bookmarksIo: "bookmarksIo",
+  bookmarksImport: "bookmarksImport",
   bookmarksIoResult: "bookmarksIoResult",
   conflict: "conflict",
   encoding: "encoding",

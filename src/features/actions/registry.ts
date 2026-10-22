@@ -21,7 +21,7 @@ import {
   saveSessionAsBookmark,
 } from "../session/connectionActions";
 import { editConnection } from "../session/editConnection";
-import { openBookmarksIo } from "../hosts/bookmarksIo";
+import { openBookmarksExport, startBookmarksImport } from "../hosts/bookmarksIo";
 import { requestCloseSession } from "../session/sessionActions";
 import { openTerminalTab, requestCloseTerminalTabs } from "../terminal/terminalActions";
 import { loadedTerminalRegistry } from "../terminal/terminalLoader";
@@ -125,9 +125,10 @@ function toggleBookmarksPane(): void {
 export const ACTIONS: Record<ActionId, ActionDef> = {
   // ---- File ----
   newConnection: { run: () => useStore.getState().openDialog(bookmarkDialog(null)) },
-  // Both open an options dialog first (conflict strategy / format); the native file dialog comes after it.
-  importBookmarks: { run: () => openBookmarksIo("import"), enabled: (s) => s.bookmarks?.readOnly !== true },
-  exportBookmarks: { run: () => openBookmarksIo("export") },
+  // Import opens the native file dialog right away and shows a review dialog after the pick; export asks for the
+  // format first.
+  importBookmarks: { run: () => startBookmarksImport(), enabled: (s) => s.bookmarks?.readOnly !== true },
+  exportBookmarks: { run: () => openBookmarksExport() },
   save: {
     run: () => {
       const id = activeId(useStore.getState());

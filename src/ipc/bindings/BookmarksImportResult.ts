@@ -13,6 +13,7 @@ picked: boolean, added: number, replaced: number, skipped: number, invalid: Arra
 bookmarks: BookmarksDto | null, 
 /**
  * Names of imported (added or replaced) bookmarks whose `startupCommand` was
- * dropped (startup commands are never imported).
+ * dropped (not imported unless the user opts in per import; an invalid one is always
+ * dropped).
  */
 startupCommandsStripped: Array<string>, };

@@ -291,7 +291,7 @@ pub enum ErrorCode {
     DropExpired {
         drop_id: String,
     },
-    /// `bookmarks_import`: the chosen file cannot be imported at all (nothing was changed).
+    /// `bookmarks_import_open`: the chosen file cannot be imported at all (nothing was changed).
     #[serde(rename_all = "camelCase")]
     ImportInvalidFile {
         reason: ImportInvalidReason,

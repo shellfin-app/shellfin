@@ -7,6 +7,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Importing bookmarks can now keep the startup commands from the file, but only when you explicitly choose to for that
+  import. The bookmarks and their commands are listed before anything is saved. By default startup commands are still
+  dropped, and a command that is not a single valid line is always dropped.
+
 ### Security
 
 - Remote names that contain invisible variation selectors (U+FE00 to U+FE0D) are now shown with a visible marker,

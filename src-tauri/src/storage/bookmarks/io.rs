@@ -10,6 +10,8 @@
 //! "none" like on load), caps the number of entries and reports rejected entries; the store
 //! method [`BookmarkStore::import`] regenerates all ids, maps groups by name, resolves jumps
 //! between imported bookmarks, validates the final state and applies it in ONE atomic write.
+//! [`BookmarkStore::import_preview`] describes a parsed file (counts, conflicts, its valid
+//! startup commands) without writing; startup commands are only imported when the user opts in.
 
 use super::*;
 
@@ -17,8 +19,8 @@ use serde_json::Map;
 
 use crate::error::ImportInvalidReason;
 use crate::ipc::dto::{
-    BookmarksDto, ExportSkipCode, ExportSkipped, ImportEntryKind, ImportInvalid, ImportInvalidCode,
-    ImportStrategy,
+    BookmarksDto, BookmarksImportPreview, ExportSkipCode, ExportSkipped, ImportEntryKind,
+    ImportInvalid, ImportInvalidCode, ImportStartupCommand, ImportStrategy,
 };
 use crate::ipc::secret::SensitiveText;
 
@@ -106,8 +108,8 @@ pub fn export_json(dto: &BookmarksDto, exported_at_ms: i64) -> (Vec<u8>, u32) {
                 "color": b.color,
                 "uploadLimitKiBps": b.upload_limit_kibps,
                 "downloadLimitKiBps": b.download_limit_kibps,
-                // `startupCommand` is exported (the user's own file) but never
-                // imported back without the user re-entering it.
+                // `startupCommand` is exported (the user's own file) but only imported back
+                // when the user opts in for that import.
                 "confirmConnect": b.confirm_connect,
                 "startupCommand": b.startup_command.as_ref().map(SensitiveText::expose),
                 "notes": b.notes,
@@ -306,9 +308,14 @@ struct ParsedGroup {
 struct ParsedBookmark {
     index: u32,
     /// `id` / `groupId` / jump ids are file references until [`BookmarkStore::import`] maps them.
+    /// Always without a startup command; the file's one is in `startup_command`.
     bm: StoredBookmark,
-    /// The entry carried a non-empty `startupCommand` (dropped, never imported).
+    /// The entry carried a non-empty `startupCommand` (dropped unless the user opts in and it
+    /// is valid).
     had_startup_command: bool,
+    /// The entry's `startupCommand` when it passes the `bookmark_save` rules (imported only
+    /// with `keep_startup_commands`).
+    startup_command: Option<SensitiveText>,
 }
 
 /// A validated import file.
@@ -522,7 +529,7 @@ fn parse_bookmark(
     let color = o
         .get("color")
         .and_then(|c| serde_json::from_value::<BookmarkColor>(c.clone()).ok());
-    // `startupCommand` is deliberately not read here (never imported).
+    // `startupCommand` is deliberately not read here: see `file_startup_command` (opt-in).
     let confirm_connect = match o.get("confirmConnect") {
         None | Some(Value::Null) => false,
         Some(Value::Bool(b)) => *b,
@@ -566,6 +573,17 @@ fn had_startup_command(o: &Map<String, Value>) -> bool {
         Some(Value::String(s)) => !s.trim().is_empty(),
         Some(_) => true,
     }
+}
+
+/// The entry's startup command when `bookmark_save` would store it: a string, blank = none,
+/// one valid line (≤ 1024 chars, no control characters, no U+2028/2029). Anything else is
+/// `None`; such a command is never imported, and [`had_startup_command`] reports it.
+fn file_startup_command(o: &Map<String, Value>) -> Option<SensitiveText> {
+    let Some(Value::String(s)) = o.get("startupCommand") else {
+        return None;
+    };
+    startup_command_or_none(Some(SensitiveText::new(s.as_str())))
+        .filter(|c| valid_startup_command(c.expose()))
 }
 
 /// Validate an import file (already read, at most `IMPORT_MAX_BYTES`). Whole-file problems are
@@ -658,6 +676,7 @@ pub fn parse_import(bytes: &[u8]) -> Result<ParsedImport, AppError> {
                 index: u32::try_from(i).unwrap_or(u32::MAX),
                 bm,
                 had_startup_command: had_startup_command(o),
+                startup_command: file_startup_command(o),
             }),
             Ok(_) => reject(
                 &mut invalid,
@@ -703,6 +722,8 @@ struct Entry {
     jump_ref: Option<String>,
     /// The file entry's startup command was dropped.
     stripped: bool,
+    /// The bookmark carries the file's startup command (the user opted in).
+    command_from_file: bool,
 }
 
 /// Take rejected entries (`(index into entries, field, code)`) out of the working set in one
@@ -790,12 +811,51 @@ fn unique_name(base: &str, taken: impl Fn(&str) -> bool) -> Option<String> {
 }
 
 impl BookmarkStore {
+    /// Describe a parsed import without changing anything: the valid entries, how many of
+    /// them conflict by name (case-insensitive) with the store as it is now, the parse-stage
+    /// rejections and every valid startup command of the file (with its name in the file and
+    /// whether that name exists, the same test as `conflicts`).
+    /// `token` is left `None` for the caller (it is issued when the import is kept pending).
+    pub fn import_preview(&self, parsed: &ParsedImport) -> BookmarksImportPreview {
+        let names: HashSet<String> = self
+            .bookmarks
+            .iter()
+            .map(|b| b.name.to_lowercase())
+            .collect();
+        let exists = |pb: &ParsedBookmark| names.contains(&pb.bm.name.to_lowercase());
+        let conflicts = parsed.bookmarks.iter().filter(|pb| exists(pb)).count();
+        let startup_commands = parsed
+            .bookmarks
+            .iter()
+            .filter_map(|pb| {
+                pb.startup_command
+                    .as_ref()
+                    .map(|command| ImportStartupCommand {
+                        name: pb.bm.name.clone(),
+                        command: command.clone(),
+                        exists: exists(pb),
+                    })
+            })
+            .collect();
+        BookmarksImportPreview {
+            picked: true,
+            token: None,
+            bookmarks: u32::try_from(parsed.bookmarks.len()).unwrap_or(u32::MAX),
+            conflicts: u32::try_from(conflicts).unwrap_or(u32::MAX),
+            invalid: parsed.invalid.clone(),
+            startup_commands,
+        }
+    }
+
     /// Apply a validated import in ONE atomic write. Conflict = a bookmark with the same name
     /// (names are unique store-wide, case-insensitive). Refused for a read-only store.
+    /// `keep_startup_commands` (the user opted in) imports the file's valid startup commands;
+    /// without it no command comes from the file.
     pub fn import(
         &mut self,
         parsed: ParsedImport,
         strategy: ImportStrategy,
+        keep_startup_commands: bool,
         now_ms: i64,
     ) -> Result<ImportOutcome, AppError> {
         self.ensure_writable()?;
@@ -844,8 +904,17 @@ impl BookmarkStore {
 
         for pb in parsed_bookmarks {
             let index = pb.index;
-            let stripped = pb.had_startup_command;
+            let file_command = if keep_startup_commands {
+                pb.startup_command
+            } else {
+                None
+            };
+            let command_from_file = file_command.is_some();
+            // Without the opt-in every command is dropped; with it only an invalid one.
+            let stripped = pb.had_startup_command && !command_from_file;
             let mut cand = pb.bm;
+            // Validated again with the final state below (`validate_bookmark_in`).
+            cand.startup_command = file_command;
             let ref_id = cand.id.clone();
             let jump_ref = match &cand.proxy_jump {
                 Some(JumpRef::Bookmark { id }) => Some(id.clone()),
@@ -880,9 +949,11 @@ impl BookmarkStore {
                 (Some(pos), Some(old), ImportStrategy::Replace) => {
                     cand.id = old.id.clone();
                     cand.created_at_ms = old.created_at_ms;
-                    // Startup commands never come from a file: keep the user's own one (dropped
+                    // Without a command taken from the file, keep the user's own one (dropped
                     // below if the file changes the server or account).
-                    cand.startup_command = old.startup_command.clone();
+                    if !command_from_file {
+                        cand.startup_command = old.startup_command.clone();
+                    }
                     if old.group_id == cand.group_id {
                         cand.order = old.order;
                     }
@@ -928,6 +999,7 @@ impl BookmarkStore {
                 replace,
                 jump_ref,
                 stripped,
+                command_from_file,
             });
         }
 
@@ -1022,7 +1094,7 @@ impl BookmarkStore {
         let mut replaced_ids = Vec::new();
         // Replaced bookmarks whose own startup command was dropped because the file points them
         // at another server or account (the command must not be typed into a shell it was
-        // never meant for).
+        // never meant for). A command taken from the file (opt-in) belongs to its target.
         let mut local_command_dropped: HashSet<String> = HashSet::new();
         let (mut added, mut replaced) = (0u32, 0u32);
         for e in entries.iter().filter(|e| !rejected.contains(&e.id)) {
@@ -1032,7 +1104,10 @@ impl BookmarkStore {
                 if let Some(old) = originals.get(&e.id)
                     && let Some(slot) = work.iter_mut().find(|b| b.id == e.id)
                 {
-                    if connection_target_changed(old, slot) && slot.startup_command.is_some() {
+                    if !e.command_from_file
+                        && connection_target_changed(old, slot)
+                        && slot.startup_command.is_some()
+                    {
                         slot.startup_command = None;
                         local_command_dropped.insert(e.id.clone());
                     }
@@ -1239,8 +1314,277 @@ mod tests {
         );
     }
 
+    /// The default import: startup commands from the file are not kept.
     fn import(s: &mut BookmarkStore, bytes: &[u8], st: ImportStrategy) -> ImportOutcome {
-        s.import(parse_import(bytes).unwrap(), st, 10).unwrap()
+        s.import(parse_import(bytes).unwrap(), st, false, 10)
+            .unwrap()
+    }
+
+    /// The opt-in import: valid startup commands from the file are kept.
+    fn import_keep(s: &mut BookmarkStore, bytes: &[u8], st: ImportStrategy) -> ImportOutcome {
+        s.import(parse_import(bytes).unwrap(), st, true, 10)
+            .unwrap()
+    }
+
+    fn command_of(s: &BookmarkStore, name: &str) -> Option<String> {
+        s.dto()
+            .bookmarks
+            .into_iter()
+            .find(|b| b.name == name)
+            .unwrap()
+            .startup_command
+            .map(|c| c.expose().to_owned())
+    }
+
+    /// Every shape of command `bookmark_save` would refuse, by file index.
+    fn hostile_command_entries() -> Vec<Value> {
+        vec![
+            json!({ "id": "a", "name": "array", "host": "a.example.com", "startupCommand": ["ls"] }),
+            json!({ "id": "b", "name": "number", "host": "b.example.com", "startupCommand": 7 }),
+            json!({ "id": "c", "name": "object", "host": "c.example.com",
+                    "startupCommand": { "cmd": "ls" } }),
+            json!({ "id": "d", "name": "bool", "host": "d.example.com", "startupCommand": true }),
+            json!({ "id": "e", "name": "lf", "host": "e.example.com",
+                    "startupCommand": "ls\nrm -rf ~" }),
+            json!({ "id": "f", "name": "cr", "host": "f.example.com", "startupCommand": "ls\rx" }),
+            json!({ "id": "g", "name": "tab", "host": "g.example.com", "startupCommand": "ls\tx" }),
+            json!({ "id": "h", "name": "esc", "host": "h.example.com",
+                    "startupCommand": "echo \u{1b}[31m" }),
+            json!({ "id": "i", "name": "nul", "host": "i.example.com", "startupCommand": "a\u{0}b" }),
+            json!({ "id": "j", "name": "del", "host": "j.example.com", "startupCommand": "a\u{7f}b" }),
+            json!({ "id": "k", "name": "c1", "host": "k.example.com", "startupCommand": "a\u{85}b" }),
+            json!({ "id": "l", "name": "ls", "host": "l.example.com",
+                    "startupCommand": "a\u{2028}b" }),
+            json!({ "id": "m", "name": "ps", "host": "m.example.com",
+                    "startupCommand": "a\u{2029}b" }),
+            json!({ "id": "n", "name": "long", "host": "n.example.com",
+                    "startupCommand": "x".repeat(MAX_STARTUP_COMMAND_CHARS + 1) }),
+        ]
+    }
+
+    /// Without the opt-in, a file with valid commands imports none of them (today's rule).
+    #[test]
+    fn keep_false_imports_no_command() {
+        let (_d, mut s) = store();
+        let file = doc(
+            json!([]),
+            json!([
+                { "id": "a", "name": "a", "host": "a.example.com", "startupCommand": "uptime" },
+                { "id": "b", "name": "b", "host": "b.example.com" }
+            ]),
+        );
+        let o = import(&mut s, &file, ImportStrategy::Skip);
+        assert_eq!(o.added, 2);
+        assert_eq!(o.startup_commands_stripped, vec!["a".to_owned()]);
+        assert!(
+            s.dto()
+                .bookmarks
+                .iter()
+                .all(|b| b.startup_command.is_none())
+        );
+    }
+
+    /// With the opt-in, valid commands are stored verbatim (blank = none) and not reported.
+    #[test]
+    fn keep_true_imports_valid_commands() {
+        let (dir, mut s) = store();
+        let max = "é".repeat(MAX_STARTUP_COMMAND_CHARS);
+        let file = doc(
+            json!([]),
+            json!([
+                { "id": "a", "name": "a", "host": "a.example.com",
+                  "startupCommand": " cd /srv && tmux attach " },
+                { "id": "b", "name": "b", "host": "b.example.com", "startupCommand": "   " },
+                { "id": "c", "name": "c", "host": "c.example.com", "startupCommand": null },
+                { "id": "d", "name": "d", "host": "d.example.com", "startupCommand": max.clone() },
+                { "id": "e", "name": "e", "host": "e.example.com" }
+            ]),
+        );
+        let o = import_keep(&mut s, &file, ImportStrategy::Skip);
+        assert_eq!(o.added, 5, "{o:?}");
+        assert!(o.startup_commands_stripped.is_empty(), "{o:?}");
+        assert_eq!(
+            command_of(&s, "a").as_deref(),
+            Some(" cd /srv && tmux attach ")
+        );
+        assert_eq!(command_of(&s, "b"), None);
+        assert_eq!(command_of(&s, "c"), None);
+        assert_eq!(command_of(&s, "d"), Some(max));
+        assert_eq!(command_of(&s, "e"), None);
+        // Stored like `bookmark_save` stores it: a reload keeps every bookmark and command.
+        let (again, w) = BookmarkStore::load(dir.path());
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(
+            command_of(&again, "a").as_deref(),
+            Some(" cd /srv && tmux attach ")
+        );
+    }
+
+    /// With the opt-in, every command `bookmark_save` would refuse is dropped and reported;
+    /// the bookmark itself is still imported.
+    #[test]
+    fn keep_true_drops_and_reports_invalid_commands() {
+        let (_d, mut s) = store();
+        let entries = hostile_command_entries();
+        let names: Vec<String> = entries
+            .iter()
+            .map(|e| e["name"].as_str().unwrap().to_owned())
+            .collect();
+        let file = doc(json!([]), Value::Array(entries));
+        let o = import_keep(&mut s, &file, ImportStrategy::Skip);
+        assert_eq!(o.added as usize, names.len(), "{o:?}");
+        assert!(o.invalid.is_empty(), "{o:?}");
+        assert_eq!(o.startup_commands_stripped, names);
+        assert!(
+            s.dto()
+                .bookmarks
+                .iter()
+                .all(|b| b.startup_command.is_none())
+        );
+    }
+
+    /// `replace` with the opt-in: the file's valid command wins (also when the target changes);
+    /// a file entry without a valid command keeps today's rule for the user's own command.
+    #[test]
+    fn keep_true_replace_rules() {
+        let (_d, mut s) = store();
+        for name in ["same", "moved", "none-same", "none-moved", "bad-same"] {
+            let mut i = input(name, &format!("{name}.example.com"));
+            i.startup_command = Some(SensitiveText::new("own"));
+            s.save(i, 1).unwrap();
+        }
+        let file = doc(
+            json!([]),
+            json!([
+                { "id": "a", "name": "same", "host": "same.example.com", "startupCommand": "file-a" },
+                { "id": "b", "name": "moved", "host": "other.example.com", "startupCommand": "file-b" },
+                { "id": "c", "name": "none-same", "host": "none-same.example.com" },
+                { "id": "d", "name": "none-moved", "host": "other2.example.com" },
+                { "id": "e", "name": "bad-same", "host": "bad-same.example.com",
+                  "startupCommand": "a\nb" }
+            ]),
+        );
+        let o = import_keep(&mut s, &file, ImportStrategy::Replace);
+        assert_eq!(o.replaced, 5, "{o:?}");
+        assert_eq!(command_of(&s, "same").as_deref(), Some("file-a"));
+        assert_eq!(command_of(&s, "moved").as_deref(), Some("file-b"));
+        assert_eq!(command_of(&s, "none-same").as_deref(), Some("own"));
+        assert_eq!(command_of(&s, "none-moved"), None);
+        assert_eq!(command_of(&s, "bad-same").as_deref(), Some("own"));
+        assert_eq!(
+            o.startup_commands_stripped,
+            vec!["none-moved".to_owned(), "bad-same".to_owned()]
+        );
+    }
+
+    /// `duplicate` with the opt-in: the renamed copy gets the file's command, the existing
+    /// bookmark keeps its own; an invalid command is reported under the new name.
+    #[test]
+    fn keep_true_duplicate_carries_the_command_to_the_copy() {
+        let (_d, mut s) = store();
+        let mut i = input("web", "web.example.com");
+        i.startup_command = Some(SensitiveText::new("own"));
+        s.save(i, 1).unwrap();
+        s.save(input("db", "db.example.com"), 1).unwrap();
+        let file = doc(
+            json!([]),
+            json!([
+                { "id": "a", "name": "web", "host": "web.example.com", "startupCommand": "file" },
+                { "id": "b", "name": "DB", "host": "db.example.com", "startupCommand": ["x"] }
+            ]),
+        );
+        let o = import_keep(&mut s, &file, ImportStrategy::Duplicate);
+        assert_eq!(o.added, 2, "{o:?}");
+        assert_eq!(command_of(&s, "web").as_deref(), Some("own"));
+        assert_eq!(command_of(&s, "web (2)").as_deref(), Some("file"));
+        assert_eq!(command_of(&s, "DB (2)"), None);
+        assert_eq!(o.startup_commands_stripped, vec!["DB (2)".to_owned()]);
+    }
+
+    /// `skip` with the opt-in never touches the existing bookmark's command.
+    #[test]
+    fn keep_true_skip_leaves_the_existing_command() {
+        let (_d, mut s) = store();
+        let mut i = input("web", "web.example.com");
+        i.startup_command = Some(SensitiveText::new("own"));
+        s.save(i, 1).unwrap();
+        let file = doc(
+            json!([]),
+            json!([{ "id": "a", "name": "WEB", "host": "x.example.com", "startupCommand": "file" }]),
+        );
+        let o = import_keep(&mut s, &file, ImportStrategy::Skip);
+        assert_eq!((o.added, o.skipped, o.changed), (0, 1, false));
+        assert_eq!(command_of(&s, "web").as_deref(), Some("own"));
+    }
+
+    /// The preview lists only valid commands of valid entries, counts name conflicts
+    /// case-insensitively against the store, reports parse-stage rejections and writes nothing.
+    #[test]
+    fn preview_lists_valid_commands_conflicts_and_invalid_entries() {
+        let (dir, mut s) = store();
+        s.save(input("Web", "web.example.com"), 1).unwrap();
+        s.save(input("db", "db.example.com"), 1).unwrap();
+        let path = dir.path().join("bookmarks.json");
+        let before = std::fs::read(&path).unwrap();
+        let mut entries = vec![
+            json!({ "id": "p1", "name": "WEB", "host": "w.example.com", "startupCommand": "tmux a" }),
+            json!({ "id": "p2", "name": "new", "host": "n.example.com", "startupCommand": "  " }),
+            json!({ "id": "p3", "name": "Db", "host": "d.example.com", "startupCommand": "htop" }),
+            json!({ "id": "p4", "name": "bad host", "host": "bad host",
+                    "startupCommand": "never listed" }),
+            json!({ "id": "p5", "name": "other", "host": "o.example.com", "startupCommand": "uptime" }),
+        ];
+        entries.extend(hostile_command_entries());
+        let p = parse_import(&doc(
+            json!([{ "id": "g", "name": "" }]),
+            Value::Array(entries),
+        ))
+        .unwrap();
+        let preview = s.import_preview(&p);
+        assert!(preview.picked);
+        assert_eq!(
+            preview.token, None,
+            "the token is issued by the pending store"
+        );
+        assert_eq!(
+            preview.bookmarks as usize,
+            4 + hostile_command_entries().len()
+        );
+        assert_eq!(preview.conflicts, 2);
+        // `exists` uses the same case-insensitive name test as `conflicts`.
+        let listed: Vec<(&str, &str, bool)> = preview
+            .startup_commands
+            .iter()
+            .map(|c| (c.name.as_str(), c.command.expose(), c.exists))
+            .collect();
+        assert_eq!(
+            listed,
+            vec![
+                ("WEB", "tmux a", true),
+                ("Db", "htop", true),
+                ("other", "uptime", false)
+            ]
+        );
+        let invalid: Vec<(ImportEntryKind, u32, &str)> = preview
+            .invalid
+            .iter()
+            .map(|i| (i.entry, i.index, i.field.as_str()))
+            .collect();
+        assert_eq!(
+            invalid,
+            vec![
+                (ImportEntryKind::Group, 0, "name"),
+                (ImportEntryKind::Bookmark, 3, "host")
+            ]
+        );
+        // The command never reaches a debug print of the preview.
+        let dbg = format!("{preview:?}");
+        assert!(
+            !dbg.contains("tmux a") && !dbg.contains("uptime") && !dbg.contains("htop"),
+            "{dbg}"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before, "nothing was written");
+        assert_eq!(s.dto().bookmarks.len(), 2);
     }
 
     #[test]
@@ -2070,7 +2414,9 @@ mod tests {
         assert!(s.read_only());
         let p = parse_import(&doc(json!([]), json!([bm("a", "a", "h")]))).unwrap();
         assert_eq!(
-            s.import(p, ImportStrategy::Skip, 1).unwrap_err().kind,
+            s.import(p, ImportStrategy::Skip, false, 1)
+                .unwrap_err()
+                .kind,
             ErrorCode::StorageReadOnly
         );
         assert_eq!(std::fs::read(&path).unwrap(), before);

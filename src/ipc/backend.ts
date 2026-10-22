@@ -8,6 +8,7 @@ import type {
   BookmarkExportFormat,
   BookmarksDto,
   BookmarksExportResult,
+  BookmarksImportPreview,
   BookmarksImportResult,
   ImportStrategy,
   DirListing,
@@ -124,8 +125,23 @@ export interface Backend {
   recentsClear(): Promise<RecentEntry[]>;
   /** Native Save dialog; the webview never supplies a path. Cancelled: `saved: false`. Never exports secrets. */
   bookmarksExport(format: BookmarkExportFormat, dialogTitle: string): Promise<BookmarksExportResult>;
-  /** Native Open dialog (JSON). `picked: false` = cancelled. Refresh the bookmark slice from `bookmarks` when set. */
-  bookmarksImport(strategy: ImportStrategy, dialogTitle: string): Promise<BookmarksImportResult>;
+  /**
+   * Import step 1: native Open dialog (JSON), parse and validate; writes nothing. `picked: false` = cancelled.
+   * The preview lists the file's valid startup commands; the parsed file waits under `token` (a new open replaces it).
+   */
+  bookmarksImportOpen(dialogTitle: string): Promise<BookmarksImportPreview>;
+  /**
+   * Import step 2: apply the pending import of `token` (consumed by every attempt; unknown → `invalidArgument{token}`).
+   * Startup commands from the file are kept only with `keepStartupCommands` (explicit opt-in, default false).
+   * Refresh the bookmark slice from `bookmarks` when set.
+   */
+  bookmarksImportApply(
+    token: string,
+    strategy: ImportStrategy,
+    keepStartupCommands: boolean,
+  ): Promise<BookmarksImportResult>;
+  /** Drop the pending import of `token` (preview closed). Another or an unknown token is a no-op. */
+  bookmarksImportCancel(token: string): Promise<void>;
   settingsGet(): Promise<Settings>;
   settingsUpdate(settings: Settings): Promise<Settings>;
   /** Writes the default settings and returns them. */

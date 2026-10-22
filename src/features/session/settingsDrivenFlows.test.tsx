@@ -565,31 +565,34 @@ describe("import summary: startup commands", () => {
     };
     act(() => runAction("importBookmarks"));
     const dialog = await screen.findByRole("dialog", { name: "Import bookmarks" });
-    await user.click(within(dialog).getByRole("button", { name: "Choose file…" }));
+    await user.click(within(dialog).getByRole("button", { name: "Import" }));
     const summary = await screen.findByRole("dialog", { name: "Import finished" });
     expect(within(summary).getByText("The startup command of 1 bookmark was not imported:")).toBeTruthy();
     expect(within(summary).getByRole("list", { name: "Bookmarks without their startup command" }).textContent).toBe("with-cmd");
-    expect(within(summary).getByText(/never imported/)).toBeTruthy();
+    expect(within(summary).getByText(/unless you choose to keep them/)).toBeTruthy();
     // nothing of the command leaked into the saved bookmark or the page
     expect(useStore.getState().bookmarks?.bookmarks.find((x) => x.name === "with-cmd")?.startupCommand).toBeNull();
     expect(summary.textContent).not.toContain("evil");
   });
 
+  it("renders hostile names in the stripped list as text", async () => {
+    const { user, backend } = setupApp();
+    const rlo = String.fromCodePoint(0x202e);
+    backend.importFile = { bookmarks: [{ name: `<b>x</b>${rlo}`, host: "a.example.com", startupCommand: "x" }] };
+    act(() => runAction("importBookmarks"));
+    await user.click(within(await screen.findByRole("dialog", { name: "Import bookmarks" })).getByRole("button", { name: "Import" }));
+    const summary = await screen.findByRole("dialog", { name: "Import finished" });
+    expect(within(summary).getByRole("list", { name: "Bookmarks without their startup command" })).toBeTruthy();
+    expect(summary.querySelector("b")).toBeNull();
+    expect(summary.textContent).not.toContain(rlo);
+    expect(summary.textContent).toContain("⟨U+202E⟩");
+  });
+
   it("shows no such section when nothing was stripped", async () => {
     const { user } = setupApp();
     act(() => runAction("importBookmarks"));
-    await user.click(within(await screen.findByRole("dialog", { name: "Import bookmarks" })).getByRole("button", { name: "Choose file…" }));
+    await user.click(within(await screen.findByRole("dialog", { name: "Import bookmarks" })).getByRole("button", { name: "Import" }));
     const summary = await screen.findByRole("dialog", { name: "Import finished" });
     expect(within(summary).queryByText(/startup command/)).toBeNull();
-  });
-
-  it("renders hostile names as text", async () => {
-    const { user, backend } = setupApp();
-    backend.importFile = { bookmarks: [{ name: "<b>x</b>‮", host: "a.example.com", startupCommand: "x" }] };
-    act(() => runAction("importBookmarks"));
-    await user.click(within(await screen.findByRole("dialog", { name: "Import bookmarks" })).getByRole("button", { name: "Choose file…" }));
-    const summary = await screen.findByRole("dialog", { name: "Import finished" });
-    expect(summary.querySelector("b")).toBeNull();
-    expect(summary.textContent).not.toContain("‮");
   });
 });

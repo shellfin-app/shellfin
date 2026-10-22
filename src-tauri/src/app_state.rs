@@ -14,6 +14,7 @@ use crate::session::session::{ConnectCtxTemplate, SessionDeps};
 use crate::sftp::drops::DropRegistry;
 use crate::sshconfig::service::SshConfigService;
 use crate::storage::Stores;
+use crate::storage::bookmarks::PendingImports;
 use crate::updater::UpdateState;
 
 pub struct AppState {
@@ -34,6 +35,8 @@ pub struct AppState {
     pub updates: Arc<UpdateState>,
     /// How many times the page called `app_frontend_ready` (a later call is a reload).
     pub frontend_loads: FrontendLoads,
+    /// The parsed bookmark import waiting for apply or cancel (§7.7).
+    pub pending_import: PendingImports,
 }
 
 /// Counts page loads (`app_frontend_ready`). A second load means the WebView was reloaded or
@@ -118,6 +121,7 @@ impl AppState {
             notifications,
             updates: Arc::new(UpdateState::default()),
             frontend_loads: FrontendLoads::default(),
+            pending_import: PendingImports::default(),
         }
     }
 }

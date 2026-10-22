@@ -10,8 +10,9 @@ import type {
   BookmarkExportFormat,
   BookmarksDto,
   BookmarksExportResult,
+  BookmarksImportPreview,
   BookmarksImportResult,
-  ImportInvalid,
+  ImportStartupCommand,
   ImportStrategy,
   EnvInfo,
   Group,
@@ -41,6 +42,7 @@ import type {
   UpdateProgress,
   WindowState,
 } from "../types";
+import { validStartupCommand } from "../../lib/bookmarkForm";
 import { dirname, joinPath } from "../../lib/remotePath";
 import { FakeFs } from "./fakeFs";
 import { FakeShell } from "./fakeShell";
@@ -55,7 +57,7 @@ import {
   makeSshConfig,
 } from "./fixtures";
 import { TerminalOutput, floodChunks } from "./termFlow";
-import { type ScenarioHooks, type ScenarioName, type SessionScript, resolveScenario } from "./scenarios";
+import { type MockImportFile, type ScenarioHooks, type ScenarioName, type SessionScript, resolveScenario } from "./scenarios";
 
 export interface MockBackendOptions {
   scenario?: ScenarioName;
@@ -216,6 +218,7 @@ export class MockBackend implements Backend {
     this.recents = makeRecents(now);
     this.fs = new FakeFs(now);
     this.hooks.extraFiles?.(this.fs);
+    this.importFile = this.hooks.importFile ?? { bookmarks: [{ name: "imported-box", host: "imported.example.com", user: "root" }] };
     if (this.hooks.update) this.publishedUpdate = makeMockUpdate(this.hooks.update);
   }
 
@@ -565,31 +568,68 @@ export class MockBackend implements Backend {
   }
 
   /** Bookmark import calls (tests assert on them). */
-  readonly importCalls: { strategy: ImportStrategy; dialogTitle: string }[] = [];
-  /** The "file" the next import reads: `null` = cancelled; an `AppError` = whole-file error (nothing imported). */
-  importFile:
-    | { bookmarks: { name: string; host: string; user?: string; startupCommand?: string }[]; invalid?: ImportInvalid[] }
-    | AppError
-    | null = { bookmarks: [{ name: "imported-box", host: "imported.example.com", user: "root" }] };
-  async bookmarksImport(strategy: ImportStrategy, dialogTitle: string): Promise<BookmarksImportResult> {
-    this.importCalls.push({ strategy, dialogTitle });
-    const none = { added: 0, replaced: 0, skipped: 0, invalid: [], bookmarks: null, startupCommandsStripped: [] };
+  readonly importOpenCalls: string[] = [];
+  readonly importApplyCalls: { token: string; strategy: ImportStrategy; keepStartupCommands: boolean }[] = [];
+  readonly importCancelCalls: string[] = [];
+  /** The "file" the next import open reads: `null` = cancelled; an `AppError` = whole-file error (nothing pending). */
+  importFile: MockImportFile | AppError | null;
+  /** The single pending import (like `AppState.pending_import`): replaced by every open, consumed by every apply. */
+  private pendingImport: { token: string; file: MockImportFile } | null = null;
+  async bookmarksImportOpen(dialogTitle: string): Promise<BookmarksImportPreview> {
+    this.importOpenCalls.push(dialogTitle);
+    this.pendingImport = null;
+    if (this.bookmarks.readOnly) throw new IpcError({ code: "storageReadOnly" }); // before the dialog
     const file = this.importFile;
-    if (file === null) return { picked: false, ...none };
+    if (file === null) return { picked: false, token: null, bookmarks: 0, conflicts: 0, invalid: [], startupCommands: [] };
     if ("code" in file) throw new IpcError(file);
+    const token = this.id("import");
+    this.pendingImport = { token, file };
+    const exists = (name: string) => this.bookmarks.bookmarks.some((b) => b.name.toLowerCase() === name.toLowerCase());
+    const startupCommands: ImportStartupCommand[] = [];
+    for (const entry of file.bookmarks) {
+      const command = entry.startupCommand;
+      if (command !== undefined && command.trim() !== "" && validStartupCommand(command)) {
+        startupCommands.push({ name: entry.name, command, exists: exists(entry.name) });
+      }
+    }
+    return {
+      picked: true,
+      token,
+      bookmarks: file.bookmarks.length,
+      conflicts: file.bookmarks.filter((e) => exists(e.name)).length,
+      invalid: file.invalid ?? [],
+      startupCommands,
+    };
+  }
+  async bookmarksImportCancel(token: string): Promise<void> {
+    this.importCancelCalls.push(token);
+    if (this.pendingImport?.token === token) this.pendingImport = null;
+  }
+  async bookmarksImportApply(token: string, strategy: ImportStrategy, keepStartupCommands: boolean): Promise<BookmarksImportResult> {
+    this.importApplyCalls.push({ token, strategy, keepStartupCommands });
+    const pending = this.pendingImport;
+    this.pendingImport = null; // every attempt consumes the pending import
+    if (!pending || pending.token !== token) throw new IpcError({ code: "invalidArgument", params: { field: "token" } });
+    if (this.bookmarks.readOnly) throw new IpcError({ code: "storageReadOnly" });
+    const file = pending.file;
     let added = 0;
     let replaced = 0;
     let skipped = 0;
     const stripped: string[] = [];
+    // Lower-cased names this import added: like the backend, `replace` never overwrites one of them (plain skip).
+    const addedNow: string[] = [];
     for (const entry of file.bookmarks) {
       const existing = this.bookmarks.bookmarks.find((b) => b.name.toLowerCase() === entry.name.toLowerCase());
-      if (existing && strategy === "skip") {
+      if (existing && (strategy === "skip" || (strategy === "replace" && addedNow.includes(existing.name.toLowerCase())))) {
         skipped += 1;
         continue;
       }
       const name = existing && strategy === "duplicate" ? `${entry.name} (2)` : entry.name;
       // A replaced bookmark keeps its own command only while it still points at the same server and account.
+      const fileCommand = entry.startupCommand?.trim() ? entry.startupCommand : null;
+      const kept = keepStartupCommands && fileCommand !== null && validStartupCommand(fileCommand) ? fileCommand : null;
       const keepsOwn =
+        kept === null &&
         existing !== undefined &&
         strategy === "replace" &&
         existing.host === entry.host &&
@@ -597,7 +637,7 @@ export class MockBackend implements Backend {
         existing.user === (entry.user ?? null) &&
         !existing.useSshConfig &&
         existing.proxyJump === null;
-      const droppedOwn = existing !== undefined && strategy === "replace" && !keepsOwn && existing.startupCommand !== null;
+      const droppedOwn = kept === null && existing !== undefined && strategy === "replace" && !keepsOwn && existing.startupCommand !== null;
       await this.bookmarkSave({
         id: existing && strategy === "replace" ? existing.id : null,
         name,
@@ -610,14 +650,18 @@ export class MockBackend implements Backend {
         tags: [],
         startDir: null,
         useSshConfig: false,
-        // Like the backend: startup commands are never imported; a replaced bookmark keeps its own (same target only).
-        startupCommand: keepsOwn ? existing.startupCommand : null,
+        // Like the backend: a file's command is imported only with the opt-in (and only a valid one); otherwise a
+        // replaced bookmark keeps its own (same target only).
+        startupCommand: kept ?? (keepsOwn ? existing.startupCommand : null),
       });
       if (existing && strategy === "replace") replaced += 1;
-      else added += 1;
-      // The final name of an added / replaced bookmark whose file entry had a command (which is never imported), or
+      else {
+        added += 1;
+        addedNow.push(name.toLowerCase());
+      }
+      // The final name of an added / replaced bookmark whose file command was not imported (no opt-in, or invalid), or
       // whose own command was dropped because the file points it elsewhere.
-      if (entry.startupCommand || droppedOwn) stripped.push(name);
+      if ((fileCommand !== null && kept === null) || droppedOwn) stripped.push(name);
     }
     const changed = added + replaced > 0;
     return {

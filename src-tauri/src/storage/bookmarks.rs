@@ -48,8 +48,10 @@ use crate::storage::migrations::StoreFile;
 use crate::storage::{LoadedDoc, load_document};
 
 mod io;
+mod pending;
 
 pub use io::{ImportOutcome, ParsedImport, export_json, export_ssh_config, parse_import};
+pub use pending::PendingImports;
 
 pub const MAX_NAME_CHARS: usize = 100;
 pub const MAX_USER_CHARS: usize = 255;
@@ -220,6 +222,12 @@ pub fn valid_startup_command(s: &str) -> bool {
         && !s
             .chars()
             .any(|c| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}'))
+}
+
+/// A blank (empty or whitespace-only) startup command means "none"; anything else is kept
+/// verbatim (and validated with [`valid_startup_command`]). Shared by `bookmark_save` and import.
+fn startup_command_or_none(c: Option<SensitiveText>) -> Option<SensitiveText> {
+    c.filter(|c| !c.expose().trim().is_empty())
 }
 
 /// `notes` are plain text of ≤ 4000 chars; LF, CR and tab are the only control
@@ -902,9 +910,7 @@ impl BookmarkStore {
             upload_limit_kibps: input.upload_limit_kibps,
             download_limit_kibps: input.download_limit_kibps,
             confirm_connect: input.confirm_connect.unwrap_or(false),
-            startup_command: input
-                .startup_command
-                .filter(|c| !c.expose().trim().is_empty()),
+            startup_command: startup_command_or_none(input.startup_command),
             notes: none_if_whitespace(input.notes),
             created_at_ms: existing.as_ref().map_or(now_ms, |e| e.created_at_ms),
             updated_at_ms: now_ms,
