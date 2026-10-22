@@ -208,6 +208,15 @@
     "unsupportedMatchCriteria": "Unsupported Match criteria: {{criteria}}.",
     "untrustedFile": "{{file}} has unsafe ownership or permissions and was ignored."
   },
+  "configWarningsDialog": {
+    "fileSkipped": "The file was skipped: it is not a config file (key material or binary data).",
+    "listLabel": "Warnings",
+    "location": "{{file}}:{{line}}",
+    "more_one": "and {{count}} more",
+    "more_other": "and {{count}} more",
+    "none": "No warnings.",
+    "title": "SSH config warnings"
+  },
   "conflict": {
     "body": "This file changed on the server after you opened it (from a terminal, a script or another user). Saving now would replace the server's version.",
     "compareFailed": "Could not compare with the server version: {{reason}}",
@@ -1250,6 +1259,8 @@
     "configIncludes_other": "{{count}} includes",
     "configMissing": "There is no ssh config file yet. Hosts you add to it appear here automatically.",
     "configUpdated": "Updated {{time}}",
+    "configWarnings_one": "{{count}} warning",
+    "configWarnings_other": "{{count}} warnings",
     "firstRun": "No connections yet. Type user@host in Quick connect and press Enter, or add a server you use often as a bookmark.",
     "firstRunAction": "Add your first connection",
     "knownHosts": "Known hosts",

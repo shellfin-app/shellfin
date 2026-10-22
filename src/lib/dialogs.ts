@@ -19,6 +19,7 @@ export const bookmarkDialog = (
 export const confirmDeleteDialog = (bookmarkId: string): DialogState => ({ kind: "confirmDeleteBookmark", bookmarkId });
 export const settingsDialog = (): DialogState => ({ kind: "settings" });
 export const keysDialog = (): DialogState => ({ kind: "keys" });
+export const configWarningsDialog = (): DialogState => ({ kind: "configWarnings" });
 
 export const CONFIRM_DELETE_KIND = "confirmDeleteBookmark" as const;
 export const CONFIRM_PASTE_KIND = "confirmPaste" as const;
@@ -63,4 +64,5 @@ export const DIALOG_KIND = {
   moveEntry: "moveEntry",
   goToFolder: "goToFolder",
   replaceTransfers: "replaceTransfers",
+  configWarnings: "configWarnings",
 } as const satisfies Record<string, DialogState["kind"]>;

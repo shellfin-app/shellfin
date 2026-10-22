@@ -293,6 +293,23 @@ pub(crate) struct Loader<'a> {
     opened: usize,
     /// `badLine` warnings of the file being read (saved/restored around includes).
     bad_lines: usize,
+    /// `badLine` warnings not reported because their file hit `MAX_BAD_LINES_PER_FILE`
+    /// (all files together, saturating).
+    dropped_warnings: u32,
+    /// Files loaded so far, as spelled (the same key warnings are deduplicated by). A file included
+    /// more than once reports the same warnings each time, so its dropped lines are counted on the
+    /// first load only.
+    loaded: HashSet<PathBuf>,
+    /// Whether the file being read counts its dropped lines (saved/restored around includes).
+    count_dropped: bool,
+}
+
+/// What [`Loader::finish`] hands back to `load`.
+pub(crate) struct LoadResult {
+    pub warnings: Vec<ConfigWarning>,
+    pub dropped_warnings: u32,
+    pub files_read: Vec<PathBuf>,
+    pub include_dirs: Vec<PathBuf>,
 }
 
 impl<'a> Loader<'a> {
@@ -307,12 +324,19 @@ impl<'a> Loader<'a> {
             stack: Vec::new(),
             opened: 0,
             bad_lines: 0,
+            dropped_warnings: 0,
+            loaded: HashSet::new(),
+            count_dropped: true,
         }
     }
 
-    /// Report a line we could not use (keyword only, capped per file).
+    /// Report a line we could not use (keyword only, capped per file; lines beyond the cap
+    /// are only counted).
     fn bad_line(&mut self, loc: SourceLocation, raw: &str) {
         if self.bad_lines >= MAX_BAD_LINES_PER_FILE {
+            if self.count_dropped {
+                self.dropped_warnings = self.dropped_warnings.saturating_add(1);
+            }
             return;
         }
         self.bad_lines += 1;
@@ -321,8 +345,13 @@ impl<'a> Loader<'a> {
             .push(warning(loc, ConfigWarningCode::BadLine { text }));
     }
 
-    pub fn finish(self) -> (Vec<ConfigWarning>, Vec<PathBuf>, Vec<PathBuf>) {
-        (self.warnings, self.files_read, self.include_dirs)
+    pub fn finish(self) -> LoadResult {
+        LoadResult {
+            warnings: self.warnings,
+            dropped_warnings: self.dropped_warnings,
+            files_read: self.files_read,
+            include_dirs: self.include_dirs,
+        }
     }
 
     pub fn load_main(&mut self, path: &Path, scope: ConfigScope) -> Option<ParsedFile> {
@@ -362,7 +391,10 @@ impl<'a> Loader<'a> {
             );
             return None;
         }
-        self.stack.push(normalise(path));
+        let norm = normalise(path);
+        let first_load = self.loaded.insert(path.to_path_buf());
+        let outer_count_dropped = std::mem::replace(&mut self.count_dropped, first_load);
+        self.stack.push(norm);
         let text = String::from_utf8_lossy(&bytes);
         // A UTF-8 BOM (PowerShell 5.1, old Notepad) would turn the first keyword into
         // an unknown one and make the first block's options global.
@@ -392,6 +424,7 @@ impl<'a> Loader<'a> {
             }
         }
         self.bad_lines = outer_bad_lines;
+        self.count_dropped = outer_count_dropped;
         self.stack.pop();
         Some(ParsedFile {
             path: path.to_path_buf(),
@@ -725,6 +758,66 @@ mod tests {
         f.user_config(&main);
         let p = f.load();
         assert_eq!(p.load_warnings().len(), 2 * MAX_BAD_LINES_PER_FILE);
+        // Everything beyond the cap is counted: (10 + 10 000 − 50) in the main file plus
+        // (10 000 − 50) in the included one.
+        assert_eq!(p.dropped_warnings, (10_010 - 50) + (10_000 - 50));
+    }
+
+    /// A file included twice reports the same (deduplicated) warnings both times, so its
+    /// dropped lines count once; the including file still counts its own afterwards.
+    #[test]
+    fn file_included_twice_counts_dropped_once() {
+        let f = Fixture::new();
+        f.user_file("common.conf", &"junk\n".repeat(60));
+        let mut main = "Host a\nInclude common.conf\nHost b\nInclude common.conf\n".to_owned();
+        main.push_str(&"junk\n".repeat(MAX_BAD_LINES_PER_FILE + 3));
+        f.user_config(&main);
+        let p = f.load();
+        assert_eq!(p.dropped_warnings, 10 + 3);
+        let s = p.snapshot(0);
+        assert_eq!(s.warnings.len(), 2 * MAX_BAD_LINES_PER_FILE, "deduplicated");
+        assert_eq!(s.dropped_warnings, 13);
+    }
+
+    /// No junk, no count; exactly the cap is not "dropped" either.
+    #[test]
+    fn dropped_warnings_start_after_the_cap() {
+        let f = Fixture::new();
+        f.user_config("Host a\n  Port 22\n");
+        assert_eq!(f.load().dropped_warnings, 0);
+        f.user_config(&"junk\n".repeat(MAX_BAD_LINES_PER_FILE));
+        let p = f.load();
+        assert_eq!(p.load_warnings().len(), MAX_BAD_LINES_PER_FILE);
+        assert_eq!(p.dropped_warnings, 0);
+        f.user_config(&"junk\n".repeat(MAX_BAD_LINES_PER_FILE + 1));
+        assert_eq!(f.load().dropped_warnings, 1);
+    }
+
+    /// A reload whose only difference is in the lines beyond the cap still counts as a
+    /// change (the snapshot's `droppedWarnings` differs), and an identical one does not.
+    #[test]
+    fn change_beyond_the_cap_is_a_change() {
+        use crate::sshconfig::SshConfigCache;
+        let f = Fixture::new();
+        let cache = SshConfigCache::default();
+        f.user_config(&"junk\n".repeat(60));
+        assert!(cache.replace(f.load()));
+        assert!(!cache.replace(f.load()), "same files, no change");
+        f.user_config(&"junk\n".repeat(70));
+        let p = f.load();
+        assert_eq!(p.load_warnings(), cache.get().unwrap().load_warnings());
+        assert_eq!(p.dropped_warnings, 20);
+        assert!(cache.replace(p), "only the dropped count changed");
+    }
+
+    /// A source that opens nothing (`readSshConfig` off) drops nothing.
+    #[test]
+    fn disabled_source_drops_nothing() {
+        let f = Fixture::new();
+        f.user_config(&"junk\n".repeat(500));
+        let p = f.load_with(&crate::sshconfig::service::DisabledSource);
+        assert!(p.load_warnings().is_empty());
+        assert_eq!(p.dropped_warnings, 0);
     }
 
     /// A UTF-8 BOM does not hide the first keyword (the first block stays a block).

@@ -21,6 +21,7 @@ import { PromptHost } from "../session/PromptHost";
 import { PasteConfirmDialog } from "../terminal/PasteConfirmDialog";
 import { CloseTerminalsDialog } from "../terminal/CloseTerminalsDialog";
 import { UpdateDialog } from "../updates/UpdateDialog";
+import { ConfigWarningsDialog } from "../welcome/ConfigWarningsDialog";
 import { QuitConfirmDialog } from "./QuitConfirmDialog";
 
 // Big, rarely used dialogs are their own chunks: Settings (all its sections), SSH keys, the bookmark
@@ -141,6 +142,7 @@ export function DialogHost() {
       {dialog?.kind === "goToFolder" ? <GoToFolderDialog key={dialog.sessionId} sessionId={dialog.sessionId} /> : null}
       {dialog?.kind === "replaceTransfers" ? <ReplaceDialog sessionId={dialog.sessionId} /> : null}
       {dialog?.kind === "update" ? <UpdateDialog /> : null}
+      {dialog?.kind === "configWarnings" ? <ConfigWarningsDialog /> : null}
       <LazyDialogBoundary key={`palette:${palette ?? ""}`} onError={closePalette}>
         <Suspense fallback={null}>{palette ? <CommandPalette key={palette} mode={palette} /> : null}</Suspense>
       </LazyDialogBoundary>
