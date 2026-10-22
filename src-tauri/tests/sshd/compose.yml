@@ -1,14 +1,15 @@
 # Shellfin integration-test servers (§10.2). Used as:
 #   docker compose -p shellfin-it -f src-tauri/tests/sshd/compose.yml up -d --wait
-# (tests/support/mod.rs does this with SHELLFIN_IT_IMAGE_TAG set; add --build after editing the
-# image inputs when starting it by hand).
+# (tests/support/mod.rs sets SHELLFIN_IT_IMAGE_TAG, runs `build bastion` once when that image is
+# missing, then `up -d --wait --no-build`; add --build after editing the image inputs when
+# starting it by hand).
 # bastion: published on 127.0.0.1:2222; target: internal network only (reach it via bastion).
 x-sshd: &sshd
   build:
     context: ..
     dockerfile: sshd/Dockerfile
-  # The harness sets SHELLFIN_IT_IMAGE_TAG to a hash of the image inputs, so `up` rebuilds (and
-  # recreates the containers) only when tests/sshd/* or the fixture public keys change.
+  # The harness sets SHELLFIN_IT_IMAGE_TAG to a hash of the image inputs, so the image is rebuilt
+  # (and the containers recreated) only when tests/sshd/* or the fixture public keys change.
   image: shellfin-it-sshd:${SHELLFIN_IT_IMAGE_TAG:-local}
   init: true
   healthcheck:

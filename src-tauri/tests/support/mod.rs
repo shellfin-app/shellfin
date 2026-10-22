@@ -114,7 +114,7 @@ pub struct Sshd {
 }
 
 /// Hash of everything that goes into the image (tests/sshd/* and the fixture public keys), used
-/// as the image tag: `up` then builds and recreates the containers only when those change
+/// as the image tag: the image is built and the containers recreated only when those change
 /// (a plain `up --build` produces a new image id and recreates the containers every time).
 pub fn image_tag() -> String {
     let mut files: Vec<PathBuf> = Vec::new();
@@ -158,14 +158,49 @@ fn compose() -> Command {
     cmd
 }
 
+/// Builds `shellfin-it-sshd:<image_tag>` once if it is missing. Both services share that image.
+/// When `up` built it itself on a fresh machine (CI), the next test binary's `up` recreated both
+/// containers (the image digest recorded at creation did not match what the tag resolved to
+/// later). Building one service up front and starting with `--no-build` creates the containers
+/// from the finished image, so later binaries reuse them.
+fn ensure_image() {
+    let image = format!("shellfin-it-sshd:{}", image_tag());
+    let present = Command::new("docker")
+        .args(["image", "inspect", "--format", "{{.Id}}", &image])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
+    if present {
+        return;
+    }
+    let out = compose()
+        .args(["build", BASTION])
+        .stdin(Stdio::null())
+        .output()
+        .expect("run `docker compose build` (is Docker running?)");
+    assert!(
+        out.status.success(),
+        "docker compose build failed:\n{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 /// The running test servers; starts the compose stack on first use (once per test binary).
+/// Every helper that touches the containers calls this first: `up` may recreate them (image
+/// inputs changed, stack left over from another tag), and state taken from a container before
+/// that (e.g. a [`HostKeyGuard`] backup) would be lost.
 pub fn sshd() -> &'static Sshd {
     static SSHD: OnceLock<Sshd> = OnceLock::new();
     SSHD.get_or_init(|| {
         let external = std::env::var("SHELLFIN_IT_EXTERNAL").is_ok_and(|v| v == "1");
         if !external {
+            ensure_image();
             let out = compose()
-                .args(["up", "-d", "--wait"])
+                .args(["up", "-d", "--wait", "--no-build"])
+                .stdin(Stdio::null())
                 .output()
                 .expect("run `docker compose up` (is Docker running?)");
             assert!(
@@ -224,6 +259,7 @@ pub fn wait_for_ssh_banner(host: &str, port: u16, timeout: Duration) -> String {
 
 /// `docker compose <args…>` for this stack (e.g. `pause target`); asserts success.
 pub fn docker_compose_ok(args: &[&str]) {
+    sshd();
     let out = compose()
         .args(args)
         .stdin(Stdio::null())
@@ -263,7 +299,9 @@ impl Drop for PauseGuard {
 
 /// Backs up the host keys of `service` and restores them (+ sshd reload) when dropped, so a test
 /// that regenerates them leaves the shared stack as it found it (QA's and developers'
-/// saved known_hosts entries keep working).
+/// saved known_hosts entries keep working). The restore never deletes the current keys unless
+/// the backup is there (a container without host keys refuses every connection), and a failed
+/// restore fails the test that owns the guard instead of the cases that run after it.
 pub struct HostKeyGuard(pub &'static str);
 
 const HOST_KEY_BACKUP: &str = "/root/shellfin-hostkey-backup";
@@ -293,7 +331,9 @@ impl Drop for HostKeyGuard {
                 "sh",
                 "-c",
                 &format!(
-                    "rm -f /etc/ssh/ssh_host_* && cp -p {HOST_KEY_BACKUP}/* /etc/ssh/ \
+                    "set -- {HOST_KEY_BACKUP}/ssh_host_*_key; \
+                     if [ ! -f \"$1\" ]; then echo 'no host-key backup in this container' >&2; exit 1; fi; \
+                     rm -f /etc/ssh/ssh_host_* && cp -p {HOST_KEY_BACKUP}/* /etc/ssh/ \
                      && rm -rf {HOST_KEY_BACKUP} && pkill -HUP -o -x sshd \
                      && sleep 0.5 && for i in $(seq 50); do \
                      bash -c 'exec 3<>/dev/tcp/127.0.0.1/22' 2>/dev/null && exit 0; sleep 0.1; done; exit 1"
@@ -301,17 +341,23 @@ impl Drop for HostKeyGuard {
             ],
         );
         if !out.status.success() {
-            eprintln!(
-                "WARNING: could not restore the host keys of {}: {}",
+            let msg = format!(
+                "could not restore the host keys of {}: {}",
                 self.0,
                 String::from_utf8_lossy(&out.stderr)
             );
+            if std::thread::panicking() {
+                eprintln!("WARNING: {msg}");
+            } else {
+                panic!("{msg}");
+            }
         }
     }
 }
 
-/// `docker compose exec -T <service> <args…>`.
+/// `docker compose exec -T <service> <args…>` (starts the stack first, see [`sshd`]).
 pub fn docker_exec(service: &str, args: &[&str]) -> Output {
+    sshd();
     compose()
         .args(["exec", "-T", service])
         .args(args)
@@ -322,6 +368,7 @@ pub fn docker_exec(service: &str, args: &[&str]) -> Output {
 
 /// Like [`docker_exec`] but feeds `stdin` to the command.
 pub fn docker_exec_stdin(service: &str, args: &[&str], stdin: &[u8]) -> Output {
+    sshd();
     let mut child = compose()
         .args(["exec", "-T", service])
         .args(args)
