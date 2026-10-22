@@ -5,9 +5,10 @@
 # MANDATORY ORDER: build -> release checks -> upload -> (all builds green) -> SHA256SUMS,
 # attestations, draft release. The job that creates the draft only runs when every build job
 # passed its checks. All actions are pinned to full commit SHAs. No caches anywhere (cache
-# poisoning must not be able to reach a release). Signing secrets live only in the protected
-# `release` environment (required reviewers); every signing step is skipped when its secrets are
-# absent, so unsigned builds still work.
+# poisoning must not be able to reach a release). Signing secrets live only in the `release`
+# environment (deployments limited to `v*` tags; no required reviewers while there is a single
+# maintainer, so `verify` and the tag ruleset are the automated gates); every signing step is
+# skipped when its secrets are absent, so unsigned builds still work.
 #
 # Updater (§9.8, §11.3): the frontend is built in its own step WITHOUT any secret; the Tauri
 # build then runs with `beforeBuildCommand` emptied and is the only step that sees
@@ -18,7 +19,9 @@
 # Windows ships NSIS only (x64 and ARM64): one installer type per updater key, per-user install.
 # Pre-release tags (vX.Y.Z-experimental.N) build AppImage-only on Linux and create a draft marked as a pre-release.
 #
-# Gates before anything is built: the tag's commit must be on `main` and have a green CI run (`verify`).
+# Gates before anything is built (`verify`): a stable tag vX.Y.Z must be on `main`, a pre-release tag
+# vX.Y.Z-experimental.N on `experimental` or `main`, any other tag shape fails; the commit needs a successful
+# CI run of a push to one of those allowed branches (so it was once the pushed tip of a release branch).
 # Release notes are the CHANGELOG section of the version, when it exists (`notes`).
 name: Release
 
@@ -41,8 +44,11 @@ env:
   RUST_TOOLCHAIN: 1.99.1
 
 jobs:
-  # The tag must point at a commit of `main` whose CI run (push event) succeeded, so a broken or
-  # side-branch tag cannot produce a draft release.
+  # The tag must have an exact shape and point at a commit of its release branch (stable: `main`;
+  # pre-release: `experimental` or `main`) whose CI run for a push to one of those allowed branches
+  # succeeded, so a malformed, broken or side-branch tag cannot produce a draft release. A commit from
+  # inside a merged pull request is an ancestor of the branch but was never its pushed tip, so it has no
+  # such run and is refused. Later jobs rely on these shapes (`*-*` = pre-release).
   verify:
     runs-on: ubuntu-22.04
     timeout-minutes: 10
@@ -55,21 +61,83 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: The tagged commit is on main
+      # grep is line-based, so the `case` first rejects every character a release tag cannot contain
+      # (whitespace, newlines, shell metacharacters); numbers are SemVer (no leading zeros).
+      # Output `branches`: the branches whose CI push run may vouch for the commit (next step).
+      - name: Tag shape and branch
+        id: tag
         run: |
-          git fetch --no-tags origin main
-          if ! git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD; then
-            echo "::error::$GITHUB_REF_NAME ($GITHUB_SHA) is not a commit of main"; exit 1
-          fi
+          tag="$GITHUB_REF_NAME"
+          n='(0|[1-9][0-9]*)'
+          kind=invalid
+          case "$tag" in
+            *[!0-9A-Za-z.-]*) ;;
+            *)
+              if printf '%s' "$tag" | grep -Eq "^v$n\.$n\.$n\$"; then
+                kind=stable
+              elif printf '%s' "$tag" | grep -Eq "^v$n\.$n\.$n-experimental\.$n\$"; then
+                kind=experimental
+              fi ;;
+          esac
+          # 0: the tagged commit is on origin/<branch>; 1: it is not; 2: the branch cannot be fetched.
+          on_branch() {
+            git fetch --no-tags --quiet origin "refs/heads/$1" || return 2
+            git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD || return 1
+          }
+          # Why the commit is not on <branch>, from the on_branch status.
+          why() {
+            if [ "$1" -eq 2 ]; then echo "origin/$2 does not exist or cannot be fetched"; else echo "it is not a commit of $2"; fi
+          }
+          case "$kind" in
+            stable)
+              branches=main
+              rc=0; on_branch main || rc=$?
+              if [ "$rc" -ne 0 ]; then
+                echo "::error::stable tag $tag ($GITHUB_SHA) refused: $(why "$rc" main)"; exit 1
+              fi ;;
+            experimental)
+              branches="main experimental"
+              rc_main=0; on_branch main || rc_main=$?
+              if [ "$rc_main" -ne 0 ]; then
+                rc=0; on_branch experimental || rc=$?
+                if [ "$rc" -ne 0 ]; then
+                  echo "::error::pre-release tag $tag ($GITHUB_SHA) refused: $(why "$rc_main" main); $(why "$rc" experimental)"; exit 1
+                fi
+              fi ;;
+            *)
+              printf '::error::tag %q is neither vX.Y.Z nor vX.Y.Z-experimental.N (decimal numbers, no leading zeros)\n' "$tag"
+              exit 1 ;;
+          esac
+          echo "branches=$branches" >> "$GITHUB_OUTPUT"
+          echo "$kind tag $tag ($GITHUB_SHA) is on its release branch; CI push runs accepted from: $branches"
 
-      - name: CI passed for the tagged commit
+      # Only a successful run of ci.yml for a push to an allowed branch counts, so the commit was the
+      # pushed tip of that branch (pull request runs, other branches and other workflows do not count).
+      - name: CI passed for the tagged commit on an allowed branch
         env:
           GH_TOKEN: ${{ github.token }}
+          BRANCHES: ${{ steps.tag.outputs.branches }}
         run: |
-          n="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&event=push&status=success&per_page=1" --jq .total_count)"
-          if [ "$n" -lt 1 ]; then
-            echo "::error::no successful CI run (push to main) for $GITHUB_SHA: wait for CI before tagging"; exit 1
+          if [ -z "$BRANCHES" ]; then
+            echo "::error::no allowed branch from the tag check"; exit 1
           fi
+          found=
+          for b in $BRANCHES; do
+            case "$b" in
+              main | experimental) ;;
+              *) echo "::error::unexpected branch from the tag check"; exit 1 ;;
+            esac
+            n="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&event=push&status=success&branch=$b&per_page=1" --jq .total_count)" \
+              || { echo "::error::the workflow runs API failed for $b"; exit 1; }
+            case "$n" in
+              '' | *[!0-9]*) echo "::error::unexpected answer from the workflow runs API for $b"; exit 1 ;;
+            esac
+            if [ "$n" -ge 1 ]; then found="$b"; break; fi
+          done
+          if [ -z "$found" ]; then
+            echo "::error::no successful CI run of a push to ${BRANCHES// / or } for $GITHUB_SHA: tag the commit that was pushed to the branch (the merge commit) after its CI run succeeded"; exit 1
+          fi
+          echo "successful CI run of the push to $found for $GITHUB_SHA"
 
   build:
     name: build (${{ matrix.name }})

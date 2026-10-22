@@ -1,10 +1,11 @@
 # CI (§11.2). Every action is pinned to a full commit SHA (Dependabot `github-actions` updates
 # them; the version comment is informational). Least privilege: read-only token everywhere.
+# Push runs on both release branches: release.yml only builds a tag whose commit has a green push run.
 name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, experimental]
   pull_request:
   schedule:
     - cron: "17 4 * * 1" # weekly: security job only (new advisories)
@@ -13,9 +14,12 @@ on:
 permissions:
   contents: read
 
+# Pull requests: a newer push cancels the older run of the same PR. Every other run (pushes, schedule, dispatch) is
+# never cancelled and gets a group of its own: release.yml needs a successful push run of each tagged commit, and in a
+# shared group GitHub would also cancel a run that is still pending when the next one is queued.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
