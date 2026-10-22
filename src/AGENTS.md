@@ -24,7 +24,8 @@ Applies on top of the root [AGENTS.md](../AGENTS.md). Deep reference: `docs/ARCH
    cannot be both a string and a parent.
 3. Dynamic key families (`errors.<code>`, `action.<id>`, `menubar.<id>`, enum families) are listed in
    `preservePatterns` of `../i18next.config.ts`; extend it when you add a family.
-4. `npm run i18n:check` and `npm run lint` must pass. In dev builds the pseudo-locale `en-XA` shows missed strings.
+4. `npm run i18n:check` (also fails when two menu bar titles of one locale start with the same letter, i.e. share an
+   Alt+letter mnemonic; `scripts/menu-mnemonics-check.mjs`) and `npm run lint` must pass. In dev builds the pseudo-locale `en-XA` shows missed strings.
 5. Never concatenate translated fragments; format numbers/sizes/times with `i18n/format.ts`.
 6. Server text goes through `displayServerText` (and `<ServerText>`); remote names/paths through
    `displayName`/`displayPath`; never into `<Trans>`, never as HTML.
