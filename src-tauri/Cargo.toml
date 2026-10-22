@@ -32,7 +32,7 @@ tauri-plugin-updater = { version = "=2.13.3", default-features = false, features
 tauri-plugin-single-instance = "=2.5.3"
 russh = { version = "=0.64.1", default-features = false, features = ["ring", "rsa", "flate2"] }
 russh-sftp = "=3.0.1"
-tokio = { version = "=1.54.0", features = ["sync", "time", "net", "io-util", "macros", "fs"] }
+tokio = { version = "=1.54.1", features = ["sync", "time", "net", "io-util", "macros", "fs"] }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.154"
 bytes = "=1.12.1"
@@ -66,7 +66,7 @@ libc = "=0.2.191"
 [dev-dependencies]
 tempfile = "=3.27.0"
 pretty_assertions = "=1.4.1"
-tokio = { version = "=1.54.0", features = ["test-util", "rt-multi-thread", "macros"] }  # tests only: paused clock, #[tokio::test]
+tokio = { version = "=1.54.1", features = ["test-util", "rt-multi-thread", "macros"] }  # tests only: paused clock, #[tokio::test]
 
 [features]
 it = []   # integration tests against docker sshd (§10.2)

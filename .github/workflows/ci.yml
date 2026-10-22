@@ -208,7 +208,12 @@ jobs:
             mv cask.rb "casks/$file"
           done
           ls casks
-          brew style --cask casks/*.rb
+          # Homebrew only checks casks that live in a tap, so put them into a throwaway local one.
+          brew tap-new --no-git shellfin-ci/check
+          tap="$(brew --repository shellfin-ci/check)"
+          mkdir -p "$tap/Casks"
+          cp casks/*.rb "$tap/Casks/"
+          brew style "$tap/Casks"
 
   # Workflow and secret hygiene: actionlint (with shellcheck of the run scripts), zizmor, gitleaks.
   workflows:

@@ -11,7 +11,6 @@
 //!
 //! Availability = verified connect **and** a successful first `request_identities()`.
 
-#[cfg(windows)]
 use std::time::Duration;
 
 use russh::keys::agent::AgentIdentity;
