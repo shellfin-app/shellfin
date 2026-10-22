@@ -76,13 +76,6 @@ describe("light theme tokens: text pairs reach 4.5:1", () => {
     expect(contrastRatio(L("--text"), L("--selection-bg"))).toBeGreaterThanOrEqual(4.5);
   });
 
-  it("syntax colours on the editor background and the active line", () => {
-    for (const token of ["--syn-keyword", "--syn-string", "--syn-number", "--syn-comment", "--syn-purple"]) {
-      expect(contrastRatio(L(token), L("--bg")), token).toBeGreaterThanOrEqual(4.5);
-      expect(contrastRatio(L(token), L("--active-line")), `${token} on the active line`).toBeGreaterThanOrEqual(4.5);
-    }
-  });
-
   it("bookmark row text over the state layers", () => {
     const panel = L("--panel");
     const hover = solid(light["--layer-hover"] ?? "", panel);
@@ -206,6 +199,21 @@ describe("dark theme tokens: text pairs reach 4.5:1", () => {
       expect(contrastRatio(D(token), D("--bg")), token).toBeGreaterThanOrEqual(4.5);
     }
   });
+});
+
+describe("syntax colours: every --syn-* token reaches 4.5:1 on the background, the selection and the active line", () => {
+  const sets = { dark: { tokens: rootDark, color: D }, light: { tokens: light, color: L } };
+  for (const [theme, { tokens, color }] of Object.entries(sets)) {
+    it(`${theme} theme`, () => {
+      const names = Object.keys(tokens).filter((name) => name.startsWith("--syn-"));
+      expect(names.length).toBeGreaterThanOrEqual(5);
+      for (const name of names) {
+        for (const surface of ["--bg", "--selection-bg", "--active-line"]) {
+          expect(contrastRatio(color(name), color(surface)), `${theme} ${name} on ${surface}`).toBeGreaterThanOrEqual(4.5);
+        }
+      }
+    });
+  }
 });
 
 describe("focus indicators", () => {

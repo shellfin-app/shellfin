@@ -16,7 +16,7 @@
   --hover: #1E222A;       --selected: #222731;     --tab-active: #1B1E25;   --seg-active: #262B35;
   --ok: #4ADE80;          --warn: #E5C07B;         --danger: #F87171;       --link: #8AB4F8;
   --warn-bg: #2E2717;     --danger-bg: #3A1F22;    --danger-border: #3A2A2E;
-  --syn-keyword: #8AB4F8; --syn-string: #C3E88D;   --syn-number: #F7A072;   --syn-comment: #7D8597; --syn-purple: #C792EA;
+  --syn-keyword: #8AB4F8; --syn-string: #C3E88D;   --syn-number: #F7A072;   --syn-comment: #9299A8; --syn-purple: #C792EA;
 
   /* Bookmark color palette (8 names + none) */
   --bm-red: #F87171;    --bm-orange: #F7A072; --bm-yellow: #E5C07B; --bm-green: #4ADE80;
@@ -85,7 +85,7 @@
   --hover: #ECEEF1;       --selected: #DDDEE0;     --tab-active: #FFFFFF;   --seg-active: #FFFFFF;
   --ok: #14753A;          --warn: #A15C00;        --danger: #C62828;       --link: #1F5FBF;
   --warn-bg: #FFF4DC;     --danger-bg: #FDECEC;    --danger-border: #F0C4C4;
-  --syn-keyword: #1F5FBF; --syn-string: #3D7A1F;   --syn-number: #B4530F;   --syn-comment: #656C78; --syn-purple: #8A3FB8;
+  --syn-keyword: #1E5CB9; --syn-string: #366B1B;   --syn-number: #9B470D;   --syn-comment: #5A606B; --syn-purple: #843CB1;
 
   --bm-red: #DC2626;    --bm-orange: #EA580C; --bm-yellow: #BF8003; --bm-green: #16A34A;
   --bm-teal: #0D9488;   --bm-blue: #2563EB;   --bm-purple: #9333EA; --bm-gray: #6B7280;
