@@ -238,14 +238,13 @@ export function MenuBar() {
       }
       if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && e.getModifierState("AltGraph") !== true && e.key.length === 1) {
         const letter = e.key.toLowerCase();
-        const first = mnemonicOf;
         // The mnemonic is the first letter of the translated name; with another keyboard layout than the UI language
         // (Ukrainian UI on a Latin layout and the reverse) the physical key of the English name's first letter works too.
         const physical = /^Key([A-Z])$/.exec(e.code)?.[1]?.toLowerCase();
         const english = i18next.getFixedT("en");
         const hit =
-          MENU_IDS.find((id) => first(t(`menubar.${id}`)) === letter) ??
-          (physical === undefined ? undefined : MENU_IDS.find((id) => first(english(`menubar.${id}`)) === physical));
+          MENU_IDS.find((id) => mnemonicOf(t(`menubar.${id}`)) === letter) ??
+          (physical === undefined ? undefined : MENU_IDS.find((id) => mnemonicOf(english(`menubar.${id}`)) === physical));
         if (hit) {
           e.preventDefault();
           remember();
