@@ -2,11 +2,16 @@
 // through displayServerText: C0/C1 controls and bidi controls become visible escapes, then it is truncated.
 
 // Code point ranges: C0 (0-1F), DEL + C1 (7F-9F), plus the characters that render as nothing or reorder text (the
-// same set as the Rust `is_deceptive_char`, ssh/shellquote.rs, minus the text/emoji presentation selectors U+FE0E and
-// U+FE0F, which emoji need; the variation selectors U+FE00-FE0D are escaped because they make two different names look
-// identical, and the supplementary ones U+E0100-E01EF fall inside the tag range below): soft hyphen, combining grapheme joiner, Hangul/Khmer/Mongolian fillers and selectors, zero-width space and
-// joiners, LRM/RLM, bidi embeddings and isolates, line/paragraph separators, word joiner and invisible operators,
-// BOM, interlinear annotation marks and Unicode tag characters.
+// same set as the Rust `is_deceptive_char`, ssh/shellquote.rs, with two differences: the frontend also escapes
+// U+FFF9-FFFB, which the Rust set leaves out of U+FFF0-FFF8, and U+FE0E/U+FE0F are context-aware, see below).
+// The variation selectors U+FE00-FE0D (VS1-14) are always escaped: they are rarely used in names (legitimate in
+// standardized variation sequences such as CJK compatibility or math symbols; such names show the marker) and they
+// make two different names look identical. The supplementary ones U+E0100-E01EF fall inside the tag range below.
+// Covered: soft hyphen, combining grapheme joiner, Hangul/Khmer/Mongolian fillers and selectors, zero-width space
+// and joiners, LRM/RLM, bidi embeddings and isolates, line/paragraph separators, word joiner and invisible
+// operators, BOM, interlinear annotation marks and Unicode tag characters.
+// U+FE0E (text) and U+FE0F (emoji presentation) are kept only where they change how the previous character
+// renders (see keepPresentationSelector); anywhere else they are invisible and escaped.
 // Listed as numbers (not as literal or escaped characters in a regex) so editors/formatters cannot strip or
 // rewrite invisible characters.
 const CONTROL_RANGES: readonly (readonly [number, number])[] = [
@@ -34,6 +39,37 @@ const CONTROL_RE = new RegExp(
   "gu",
 );
 
+// The controls above plus the two presentation selectors, which are decided per occurrence.
+const SCAN_RE = new RegExp(`${CONTROL_RE.source}|[${String.fromCodePoint(0xfe0e)}${String.fromCodePoint(0xfe0f)}]`, "gu");
+
+const EMOJI_RE = /\p{Emoji}/u;
+const EMOJI_PRESENTATION_RE = /\p{Emoji_Presentation}/u;
+const KEYCAP_BASE_RE = /[0-9#*]/u;
+const VS_TEXT = 0xfe0e;
+const VS_EMOJI = 0xfe0f;
+const KEYCAP = 0x20e3;
+
+/** The code point that ends right before `index` (handles surrogate pairs), or undefined at the start. */
+function codePointBefore(s: string, index: number): number | undefined {
+  if (index <= 0) return undefined;
+  const low = s.charCodeAt(index - 1);
+  if (low >= 0xdc00 && low <= 0xdfff && index >= 2) {
+    const high = s.charCodeAt(index - 2);
+    if (high >= 0xd800 && high <= 0xdbff) return s.codePointAt(index - 2);
+  }
+  return low;
+}
+
+/** Keep U+FE0E/FE0F only when the selector really changes the presentation of the previous character. */
+function keepPresentationSelector(sel: number, s: string, index: number): boolean {
+  const prev = codePointBefore(s, index);
+  if (prev === undefined || prev === VS_TEXT || prev === VS_EMOJI) return false;
+  const base = String.fromCodePoint(prev);
+  if (!EMOJI_RE.test(base)) return false;
+  if (KEYCAP_BASE_RE.test(base)) return sel === VS_EMOJI && s.codePointAt(index + 1) === KEYCAP;
+  return sel === VS_EMOJI ? !EMOJI_PRESENTATION_RE.test(base) : EMOJI_PRESENTATION_RE.test(base);
+}
+
 const BACKSLASH = String.fromCharCode(92);
 
 function escapeChar(ch: string): string {
@@ -45,7 +81,12 @@ function escapeChar(ch: string): string {
 
 /** Make a server string safe to render as text. `keepNewlines` keeps newline and tab (banners, multi-line text). */
 export function displayServerText(s: string, limit: number, keepNewlines = false): string {
-  const escaped = s.replace(CONTROL_RE, (ch) => (keepNewlines && (ch === "\n" || ch === "\t") ? ch : escapeChar(ch)));
+  const escaped = s.replace(SCAN_RE, (ch, offset: number) => {
+    if (keepNewlines && (ch === "\n" || ch === "\t")) return ch;
+    const code = ch.codePointAt(0) ?? 0;
+    if ((code === VS_TEXT || code === VS_EMOJI) && keepPresentationSelector(code, s, offset)) return ch;
+    return escapeChar(ch);
+  });
   const chars = Array.from(escaped);
   return chars.length > limit ? `${chars.slice(0, Math.max(0, limit - 1)).join("")}…` : escaped;
 }
