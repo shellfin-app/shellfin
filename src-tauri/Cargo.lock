@@ -4759,7 +4759,7 @@ dependencies = [
 
 [[package]]
 name = "shellfin"
-version = "0.1.1"
+version = "0.2.0-experimental.1"
 dependencies = [
  "base64 0.23.1",
  "bytes",
