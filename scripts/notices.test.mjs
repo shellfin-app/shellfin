@@ -2,10 +2,24 @@
 // the CI job `npm run notices:check`; here only the pure helpers and the committed output are tested.
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { relative } from "node:path";
-import process from "node:process";
+import { dirname, relative } from "node:path";
 import { describe, expect, it } from "vitest";
 import { INSTALLER_LICENSE, OUTPUT, groupByText, installerLicense, normalize, productionPackages } from "./notices.mjs";
+
+const ROOT = dirname(OUTPUT);
+
+/** The `eol` attribute git reports for a path, or null when git or the repository is unavailable. */
+function eolAttribute(path) {
+  try {
+    const out = execFileSync("git", ["-C", ROOT, "check-attr", "eol", "--", relative(ROOT, path).replaceAll("\\", "/")], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    return out.trim().split(": ").pop() ?? null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * The committed content of a generated file. A working copy may have CRLF (core.autocrlf=true on Windows) although the
@@ -14,7 +28,7 @@ import { INSTALLER_LICENSE, OUTPUT, groupByText, installerLicense, normalize, pr
  */
 function committedText(path) {
   try {
-    return execFileSync("git", ["show", `:${relative(process.cwd(), path).replaceAll("\\", "/")}`], {
+    return execFileSync("git", ["-C", ROOT, "show", `:./${relative(ROOT, path).replaceAll("\\", "/")}`], {
       encoding: "utf8",
       maxBuffer: 64 * 1024 * 1024,
       stdio: ["ignore", "pipe", "ignore"],
@@ -71,9 +85,18 @@ describe("shipped notices", () => {
     expect(text).toContain("JetBrains Mono Project Authors");
   });
 
+  it(".gitattributes pins both generated files to LF", () => {
+    for (const path of [OUTPUT, INSTALLER_LICENSE]) {
+      const eol = eolAttribute(path);
+      if (eol !== null) expect(eol).toBe("lf");
+    }
+  });
+
   it("the installer licence page holds both licence texts", () => {
-    const text = committedText(INSTALLER_LICENSE);
+    // Same comparison as `notices.mjs --check`: the file on disk, normalised.
+    const text = normalize(readFileSync(INSTALLER_LICENSE, "utf8"));
     expect(text).toBe(installerLicense());
+    expect(committedText(INSTALLER_LICENSE)).not.toContain("\r");
     expect(text).toContain("Permission is hereby granted, free of charge");
     expect(text).toContain("Apache License");
   });
