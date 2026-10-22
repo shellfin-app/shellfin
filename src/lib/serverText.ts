@@ -88,7 +88,19 @@ export function displayServerText(s: string, limit: number, keepNewlines = false
     return escapeChar(ch);
   });
   const chars = Array.from(escaped);
-  return chars.length > limit ? `${chars.slice(0, Math.max(0, limit - 1)).join("")}…` : escaped;
+  if (chars.length <= limit) return escaped;
+  const kept = chars.slice(0, Math.max(0, limit - 1));
+  // A cut between a kept FE0F and its keycap would leave the FE0F orphaned: a second pass over the (already escaped)
+  // result would then escape it. Drop it together with the keycap so the function stays idempotent.
+  const last = kept.length - 1;
+  if (
+    kept[last] === String.fromCodePoint(VS_EMOJI) &&
+    chars[kept.length] === String.fromCodePoint(KEYCAP) &&
+    KEYCAP_BASE_RE.test(kept[last - 1] ?? "")
+  ) {
+    kept.pop();
+  }
+  return `${kept.join("")}…`;
 }
 
 /** A remote file name / label for display: controls and bidi escaped, bounded (§9.5). */

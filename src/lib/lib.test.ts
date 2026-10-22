@@ -10,6 +10,19 @@ const key = (k: string, mods: Partial<KeyEventLike> = {}): KeyEventLike => ({
 });
 
 describe("displayServerText (§9.5)", () => {
+  // Invisible and combining characters are built from code points so this source stays plain ASCII there.
+  const cp = (n: number) => String.fromCodePoint(n);
+  const VS = (n: number) => cp(0xfe00 + n); // VS(0) = U+FE00 ... VS(15) = U+FE0F
+  const VS15 = cp(0xfe0e);
+  const VS16 = cp(0xfe0f);
+  const KEYCAP = cp(0x20e3);
+  const ZWSP = cp(0x200b);
+  const HEART = cp(0x2764); // text-default emoji
+  const COPY = cp(0xa9); // text-default emoji
+  const GRIN = cp(0x1f600); // emoji-default
+  const L = cp(0x27e8); // escape marker brackets
+  const R = cp(0x27e9);
+  const esc = (code: number) => `${L}U+${code.toString(16).toUpperCase()}${R}`;
   it("escapes C0/C1 and bidi controls", () => {
     expect(displayServerText("a\x1b[31mb", 100)).toBe("a\\x1b[31mb");
     expect(displayServerText("x‮y", 100)).toBe("x⟨U+202E⟩y");
@@ -31,43 +44,44 @@ describe("displayServerText (§9.5)", () => {
     expect(displayServerText("a⁦b⁧c⁨d⁩e", 100)).toBe("a⟨U+2066⟩b⟨U+2067⟩c⟨U+2068⟩d⟨U+2069⟩e");
     expect(displayServerText("a\u{E0041}b", 100)).toBe("a⟨U+E0041⟩b"); // Unicode tag characters (astral)
     expect(displayServerText("x\u{1F600}y", 100)).toBe("x\u{1F600}y"); // ordinary astral characters are untouched
-    expect(displayServerText("café 日本 ❤️", 100)).toBe("café 日本 ❤️"); // text and emoji stay intact
+    expect(displayServerText("café 日本 ❤️", 100)).toBe("café 日本 ❤️"); // text and emoji stay intact
   });
   it("escapes variation selectors 1-14 always", () => {
-    expect(displayServerText("a︀b", 100)).toBe("a⟨U+FE00⟩b");
-    expect(displayServerText("a︍b", 100)).toBe("a⟨U+FE0D⟩b");
-    expect(displayServerText("❤︀", 100)).toBe("❤⟨U+FE00⟩");
-    expect(displayServerText("a︀.txt", 100)).not.toBe(displayServerText("a.txt", 100));
-    expect(displayServerText("a\u{E0100}b\u{E01EF}c", 100)).toBe("a⟨U+E0100⟩b⟨U+E01EF⟩c"); // VS17-256 via the tag range
-    for (let cp = 0xfe00; cp <= 0xfe0d; cp++) {
-      const ch = String.fromCodePoint(cp);
+    expect(displayServerText(`a${VS(0)}b`, 100)).toBe(`a${esc(0xfe00)}b`);
+    expect(displayServerText(`a${VS(13)}b`, 100)).toBe(`a${esc(0xfe0d)}b`);
+    expect(displayServerText(`${HEART}${VS(0)}`, 100)).toBe(`${HEART}${esc(0xfe00)}`);
+    expect(displayServerText(`a${VS(0)}.txt`, 100)).not.toBe(displayServerText("a.txt", 100));
+    // VS17-256 live in the tag range
+    expect(displayServerText(`a${cp(0xe0100)}b${cp(0xe01ef)}c`, 100)).toBe(`a${esc(0xe0100)}b${esc(0xe01ef)}c`);
+    for (let code = 0xfe00; code <= 0xfe0d; code++) {
+      const ch = cp(code);
       expect(displayServerText(ch, 100)).not.toBe(ch);
-      expect(displayServerText(`❤${ch}`, 100)).toBe(`❤⟨U+${cp.toString(16).toUpperCase()}⟩`);
+      expect(displayServerText(`${HEART}${ch}`, 100)).toBe(`${HEART}${esc(code)}`);
     }
   });
   it("keeps U+FE0E/FE0F only where they change the presentation of the previous character", () => {
-    expect(displayServerText("❤️", 100)).toBe("❤️"); // text-default emoji -> emoji style
-    expect(displayServerText("©️", 100)).toBe("©️");
-    expect(displayServerText("1️⃣", 100)).toBe("1️⃣"); // keycap sequences
-    expect(displayServerText("#️⃣", 100)).toBe("#️⃣");
-    expect(displayServerText("\u{1F600}︎", 100)).toBe("\u{1F600}︎"); // emoji-default -> text style
+    expect(displayServerText(`${HEART}${VS16}`, 100)).toBe(`${HEART}${VS16}`); // text-default emoji -> emoji style
+    expect(displayServerText(`${COPY}${VS16}`, 100)).toBe(`${COPY}${VS16}`);
+    expect(displayServerText(`1${VS16}${KEYCAP}`, 100)).toBe(`1${VS16}${KEYCAP}`); // keycap sequences
+    expect(displayServerText(`#${VS16}${KEYCAP}`, 100)).toBe(`#${VS16}${KEYCAP}`);
+    expect(displayServerText(`${GRIN}${VS15}`, 100)).toBe(`${GRIN}${VS15}`); // emoji-default -> text style
   });
   it("escapes presentation selectors that change nothing, so look-alike names differ", () => {
-    expect(displayServerText("a️", 100)).toBe("a⟨U+FE0F⟩");
-    expect(displayServerText("a︎", 100)).toBe("a⟨U+FE0E⟩");
-    expect(displayServerText("1️", 100)).toBe("1⟨U+FE0F⟩"); // no keycap
-    expect(displayServerText("1︎⃣", 100)).toBe("1⟨U+FE0E⟩⃣");
-    expect(displayServerText("\u{1F600}️", 100)).toBe("\u{1F600}⟨U+FE0F⟩"); // already emoji style
-    expect(displayServerText("❤︎", 100)).toBe("❤⟨U+FE0E⟩"); // already text style
-    expect(displayServerText("❤️️", 100)).toBe("❤️⟨U+FE0F⟩"); // doubled
-    expect(displayServerText("️", 100)).toBe("⟨U+FE0F⟩"); // at the start
-    expect(displayServerText("​️", 100)).toBe("⟨U+200B⟩⟨U+FE0F⟩"); // after an escaped character
+    expect(displayServerText(`a${VS16}`, 100)).toBe(`a${esc(0xfe0f)}`);
+    expect(displayServerText(`a${VS15}`, 100)).toBe(`a${esc(0xfe0e)}`);
+    expect(displayServerText(`1${VS16}`, 100)).toBe(`1${esc(0xfe0f)}`); // no keycap
+    expect(displayServerText(`1${VS15}${KEYCAP}`, 100)).toBe(`1${esc(0xfe0e)}${KEYCAP}`);
+    expect(displayServerText(`${GRIN}${VS16}`, 100)).toBe(`${GRIN}${esc(0xfe0f)}`); // already emoji style
+    expect(displayServerText(`${HEART}${VS15}`, 100)).toBe(`${HEART}${esc(0xfe0e)}`); // already text style
+    expect(displayServerText(`${HEART}${VS16}${VS16}`, 100)).toBe(`${HEART}${VS16}${esc(0xfe0f)}`); // doubled
+    expect(displayServerText(VS16, 100)).toBe(esc(0xfe0f)); // at the start
+    expect(displayServerText(`${ZWSP}${VS16}`, 100)).toBe(`${esc(0x200b)}${esc(0xfe0f)}`); // after an escaped character
     const pairs: [string, string][] = [
-      ["report.pdf", "report️.pdf"],
-      ["a.txt", "a︎.txt"],
-      ["file1", "file1️"],
-      ["\u{1F600}", "\u{1F600}️"],
-      ["❤", "❤︎"],
+      ["report.pdf", `report${VS16}.pdf`],
+      ["a.txt", `a${VS15}.txt`],
+      ["file1", `file1${VS16}`],
+      [GRIN, `${GRIN}${VS16}`],
+      [HEART, `${HEART}${VS15}`],
     ];
     for (const [plain, spoof] of pairs) {
       expect(displayServerText(spoof, 100)).not.toBe(displayServerText(plain, 100));
@@ -75,10 +89,42 @@ describe("displayServerText (§9.5)", () => {
   });
   it("counts escape markers as characters when truncating", () => {
     // the limit applies to the escaped text (each marker is 8 code points), as for every other escape
-    expect(displayServerText("︀︁︂", 3)).toBe("⟨U…");
-    expect(displayServerText("︀︁", 9)).toBe("⟨U+FE00⟩…");
-    expect(displayServerText("︀︁", 16)).toBe("⟨U+FE00⟩⟨U+FE01⟩");
-    expect(displayServerText("ab︀cd", 100)).toBe("ab⟨U+FE00⟩cd");
+    expect(displayServerText(`${VS(0)}${VS(1)}${VS(2)}`, 3)).toBe(`${L}U…`);
+    expect(displayServerText(`${VS(0)}${VS(1)}`, 9)).toBe(`${esc(0xfe00)}…`);
+    expect(displayServerText(`${VS(0)}${VS(1)}`, 16)).toBe(`${esc(0xfe00)}${esc(0xfe01)}`);
+    expect(displayServerText(`ab${VS(0)}cd`, 100)).toBe(`ab${esc(0xfe00)}cd`);
+  });
+  it("is idempotent when truncation cuts a keycap sequence", () => {
+    const input = `x1${VS16}${KEYCAP}y`;
+    const once = displayServerText(input, 4);
+    // the FE0F would be orphaned by the cut, so it is dropped with the keycap
+    expect(once).toBe("x1…");
+    expect(displayServerText(once, 4)).toBe(once);
+    // a cut after the keycap keeps the whole sequence
+    expect(displayServerText(`1${VS16}${KEYCAP}yz`, 4)).toBe(`1${VS16}${KEYCAP}…`);
+    // a cut right after a meaningful FE0F (no keycap follows) keeps it
+    expect(displayServerText(`${HEART}${VS16}yz`, 3)).toBe(`${HEART}${VS16}…`);
+    // a keycap mark after a base that is not a keycap base does not drop the FE0F
+    expect(displayServerText(`${HEART}${VS16}${KEYCAP}yz`, 3)).toBe(`${HEART}${VS16}…`);
+  });
+  it("gives the same result when applied twice with the same limit", () => {
+    const inputs = [
+      `1${VS16}${KEYCAP}`,
+      `x1${VS16}${KEYCAP}y`,
+      `#${VS16}${KEYCAP}#${VS16}${KEYCAP}`,
+      `${HEART}${VS16}${HEART}${VS16}${HEART}${VS16}`,
+      `${HEART}${VS16}${VS16}${VS15}`,
+      `a${VS(0)}b${VS(5)}c`,
+      `${ZWSP}${ZWSP}${VS16}${KEYCAP}`,
+      `${GRIN}${VS15}${GRIN}${VS16}`,
+      "a-long-file-name-with-many-characters.txt",
+    ];
+    for (const input of inputs) {
+      for (const limit of [1, 2, 3, 4, 5, 6, 8, 10, 100]) {
+        const once = displayServerText(input, limit);
+        expect(displayServerText(once, limit)).toBe(once);
+      }
+    }
   });
   it("truncates with an ellipsis", () => {
     expect(displayServerText("abcdefghij", 5)).toBe("abcd…");
