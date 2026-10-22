@@ -1,7 +1,7 @@
 # CI (§11.2). Every action is pinned to a full commit SHA (Dependabot `github-actions` updates
 # them; the version comment is informational). Least privilege: read-only token everywhere.
 # Push runs on both release branches: release.yml only builds a tag whose commit has a green push run.
-# All jobs start in parallel. Pull requests skip jobs whose inputs did not change (`changes`, job-level `if:`, never
+# No job waits for `checks`; the gated jobs only wait for the short `changes` job. Pull requests skip jobs whose inputs did not change (`changes`, job-level `if:`, never
 # workflow `paths:`: a skipped job reports success, a path-filtered workflow leaves required checks pending); pushes,
 # dispatch and the schedule always run everything they cover. `ci-ok` is the one check to require: on a push or dispatch
 # it requires every job to succeed (a skip fails it), on a pull request it also accepts skips.
