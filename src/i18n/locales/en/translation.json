@@ -1063,7 +1063,8 @@
     "search": {
       "label": "Search hosts, files and commands",
       "placeholder": "Hosts, files, commands…"
-    }
+    },
+    "tabInstance": "{{name}} ({{n}})"
   },
   "shortcut": {
     "delete": "Del",

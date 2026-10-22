@@ -10,6 +10,7 @@ import { basename } from "../../lib/remotePath";
 import { describeTarget } from "../../lib/targetInfo";
 import { useStore } from "../../state/store";
 import { closeSession } from "./sessionActions";
+import { sessionTitle } from "./sessionTitle";
 
 /** Re-renders once a second while mounted; returns the current time. */
 function useTick(): number {
@@ -51,7 +52,7 @@ export function ConnectingCard({ sessionId }: { sessionId: string }) {
   const hop = entry.state.phase === "connecting" || entry.state.phase === "authenticating" || entry.state.phase === "openingChannels" ? entry.state.hop : null;
   const current = currentStep(entry.state.phase, prompt?.kind);
   const currentIndex = CONNECT_STEPS.indexOf(current);
-  const title = displayServerText(entry.label, 256);
+  const title = sessionTitle(entry, t); // the same name as the tab (rename, " (n)")
   const seconds = Math.max(0, Math.floor((now - entry.startedAtMs) / 1000));
   const bm = entry.target.kind === "bookmark" ? bookmarks?.find((b) => b.id === (entry.target as { id: string }).id) : undefined;
   const keyName = bm?.auth.method === "key" ? basename(bm.auth.identityFile.replace(/\\/g, "/")) : null;

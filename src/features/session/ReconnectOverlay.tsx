@@ -12,6 +12,7 @@ import { displayServerText } from "../../lib/serverText";
 import { useStore } from "../../state/store";
 import { HostKeyChangedHelp, HostKeyMismatchHelp } from "./SessionErrorPanel";
 import { reconnectNow, requestCloseSession } from "./sessionActions";
+import { sessionTitle } from "./sessionTitle";
 
 /** Re-renders every `ms` while `active`; returns the current time. */
 function useNow(active: boolean, ms = 250): number {
@@ -46,7 +47,7 @@ export function ReconnectOverlay({ sessionId, fill = false }: { sessionId: strin
   if (!entry || !state || (state.phase !== "reconnecting" && state.phase !== "disconnected")) return null;
 
   const dirtyNames = dirtyPaths.map((path) => displayServerText(basename(path), 128));
-  const host = displayServerText(entry.label, 256);
+  const host = sessionTitle(entry, t); // the same name as the tab (rename, " (n)"); the i18n param is called `host`
   const cause = state.phase === "reconnecting" ? state.cause : state.error;
   const lostAt = entry.lostAtMs;
   // "Disconnect" by the user: not a failure, the tab stays and offers Reconnect.

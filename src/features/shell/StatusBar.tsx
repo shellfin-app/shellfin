@@ -3,10 +3,10 @@ import { Icon } from "../../components/Icon";
 import { StatusDot, dotForPhase } from "../../components/StatusDot";
 import { formatRate } from "../../i18n/format";
 import { formatEndpoint } from "../../lib/endpoint";
-import { displayName } from "../../lib/serverText";
 import { encodingLabel, eolLabel, languageForPath } from "../../lib/languages";
 import { useStore } from "../../state/store";
 import { toggleEol } from "../editor/editorActions";
+import { sessionTitle } from "../session/sessionTitle";
 import { TransfersButton } from "../transfers/TransfersPopover";
 import { PanelToggles } from "./PanelToggles";
 
@@ -51,7 +51,7 @@ function SessionStatus({ sessionId }: { sessionId: string }) {
           state={dotForPhase(entry.state.phase)}
           label={t(`session.state.${entry.state.phase}`)}
         />
-        {hop ? <bdi>{formatEndpoint(hop.user, hop.host, hop.port)}</bdi> : <bdi>{displayName(entry.label)}</bdi>}
+        {hop ? <bdi>{formatEndpoint(hop.user, hop.host, hop.port)}</bdi> : <bdi>{sessionTitle(entry, t)}</bdi>}
       </span>
       {unverified ? <span className="status-bar__chip">{t("status.hostKeyUnverified")}</span> : null}
       {info?.auth.keyType ? (

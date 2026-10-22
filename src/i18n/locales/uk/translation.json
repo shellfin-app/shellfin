@@ -1103,7 +1103,8 @@
     "search": {
       "label": "Пошук хостів, файлів і команд",
       "placeholder": "Хости, файли, команди…"
-    }
+    },
+    "tabInstance": "{{name}} ({{n}})"
   },
   "shortcut": {
     "delete": "Del",

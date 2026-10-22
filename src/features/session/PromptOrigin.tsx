@@ -2,6 +2,7 @@ import { useTranslation } from "react-i18next";
 import type { HopRef } from "../../ipc/types";
 import { displayServerText } from "../../lib/serverText";
 import { useStore } from "../../state/store";
+import { sessionTitle } from "./sessionTitle";
 
 /**
  * "Session · hop i/N (label)": every prompt says which tab and which hop it belongs to, so a prompt
@@ -12,7 +13,8 @@ export function PromptOrigin({ sessionId, hop }: { sessionId: string; hop: HopRe
   const entry = useStore((s) => s.sessionsById[sessionId]);
   const total = entry?.info?.hops.length;
   const number = hop.index + 1;
-  const session = displayServerText(entry?.label ?? "", 256);
+  // The name the tab shows (renamed or numbered), so a prompt for the second duplicate says "web (2)".
+  const session = entry ? sessionTitle(entry, t) : "";
   // A direct connection has no hops worth naming: the single hop IS the session's host.
   const direct = hop.index === 0 && (total === undefined || total === 1) && hop.label === entry?.label;
   if (direct) {

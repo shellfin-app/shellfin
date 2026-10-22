@@ -7,10 +7,11 @@ import { InlineRename } from "../../components/InlineRename";
 import { StatusDot, dotForPhase } from "../../components/StatusDot";
 import { colorVar } from "../../lib/bookmarkColor";
 import { bookmarkDialog } from "../../lib/dialogs";
-import { displayServerText } from "../../lib/serverText";
+import type { SessionEntry } from "../../state/slices/sessions";
 import { useStore } from "../../state/store";
 import { useMenuStore, type MenuItem } from "../menu/menuStore";
 import { requestCloseSession } from "../session/sessionActions";
+import { sessionTitle } from "../session/sessionTitle";
 
 /** Top-level connection tabs: Home + one per session, a scrolling strip, the "all sessions" list and "new connection". */
 export function ConnectionTabs() {
@@ -27,6 +28,8 @@ export function ConnectionTabs() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const listButtonRef = useRef<HTMLButtonElement>(null);
   const [edges, setEdges] = useState({ left: false, right: false });
+
+  const tabTitle = (entry: SessionEntry): string => sessionTitle(entry, t);
 
   const measure = useCallback(() => {
     const el = scrollRef.current;
@@ -76,7 +79,7 @@ export function ConnectionTabs() {
         return [
           {
             id,
-            label: displayServerText(entry.tabName ?? entry.label, 256),
+            label: tabTitle(entry),
             checked: id === activeId,
             leading: (
               <>
@@ -142,15 +145,13 @@ export function ConnectionTabs() {
                   role="tab"
                   aria-selected={selected}
                   className="conn-tab__main"
-                  title={
-                    displayServerText(entry.tabName ?? entry.label, 256) + (entry.color ? ` (${t(`bookmarkColor.${entry.color}`)})` : "")
-                  }
+                  title={tabTitle(entry) + (entry.color ? ` (${t(`bookmarkColor.${entry.color}`)})` : "")}
                   onClick={() => setActiveSession(id)}
                   onDoubleClick={() => setRenaming(id)}
                 >
                   <StatusDot state={dotForPhase(entry.state.phase)} label={t(`session.state.${entry.state.phase}`)} />
                   <ColorMark color={entry.color} />
-                  <bdi className="conn-tab__name">{displayServerText(entry.tabName ?? entry.label, 256)}</bdi>
+                  <bdi className="conn-tab__name">{tabTitle(entry)}</bdi>
                   {prompts[id] && !selected ? (
                     <span className="conn-tab__badge" role="img" aria-label={t("session.needsAnswer")} title={t("session.needsAnswer")} />
                   ) : null}
@@ -160,7 +161,7 @@ export function ConnectionTabs() {
                 icon="close"
                 iconSize={12}
                 size={20}
-                label={t("shell.closeConnection", { name: entry.label })}
+                label={t("shell.closeConnection", { name: tabTitle(entry) })}
                 onClick={() => requestCloseSession(id)}
               />
             </div>

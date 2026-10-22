@@ -1,5 +1,6 @@
 import type { BookmarkColor, HopRef, RecentTarget, SessionEvent, SessionInfo, SessionState } from "../../ipc/types";
 import { assertNever } from "../../lib/assertNever";
+import { nextInstance } from "../../lib/tabInstance";
 import type { SliceCreator } from "./types";
 import type { DialogState } from "./ui";
 
@@ -20,6 +21,8 @@ export interface SessionEntry {
   label: string;
   /** User-chosen tab name (display only; `label` stays the host's identity). */
   tabName?: string;
+  /** Smallest n >= 1 not used by another open session with the same `label` (a reopen keeps its previous n when that is still free); stable, chosen again only when `label` changes (n >= 2 shows "(n)" on the tab). */
+  instance: number;
   state: SessionState;
   /** Last `connected` info; kept while reconnecting. */
   info?: SessionInfo;
@@ -71,7 +74,8 @@ export interface SessionsSlice {
   sessionOrder: string[];
   /** `null` = the Home (welcome) tab is active. */
   activeSessionId: string | null;
-  addSession(id: string, target: RecentTarget, label: string, probe?: boolean): void;
+  /** `preferredInstance`: the tab number a reopened connection keeps (used only while still free for `label`). */
+  addSession(id: string, target: RecentTarget, label: string, probe?: boolean, preferredInstance?: number): void;
   dismissBanner(id: string): void;
   /** Renames the connection tab (`null` / empty = back to the host label). */
   renameSession(id: string, name: string | null): void;
@@ -82,17 +86,30 @@ export interface SessionsSlice {
   applySessionEvent(id: string, event: SessionEvent): void;
 }
 
+/** The open (tab-bearing) sessions other than `exceptId`: the ones whose numbers compete for a label. */
+function openSessions(s: SessionsSlice, exceptId: string): SessionEntry[] {
+  return s.sessionOrder.filter((x) => x !== exceptId).flatMap((x) => s.sessionsById[x] ?? []);
+}
+
+/** Replaces `entry.label`; when it really changes, the tab number is chosen again among the sessions with the new label. */
+function relabel(s: SessionsSlice, id: string, entry: SessionEntry, label: string): void {
+  if (entry.label === label) return;
+  entry.label = label;
+  if (!entry.probe) entry.instance = nextInstance(openSessions(s, id), label);
+}
+
 export const createSessionsSlice: SliceCreator<SessionsSlice> = (set) => ({
   sessionsById: {},
   sessionStats: {},
   sessionOrder: [],
   activeSessionId: null,
 
-  addSession: (id, target, label, probe = false) =>
+  addSession: (id, target, label, probe = false, preferredInstance) =>
     set((s) => {
       s.sessionsById[id] = {
         target,
         label,
+        instance: probe ? 1 : nextInstance(openSessions(s, id), label, preferredInstance),
         state: { phase: "resolving" },
         probe,
         color: target.kind === "bookmark" ? (s.bookmarks?.bookmarks.find((b) => b.id === target.id)?.color ?? null) : null,
@@ -184,7 +201,7 @@ export const createSessionsSlice: SliceCreator<SessionsSlice> = (set) => ({
           if (event.state.phase === "connected") {
             entry.info = event.state.info;
             entry.color = event.state.info.color;
-            entry.label = event.state.info.label;
+            relabel(s, id, entry, event.state.info.label);
           }
           break;
         }
@@ -204,7 +221,7 @@ export const createSessionsSlice: SliceCreator<SessionsSlice> = (set) => ({
           break;
         case "bookmarkUpdated":
           // The connection itself never changes; the tab name, color and (live) bandwidth limits do.
-          entry.label = event.label;
+          relabel(s, id, entry, event.label);
           entry.color = event.color;
           entry.needsReconnect = event.needsReconnect;
           if (entry.info) entry.info = { ...entry.info, limitOverrides: event.limitOverrides, color: event.color };

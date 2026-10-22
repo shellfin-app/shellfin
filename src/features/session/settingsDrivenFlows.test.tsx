@@ -106,6 +106,58 @@ describe("confirm before connecting", () => {
     expect(sessionCount()).toBe(1);
   });
 
+  it("a concurrent open of the same target during the reopen joins it (no second session)", async () => {
+    const { backend } = setupApp();
+    const b = firstBookmark();
+    const id = await requestOpenSession(bookmarkTarget(b.id), b.name);
+    if (!id) throw new Error("not opened");
+    const open = vi.spyOn(backend, "openSession");
+    const reopen = closeSessionThenReopen(id);
+    await waitFor(() => expect(open).toHaveBeenCalledOnce()); // the reopen is in flight
+    const joined = await requestOpenSession(bookmarkTarget(b.id), b.name); // e.g. a sidebar double click
+    await reopen;
+    expect(open).toHaveBeenCalledOnce();
+    expect(sessionCount()).toBe(1);
+    expect(useStore.getState().sessionOrder).toEqual([joined]);
+  });
+
+  it("an open of the same target while session_close is still pending ends in exactly one session", async () => {
+    const { backend } = setupApp();
+    const b = firstBookmark();
+    const id = await requestOpenSession(bookmarkTarget(b.id), b.name);
+    if (!id) throw new Error("not opened");
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const realClose = backend.sessionClose.bind(backend);
+    vi.spyOn(backend, "sessionClose").mockImplementation(async (...args) => {
+      await gate;
+      return realClose(...args);
+    });
+    const reopen = closeSessionThenReopen(id);
+    expect(sessionCount()).toBe(0); // removed from the store, the backend close is pending
+    const sidebar = requestOpenSession(bookmarkTarget(b.id), b.name); // e.g. a sidebar double click
+    release();
+    const [reopened, opened] = await Promise.all([reopen, sidebar]);
+    expect(reopened).toBeUndefined();
+    expect(sessionCount()).toBe(1);
+    expect(useStore.getState().sessionOrder).toEqual([opened]);
+  });
+
+  it("a surviving duplicate tab is not taken for the reopened connection", async () => {
+    setupApp();
+    const b = firstBookmark();
+    const first = await requestOpenSession(bookmarkTarget(b.id), b.name);
+    const second = await requestOpenSession(bookmarkTarget(b.id), b.name, undefined, { forceNew: true });
+    if (!first || !second) throw new Error("not opened");
+    await closeSessionThenReopen(first);
+    const order = useStore.getState().sessionOrder;
+    expect(order).toHaveLength(2);
+    expect(order).toContain(second);
+    expect(order).not.toContain(first);
+  });
+
   it("the quick-connect box asks for a bookmark typed by name", async () => {
     const { user } = setupApp();
     const b = firstBookmark();

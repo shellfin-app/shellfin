@@ -15,6 +15,7 @@ import { describeTarget } from "../../lib/targetInfo";
 import { useStore } from "../../state/store";
 import { editConnection, editConnectionNeedsCopy } from "./editConnection";
 import { closeSession, reconnectNow } from "./sessionActions";
+import { sessionTitle } from "./sessionTitle";
 
 const MAX_HINT_LENGTH = 2048;
 
@@ -156,13 +157,13 @@ export function SessionErrorPanel({ sessionId }: { sessionId: string }) {
   const pushInfo = useStore((s) => s.pushInfo);
   if (!entry || entry.state.phase !== "disconnected") return null;
   const { error, canRetry } = entry.state;
-  const host = displayServerText(entry.label, 256);
+  const host = sessionTitle(entry, t); // the same name as the tab (rename, " (n)"); the i18n param is called `host`
   const info = describeTarget(entry.target, bookmarks ?? [], sshHosts ?? []);
   const fix = error ? errorFix(error, t) : null;
   const needsCopy = editConnectionNeedsCopy(sessionId);
 
   const copyDetails = () => {
-    const lines = [t("session.connectFailed", { host: entry.label })];
+    const lines = [t("session.connectFailed", { host })];
     if (info.endpoint) lines.push(info.endpoint);
     if (error) {
       lines.push(errorMessage(error), `code: ${error.code}`);

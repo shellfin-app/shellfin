@@ -135,10 +135,10 @@ export function openSession(
   target: RecentTarget,
   label: string,
   draft?: DraftConnection,
-  options: { forceNew?: boolean } = {},
+  options: { forceNew?: boolean; preferredInstance?: number } = {},
 ): Promise<string> {
   // `forceNew` ("Open in new tab", "Duplicate connection"): a second session to the same target, never the existing one.
-  if (options.forceNew) return doOpenSession(target, label, draft);
+  if (options.forceNew) return doOpenSession(target, label, draft, options.preferredInstance);
   const existing = findSession(target);
   if (existing) {
     useStore.getState().setActiveSession(existing);
@@ -147,7 +147,7 @@ export function openSession(
   const key = targetKey(target);
   const inFlight = pendingOpens.get(key);
   if (inFlight) return inFlight;
-  const promise = doOpenSession(target, label, draft).finally(() => pendingOpens.delete(key));
+  const promise = doOpenSession(target, label, draft, options.preferredInstance).finally(() => pendingOpens.delete(key));
   pendingOpens.set(key, promise);
   return promise;
 }
@@ -172,7 +172,12 @@ export async function requestOpenSession(
   return openSession(target, label, draft, options.forceNew === true ? { forceNew: true } : {});
 }
 
-async function doOpenSession(target: RecentTarget, label: string, draft?: DraftConnection): Promise<string> {
+async function doOpenSession(
+  target: RecentTarget,
+  label: string,
+  draft?: DraftConnection,
+  preferredInstance?: number,
+): Promise<string> {
   // Events can arrive before the command resolves with the id; queue them until the session is registered.
   let sessionId: string | null = null;
   const queued: SessionEvent[] = [];
@@ -185,7 +190,7 @@ async function doOpenSession(target: RecentTarget, label: string, draft?: DraftC
     if (sessionId) applyEvent(sessionId, event);
     else queued.push(event);
   });
-  useStore.getState().addSession(sessionId, target, label);
+  useStore.getState().addSession(sessionId, target, label, false, preferredInstance);
   // The bookmark's startup command waits for the first terminal of this connection (never for a probe).
   armStartupCommand(sessionId, startupCommandFor(target, draft?.bookmark.startupCommand ?? null));
   for (const event of queued) applyEvent(sessionId, event);
@@ -308,10 +313,24 @@ export async function closeSession(sessionId: string): Promise<void> {
 export async function closeSessionThenReopen(sessionId: string): Promise<void> {
   const entry = useStore.getState().sessionsById[sessionId];
   if (!entry) return;
-  const { target, label, tabName } = entry;
-  const index = useStore.getState().sessionOrder.indexOf(sessionId);
+  const { target, label, tabName, instance } = entry;
+  const { sessionOrder, sessionsById } = useStore.getState();
+  const index = sessionOrder.indexOf(sessionId);
+  // Decided before the close, while this session is still in the store: a duplicate tab to the same target (one that
+  // exists now) must not be taken for the reopened connection, but an open that starts while `session_close` is
+  // pending (e.g. a sidebar double click) is not a duplicate and must not be forced into a second tab.
+  const hasDuplicate = sessionOrder.some((id) => {
+    const other = sessionsById[id];
+    return id !== sessionId && other !== undefined && sameTarget(other.target, target);
+  });
   await closeSession(sessionId);
-  const newId = await openSession(target, label);
+  // The tab keeps its place, its rename and its number (if still free). Without a duplicate the normal path applies:
+  // the reopen joins an existing or in-flight open of the same target (then `preferredInstance` cannot apply, the
+  // joined session already has its number) or registers itself in `pendingOpens` for later opens to join.
+  const newId = await openSession(target, label, undefined, {
+    forceNew: hasDuplicate,
+    preferredInstance: instance,
+  });
   const store = useStore.getState();
   if (index >= 0) store.placeSession(newId, index);
   if (tabName) store.renameSession(newId, tabName);
