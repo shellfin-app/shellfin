@@ -355,7 +355,7 @@ pub struct Bookmark {
     /// Ask before every user-initiated connect (UI only).
     pub confirm_connect: bool,
     /// One line (≤ 1024 chars) the frontend sends to the first terminal; never
-    /// logged, never imported.
+    /// logged, imported only when the user opts in per import (§7.7).
     pub startup_command: Option<SensitiveText>,
     /// Plain text, ≤ 4000 chars.
     pub notes: Option<String>,
@@ -469,7 +469,7 @@ pub struct RecentEntry {
 pub struct Settings {
     /// Schema version (1).
     pub version: u32,
-    /// `"system"` or a BCP-47 tag; v1 ships `"en"`.
+    /// `"system"` or a BCP-47 tag; the app ships `"en"` and `"uk"`.
     pub locale: String,
     pub terminal: TerminalSettings,
     pub editor: EditorSettings,
@@ -1626,7 +1626,7 @@ pub struct BookmarksImportPreview {
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct BookmarksImportResult {
-    /// `false` = the dialog was cancelled.
+    /// Always `true`: the file was already picked in `bookmarks_import_open`.
     pub picked: bool,
     pub added: u32,
     pub replaced: u32,

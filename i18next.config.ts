@@ -30,7 +30,7 @@ export default defineConfig({
       "prompt.errors.*",
       "session.state.*", // `session.state.${phase}`
       "bookmarkColor.*", // `bookmarkColor.${name}`: the palette (lib/bookmarkColor.ts)
-      "activity.portForwarding", // hidden behind a feature flag in v1 (§1.1)
+      "activity.portForwarding", // reserved for the port forwarding view, not built in v1 (§1.1)
       "editor.cm.*", // CodeMirror phrase table (lib/cmPhrases.ts)
       "action.*", // `action.${id}`: the action registry (lib/actionIds.ts)
       "menubar.*", // `menubar.${id}`: menu names

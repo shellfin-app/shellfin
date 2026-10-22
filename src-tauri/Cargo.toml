@@ -28,7 +28,7 @@ tauri-plugin-notification = "=2.7.0"   # Rust-side only (OS notifications); no J
 tauri-plugin-updater = { version = "=2.14.0", default-features = false, features = ["rustls-tls", "system-proxy"] }
 # Single instance: a second launch focuses the running window and exits. Rust-side
 # only, no JS commands or permissions; no new crates in the tree (windows-sys / zbus 5 / tokio are
-# already there). 2.5.3 (2026-10-10): 2.5.4 was a week old.
+# already there).
 tauri-plugin-single-instance = "=2.5.4"
 russh = { version = "=0.64.1", default-features = false, features = ["ring", "rsa", "flate2"] }
 russh-sftp = "=3.0.1"

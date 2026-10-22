@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for reporting. Shellfin is pre-alpha, so bugs are expected; clear reports help a lot.
+        Thanks for reporting. Shellfin is at an early release stage (0.x), so bugs are expected; clear reports help a lot.
 
         **Security problems do not belong here.** Use the private reporting link on the issue chooser page.
 
@@ -47,6 +47,7 @@ body:
       options:
         - Windows installer (NSIS .exe)
         - macOS DMG
+        - macOS Homebrew cask
         - Linux AppImage
         - Linux deb package
         - Linux rpm package

@@ -15,7 +15,7 @@ export type Settings = {
  */
 version: number, 
 /**
- * `"system"` or a BCP-47 tag; v1 ships `"en"`.
+ * `"system"` or a BCP-47 tag; the app ships `"en"` and `"uk"`.
  */
 locale: string, terminal: TerminalSettings, editor: EditorSettings, connection: ConnectionSettings, files: FilesSettings, ui: UiSettings, 
 /**
