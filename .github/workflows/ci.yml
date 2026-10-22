@@ -38,7 +38,9 @@ env:
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
   CARGO_PROFILE_TEST_DEBUG: line-tables-only
   # Tauri prerequisites for every Linux job that compiles tauri/webkit2gtk-sys (§11.2), installed through
-  # .github/actions/linux-deps (cached debs).
+  # .github/actions/linux-deps (cached debs). Its steps use `timeout-minutes: 15`: at most 11 min of bounded apt network
+  # time (update 2 min, download 4 min, then 5 min on other mirrors) plus cache restore, install and save (budget in
+  # the action's header).
   TAURI_LINUX_DEPS: >-
     libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev
     libayatana-appindicator3-dev librsvg2-dev patchelf
@@ -93,7 +95,7 @@ jobs:
 
       - name: Install Tauri Linux prerequisites
         uses: ./.github/actions/linux-deps # zizmor: ignore[self-repository] (actionlint 1.7.12 rejects `$/`)
-        timeout-minutes: 10
+        timeout-minutes: 15
         with:
           packages: ${{ env.TAURI_LINUX_DEPS }}
           # The one job that writes the apt cache (on a push to `main`); the other Linux jobs only restore it.
@@ -213,7 +215,7 @@ jobs:
 
       - name: Install Tauri Linux prerequisites
         uses: ./.github/actions/linux-deps # zizmor: ignore[self-repository] (actionlint 1.7.12 rejects `$/`)
-        timeout-minutes: 10
+        timeout-minutes: 15
         with:
           packages: ${{ env.TAURI_LINUX_DEPS }}
 
@@ -358,7 +360,7 @@ jobs:
 
       - name: Install Tauri Linux prerequisites
         uses: ./.github/actions/linux-deps # zizmor: ignore[self-repository] (actionlint 1.7.12 rejects `$/`)
-        timeout-minutes: 10
+        timeout-minutes: 15
         with:
           packages: ${{ env.TAURI_LINUX_DEPS }}
 
@@ -455,7 +457,7 @@ jobs:
       - name: Install Tauri Linux prerequisites
         if: runner.os == 'Linux'
         uses: ./.github/actions/linux-deps # zizmor: ignore[self-repository] (actionlint 1.7.12 rejects `$/`)
-        timeout-minutes: 10
+        timeout-minutes: 15
         with:
           packages: ${{ env.TAURI_LINUX_DEPS }}
 
