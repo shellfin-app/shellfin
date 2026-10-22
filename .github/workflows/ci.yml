@@ -1,12 +1,22 @@
 # CI (§11.2). Every action is pinned to a full commit SHA (Dependabot `github-actions` updates
 # them; the version comment is informational). Least privilege: read-only token everywhere.
 # Push runs on both release branches: release.yml only builds a tag whose commit has a green push run.
+# All jobs start in parallel. Pull requests skip jobs whose inputs did not change (`changes`, job-level `if:`, never
+# workflow `paths:`: a skipped job reports success, a path-filtered workflow leaves required checks pending); pushes,
+# dispatch and the schedule always run everything they cover. `ci-ok` is the one check to require: on a push or dispatch
+# it requires every job to succeed (a skip fails it), on a pull request it also accepts skips.
+# Caches (Rust, apt) are saved only by pushes to `main` (apt by `checks` alone); pull requests and `experimental`
+# restore them.
 name: CI
 
 on:
   push:
     branches: [main, experimental]
+  # `edited` on top of the default types: retargeting a pull request to another base branch is an `edited` event and
+  # changes the diff that `changes` classifies, so the run must be repeated against the new base (a title or body edit
+  # also triggers it; the concurrency group cancels the older run of the pull request).
   pull_request:
+    types: [opened, synchronize, reopened, edited]
   schedule:
     - cron: "17 4 * * 1" # weekly: security job only (new advisories)
   workflow_dispatch:
@@ -23,7 +33,12 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # Tauri prerequisites for every Linux job that compiles tauri/webkit2gtk-sys (§11.2).
+  # Debug and test builds keep only line tables (backtraces with file:line, no variable info): a much smaller target/
+  # and Rust cache. The release profile is not affected.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
+  # Tauri prerequisites for every Linux job that compiles tauri/webkit2gtk-sys (§11.2), installed through
+  # .github/actions/linux-deps (cached debs).
   TAURI_LINUX_DEPS: >-
     libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev
     libayatana-appindicator3-dev librsvg2-dev patchelf
@@ -31,8 +46,44 @@ env:
   RUST_TOOLCHAIN: 1.99.1
 
 jobs:
-  checks:
+  # Which parts of the repository a pull request changes (.github/scripts/ci-changes.sh: path rules, §11.2). Every
+  # other event, and any failure to compute the diff, sets every output to true. A failure of this job skips the jobs
+  # that need it and fails `ci-ok`.
+  changes:
     if: github.event_name != 'schedule'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.classify.outputs.code }}
+      rust: ${{ steps.classify.outputs.rust }}
+      packaging: ${{ steps.classify.outputs.packaging }}
+      cask: ${{ steps.classify.outputs.cask }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # the merge base of a pull request needs the history of both sides ('0' as a string: 0 is falsy in `&&`)
+          fetch-depth: ${{ github.event_name == 'pull_request' && '0' || '1' }}
+          persist-credentials: false
+
+      - name: Classify the changed files
+        id: classify
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          out="$(bash .github/scripts/ci-changes.sh)"
+          # A missing or malformed output would silently skip jobs: fail instead (and so fail `ci-ok`).
+          for k in code rust packaging cask; do
+            if ! printf '%s\n' "$out" | grep -Eqx "$k=(true|false)"; then
+              echo "::error::change detection printed no valid '$k'"; exit 1
+            fi
+          done
+          printf '%s\n' "$out" | tee -a "$GITHUB_OUTPUT"
+
+  checks:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-22.04
     timeout-minutes: 45
     steps:
@@ -41,10 +92,12 @@ jobs:
           persist-credentials: false
 
       - name: Install Tauri Linux prerequisites
-        run: |
-          sudo apt-get update
-          # shellcheck disable=SC2086 # word splitting of the package list is intended
-          sudo apt-get install -y --no-install-recommends $TAURI_LINUX_DEPS
+        uses: ./.github/actions/linux-deps # zizmor: ignore[self-repository] (actionlint 1.7.12 rejects `$/`)
+        timeout-minutes: 10
+        with:
+          packages: ${{ env.TAURI_LINUX_DEPS }}
+          # The one job that writes the apt cache (on a push to `main`); the other Linux jobs only restore it.
+          save: "true"
 
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master (2026-10)
         with:
@@ -54,6 +107,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: src-tauri
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
@@ -65,7 +119,7 @@ jobs:
           cache: npm
 
       - name: npm ci
-        run: npm ci
+        run: npm ci --no-audit --no-fund
 
       - name: cargo fmt
         working-directory: src-tauri
@@ -148,7 +202,8 @@ jobs:
   # The documented MSRV (`rust-version` in Cargo.toml) must keep compiling. `+1.90` overrides
   # src-tauri/rust-toolchain.toml.
   msrv:
-    if: github.event_name != 'schedule'
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-22.04
     timeout-minutes: 45
     steps:
@@ -157,10 +212,10 @@ jobs:
           persist-credentials: false
 
       - name: Install Tauri Linux prerequisites
-        run: |
-          sudo apt-get update
-          # shellcheck disable=SC2086 # word splitting of the package list is intended
-          sudo apt-get install -y --no-install-recommends $TAURI_LINUX_DEPS
+        uses: ./.github/actions/linux-deps # zizmor: ignore[self-repository] (actionlint 1.7.12 rejects `$/`)
+        timeout-minutes: 10
+        with:
+          packages: ${{ env.TAURI_LINUX_DEPS }}
 
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master (2026-10)
         with:
@@ -170,6 +225,7 @@ jobs:
         with:
           workspaces: src-tauri
           key: msrv
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       # The frontend must exist for the Tauri build script (`frontendDist`).
       - name: Placeholder frontend for the Tauri build script
@@ -184,7 +240,8 @@ jobs:
   # The Homebrew casks rendered by scripts/homebrew-cask.mjs (stable and experimental) must pass `brew style`.
   # The sha256 is a placeholder; only the shape is checked here.
   homebrew-cask:
-    if: github.event_name != 'schedule'
+    needs: changes
+    if: needs.changes.outputs.cask == 'true'
     runs-on: macos-15
     timeout-minutes: 20
     steps:
@@ -259,7 +316,8 @@ jobs:
   # Run the Rust unit tests natively on every shipped OS and architecture (Linux runs them in
   # `checks`; Windows ARM64 ships too).
   unit-native:
-    if: github.event_name != 'schedule'
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -279,16 +337,18 @@ jobs:
         with:
           workspaces: src-tauri
           key: unit-native
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: cargo test (unit)
         working-directory: src-tauri
         run: cargo test --locked
 
-  # §10.2: Docker sshd (bastion + target, PAM 2FA) + `cargo test --features it`. The harness
-  # (src-tauri/tests/support) builds and starts tests/sshd/compose.yml itself.
+  # §10.2: Docker sshd (bastion + target, PAM 2FA) + the `it_*` test binaries with `--features it`. The harness
+  # (src-tauri/tests/support) builds and starts tests/sshd/compose.yml itself. The lib unit tests and the memory tests
+  # (`flow_memory`, `listing_memory`) run in `checks`.
   integration:
-    if: github.event_name != 'schedule'
-    needs: checks
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-22.04
     timeout-minutes: 45
     steps:
@@ -297,10 +357,10 @@ jobs:
           persist-credentials: false
 
       - name: Install Tauri Linux prerequisites
-        run: |
-          sudo apt-get update
-          # shellcheck disable=SC2086 # word splitting of the package list is intended
-          sudo apt-get install -y --no-install-recommends $TAURI_LINUX_DEPS
+        uses: ./.github/actions/linux-deps # zizmor: ignore[self-repository] (actionlint 1.7.12 rejects `$/`)
+        timeout-minutes: 10
+        with:
+          packages: ${{ env.TAURI_LINUX_DEPS }}
 
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master (2026-10)
         with:
@@ -310,10 +370,11 @@ jobs:
         with:
           workspaces: src-tauri
           key: integration
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Integration tests (Docker sshd)
         working-directory: src-tauri
-        run: cargo test --locked --features it
+        run: cargo test --locked --features it --test 'it_*'
 
       - name: sshd logs
         if: failure()
@@ -363,9 +424,11 @@ jobs:
         continue-on-error: true
         run: npm audit --audit-level=high
 
+  # Frontend-only pull requests skip this job: `checks` builds the same production bundle (`npm run build`, no-mock and
+  # freezePrototype checks).
   build:
-    if: github.event_name != 'schedule'
-    needs: checks
+    needs: changes
+    if: needs.changes.outputs.packaging == 'true'
     timeout-minutes: 90
     strategy:
       fail-fast: false
@@ -391,20 +454,34 @@ jobs:
 
       - name: Install Tauri Linux prerequisites
         if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          # shellcheck disable=SC2086 # word splitting of the package list is intended
-          sudo apt-get install -y --no-install-recommends $TAURI_LINUX_DEPS
+        uses: ./.github/actions/linux-deps # zizmor: ignore[self-repository] (actionlint 1.7.12 rejects `$/`)
+        timeout-minutes: 10
+        with:
+          packages: ${{ env.TAURI_LINUX_DEPS }}
 
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master (2026-10)
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: ${{ matrix.rust-targets }}
 
+      # Pull requests: the release profile without fat LTO and with parallel codegen (the single-unit LTO link of the
+      # app alone takes several minutes per platform). Pushes to `main` and `experimental`, whose green run release.yml
+      # requires, build with the exact profile of src-tauri/Cargo.toml; strip and panic = "unwind" stay as they are.
+      # No Rust cache for these builds: the `main` cache holds the exact profile, which Cargo cannot reuse here, and
+      # pull requests do not save caches.
+      - name: Pull request profile (no LTO, 16 codegen units)
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          echo "CARGO_PROFILE_RELEASE_LTO=false" >> "$GITHUB_ENV"
+          echo "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16" >> "$GITHUB_ENV"
+
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        if: github.event_name != 'pull_request'
         with:
           workspaces: src-tauri
           key: ${{ matrix.rust-targets }}
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -413,10 +490,24 @@ jobs:
 
       # Same install mode as release.yml, so the release path is exercised on every PR.
       - name: npm ci (no lifecycle scripts)
-        run: npm ci --ignore-scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund
 
-      - name: Cargo.lock is up to date
-        run: cargo fetch --locked --manifest-path src-tauri/Cargo.toml
+      # Pre-release versions (X.Y.Z-experimental.N) build the AppImage only on Linux, as release.yml does: an rpm
+      # version cannot contain '-'.
+      - name: Bundle arguments
+        id: bundles
+        shell: bash
+        env:
+          MATRIX_ARGS: ${{ matrix.args }}
+        run: |
+          v="$(node -p "require('./package.json').version")"
+          args="$MATRIX_ARGS"
+          case "$v" in
+            "" | *[!0-9A-Za-z.+-]*) echo "::error::unexpected package.json version"; exit 1 ;;
+            *-*) if [ "$RUNNER_OS" = "Linux" ]; then args="${args:+$args }--bundles appimage"; fi ;;
+          esac
+          echo "args=$args" >> "$GITHUB_OUTPUT"
+          echo "version $v, build arguments: ${args:-(none)}"
 
       - name: Release artifacts never select MockBackend
         shell: bash
@@ -437,7 +528,7 @@ jobs:
       # must keep this order: build → checks → upload/publish.
       - uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # action-v1.0.0
         with:
-          args: ${{ matrix.args }} -- --locked
+          args: ${{ steps.bundles.outputs.args }} -- --locked
           uploadWorkflowArtifacts: false
 
       # The e2e isolation feature (src-tauri/src/e2e.rs: SHELLFIN_E2E_ROOT redirects all user
@@ -446,7 +537,7 @@ jobs:
       - name: Release binaries are built without the e2e feature
         shell: bash
         env:
-          BUILD_ARGS: ${{ matrix.args }}
+          BUILD_ARGS: ${{ steps.bundles.outputs.args }}
         run: |
           case " $BUILD_ARGS " in *e2e*) echo "::error::e2e in the release build arguments"; exit 1;; esac
           bins="$(find src-tauri/target -type f \( -iname shellfin -o -iname shellfin.exe \) -path '*/release/*' -not -path '*/deps/*')"
@@ -476,3 +567,53 @@ jobs:
           name: shellfin-${{ matrix.platform }}-${{ strategy.job-index }}
           path: src-tauri/target/**/release/bundle/
           if-no-files-found: error
+          retention-days: 7
+
+  # The single status check to mark as required (branch rulesets). Requiring the individual jobs instead would mean
+  # listing every job and matrix entry in the rulesets and updating them on every rename. What it accepts depends on
+  # the event:
+  #   pull_request  every job passed or was skipped by change detection; `changes`, `workflows` and `security` never
+  #                 skip on a pull request and must pass
+  #   schedule      `security` passed (the other jobs skip on the schedule by design) and nothing failed
+  #   push, workflow_dispatch (any other event)
+  #                 every job passed, and change detection selected every job: a skipped job fails, because
+  #                 release.yml `verify` takes a green push run as proof that the commit passed everything
+  ci-ok:
+    if: always()
+    needs: [changes, checks, msrv, homebrew-cask, workflows, unit-native, integration, security, build]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Every required job passed
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "event: ${EVENT_NAME:-unknown}"
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<< "$NEEDS"
+          # Jobs that must succeed; any other job may also be skipped (never failed or cancelled). An unknown event
+          # requires every job.
+          bad="$(jq -r --arg event "${EVENT_NAME:-}" '
+            . as $n
+            | (if $event == "pull_request" then ["changes", "workflows", "security"]
+               elif $event == "schedule" then ["security"]
+               else keys end) as $required
+            | [ ($required[] | select($n[.].result != "success") | "\(.) (\($n[.].result // "missing"))"),
+                ($n | to_entries[] | select(.key | IN($required[]) | not)
+                  | select(.value.result != "success" and .value.result != "skipped")
+                  | "\(.key) (\(.value.result))") ]
+            | join(", ")' <<< "$NEEDS")"
+          if [ -n "$bad" ]; then
+            echo "::error::${EVENT_NAME:-unknown} run: not passed: $bad"; exit 1
+          fi
+          case "${EVENT_NAME:-}" in
+            pull_request | schedule) ;;
+            *)
+              # Change detection fails open outside pull requests, so every output must be true here. A second guard
+              # next to the all-success rule above: a run that did not select every job cannot vouch for the commit.
+              if ! jq -e '.changes.outputs as $o | ["code", "rust", "packaging", "cask"] | all($o[.] == "true")' \
+                <<< "$NEEDS" > /dev/null; then
+                echo "::error::${EVENT_NAME:-unknown} run: change detection did not select every job"; exit 1
+              fi ;;
+          esac

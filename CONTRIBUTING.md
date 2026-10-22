@@ -55,7 +55,11 @@ tests. If you use an AI coding agent, point it at [AGENTS.md](AGENTS.md).
 Also checked in CI: bindings drift (see below), `npm run notices:check` (the third-party licence notices are
 regenerated from the lockfiles; after a dependency change run `npm run notices`, which needs
 `cargo install cargo-about --version 0.9.2 --locked --features cli` and `npm ci`), `cargo check` on the minimum
-Rust version, `actionlint`, `zizmor`, `gitleaks`, `cargo deny`, `cargo audit` and `npm audit`.
+Rust version, `actionlint`, `zizmor`, `gitleaks`, `cargo deny`, `cargo audit` and `npm audit`. On a pull request CI
+skips the jobs your changes cannot affect (for example the Rust and installer jobs for a change under `src/` only; the
+build configuration such as `vite.config.ts`, `tsconfig*.json` or `package.json` still runs the installer builds; rules
+in `.github/scripts/ci-changes.sh`) and runs again when you change the pull request's base branch; `ci-ok` sums up the
+run. Pushes to `main` and `experimental` always run everything, and there `ci-ok` fails if any job was skipped.
 
 Integration tests against a Docker-based `sshd` (a target host plus a bastion for ProxyJump) are behind the Cargo
 feature `it`. They need a running Docker engine; the test harness starts the fixtures from `src-tauri/tests/sshd/`
@@ -206,9 +210,11 @@ before relying on them. Nothing here can be committed.
   ruleset **before** creating the branch: the repository deletes the head branch of a merged pull request, so
   without the ruleset the first `experimental` -> `main` merge would delete `experimental`. Do not require a linear
   history (the merges between the two branches are merge commits, see [Branches](#branches)). Recommended, not
-  required by the workflows: a pull request for every change and the required status checks `checks`, `msrv`,
-  `homebrew-cask`, `workflows`, `unit-native`, `integration`, `security` and `build` (every CI job except the
-  schedule-only run).
+  required by the workflows: a pull request for every change and the single required status check `ci-ok`. It fails
+  when any CI job failed or was cancelled; on a pull request it passes when the jobs passed or were skipped by change
+  detection, on a push it needs every job to pass (a skipped job fails it). Pull requests skip the jobs their changes
+  cannot affect (a documentation-only change runs only `changes`, `workflows` and `security`), so do not require the
+  individual jobs.
 - **Homebrew tap:** create the public, empty repository `shellfin-app/homebrew-tap`. Create a fine-grained personal
   access token (or a GitHub App token) with **Contents: read and write on that repository only**, and add it as the
   secret `HOMEBREW_TAP_TOKEN` of the `release` environment. `.github/workflows/homebrew-tap.yml` then pushes

@@ -6,7 +6,9 @@
 version: 2
 updates:
   - package-ecosystem: github-actions
-    directory: /
+    directories:
+      - /
+      - /.github/actions/* # local composite actions (linux-deps)
     schedule:
       interval: weekly
     cooldown:
