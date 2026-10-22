@@ -1,6 +1,8 @@
 // The one list of app actions. Menus, the command palette, keyboard shortcuts, context menus and the
 // native macOS menu (`menu:action` events) all refer to these ids. The labels live in translation.json under
 // `action.<id>`; the menu names under `menubar.<id>`. Technical identifiers only: this file is not UI copy.
+// WARNING: imported directly by Node (`scripts/menu-mnemonics-check.mjs`, type stripping): erasable TypeScript syntax
+// only, and value imports need explicit `.ts` extensions.
 import type { Platform } from "../ipc/types";
 
 export const ACTION_IDS = [
