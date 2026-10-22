@@ -177,7 +177,7 @@ describe("Sidebar views and layout", () => {
   });
 });
 
-describe("P1-1: tabs overflow", () => {
+describe("tabs overflow", () => {
   it("the all-connections list shows every session and switches to the chosen one", async () => {
     const { user } = await setupConnected();
     await user.click(screen.getByRole("button", { name: "All connections" }));
@@ -200,7 +200,7 @@ describe("P1-1: tabs overflow", () => {
   });
 });
 
-describe("P1-5: hidden panels can always be brought back", () => {
+describe("hidden panels can always be brought back", () => {
   it("the status bar toggles the sidebar and the terminal panel; a collapsed strip shows the terminal count", async () => {
     const { user, sessionId } = await setupConnected();
     const terminal = screen.getByRole("button", { name: /Toggle terminal panel/ });
@@ -219,7 +219,7 @@ describe("P1-5: hidden panels can always be brought back", () => {
   });
 });
 
-describe("P1-4: bookmark rows", () => {
+describe("bookmark rows", () => {
   it("single click selects, double click or Enter connects; every row has a status dot", async () => {
     const { user } = setupApp();
     const row = screen.getByRole("button", { name: "Connect to pi-home" });

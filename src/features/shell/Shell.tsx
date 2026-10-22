@@ -130,7 +130,7 @@ function SessionWorkbench({ sessionId }: { sessionId: string }) {
         ) : null}
       </Group>
       {panelOpen ? null : (
-        // P1-5: a hidden terminal panel leaves a strip behind that brings it back (and counts the terminals).
+        // A hidden terminal panel leaves a strip behind that brings it back (and counts the terminals).
         <button
           type="button"
           className="terminals-bar"

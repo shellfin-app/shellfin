@@ -21,7 +21,7 @@ function connectingSession(phase: "resolving" | "connecting" | "authenticating" 
   act(() => useStore.getState().applySessionEvent("s1", { type: "state", state }));
 }
 
-describe("P1-2: connecting card", () => {
+describe("connecting card", () => {
   it("shows the target, the steps with the running one marked, elapsed time, and Cancel closes the tab", async () => {
     const { user, backend } = setupApp();
     const close = vi.spyOn(backend, "sessionClose");
@@ -64,7 +64,7 @@ describe("P1-2: connecting card", () => {
   });
 });
 
-describe("P1-3: connection failed panel", () => {
+describe("connection failed panel", () => {
   const authFailed: AppError = {
     code: "authFailed",
     params: { user: "root", host: "95.216.0.17", tried: ["agent", "password"], serverMethods: ["publickey", "keyboardInteractive"] },
@@ -129,7 +129,7 @@ describe("P1-3: connection failed panel", () => {
   });
 });
 
-describe("P1-6: new connection dialog", () => {
+describe("new connection dialog", () => {
   async function open(user: ReturnType<typeof setupApp>["user"]) {
     await user.click(screen.getByRole("button", { name: "Add bookmark" }));
     return screen.findByRole("dialog", { name: "New connection" });
@@ -199,7 +199,7 @@ describe("P1-6: new connection dialog", () => {
   });
 });
 
-describe("P3: prompts", () => {
+describe("password prompt", () => {
   it("the password field has a show/hide toggle", async () => {
     const { user } = setupApp({ scenario: "passwordRetry" });
     const { openSession } = await import("./sessionActions");
@@ -228,7 +228,7 @@ describe("Save output…", () => {
   });
 });
 
-describe("P2-8/9/13: editor status, palette and transfers on a live session", () => {
+describe("editor status, palette and transfers on a live session", () => {
   it("the command palette finds files in all mode and shows shortcut chips", async () => {
     const { user } = await setupConnected();
     act(() => useStore.getState().openPalette("all"));

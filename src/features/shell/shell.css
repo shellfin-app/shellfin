@@ -116,7 +116,7 @@
 .search-box__input { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); }
 .search-box__hint { font-size: calc(11px * var(--ui-scale, 1)); color: var(--text-muted); }
 .search-box { flex: none; }
-/* P1-1: below 1200 px the search field shrinks to its icon so the tabs keep the room. */
+/* Below 1200 px the search field shrinks to its icon so the tabs keep the room. */
 @media (max-width: 1199px) {
   .search-box { width: 30px; padding: 0; justify-content: center; }
   .search-box__input, .search-box__hint { display: none; }

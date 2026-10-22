@@ -72,7 +72,7 @@ export type NoticeInfo =
   | { kind: "outputSaved"; path: string }
   | { kind: "outputCancelled" }
   | { kind: "outputTooLarge" }
-  /** A global shortcut was typed into the focused terminal and went to the shell (one-time hint, P1-5). */
+  /** A global shortcut was typed into the focused terminal and went to the shell (one-time hint). */
   | { kind: "shortcutSwallowed"; combo: string }
   /** Updater: a manual check found nothing newer. */
   | { kind: "upToDate" }
