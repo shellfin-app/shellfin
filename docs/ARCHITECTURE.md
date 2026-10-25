@@ -300,7 +300,8 @@ session/                 manager (registry, find_terminal, apply_bookmark), sess
                          host-key pins, per-hop HopSecrets), live (live bookmark values + needsReconnect), stats
 terminal/                mod (Terminal, reader and pump tasks, resize, cwd exec), flow (pure flow-control state, no I/O),
                          input (one ordered input task per shell channel)
-sftp/                    client (RawSftpSession wrapper, capped listing), text, save, transfer (+ retry, cleanup), path
+sftp/                    client (RawSftpSession wrapper, capped listing), text, save, transfer/ (mod: registry, gate,
+                         retry, cleanup; download, upload: per-file jobs; local: `.part`, mark, upload source), path
                          (remote POSIX paths), names (local filename sanitising), drops (DropRegistry), throttle
                          (bandwidth limiter)
 ```
