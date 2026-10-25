@@ -1371,6 +1371,7 @@
     "notes": "Neuigkeiten",
     "notesTruncated": "Die Hinweise sind gekürzt. Den vollständigen Text finden Sie auf der Release-Seite.",
     "published": "Veröffentlicht am {{date}}",
+    "releaseNotesLink": "Versionshinweise auf GitHub",
     "restarting": "Das Update ist geprüft. Shellfin wird geschlossen, installiert es und startet neu.",
     "retry": "Erneut versuchen",
     "skip": "Diese Version überspringen",

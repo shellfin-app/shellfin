@@ -1418,6 +1418,7 @@
     "notes": "Novidades",
     "notesTruncated": "As notas foram encurtadas. A página de lançamentos tem o texto completo.",
     "published": "Lançada em {{date}}",
+    "releaseNotesLink": "Notas da versão no GitHub",
     "restarting": "A atualização foi verificada. O Shellfin será fechado, instalará a atualização e será iniciado novamente.",
     "retry": "Tentar novamente",
     "skip": "Ignorar esta versão",

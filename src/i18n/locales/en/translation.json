@@ -1371,6 +1371,7 @@
     "notes": "What's new",
     "notesTruncated": "The notes are shortened. The release page has the full text.",
     "published": "Released {{date}}",
+    "releaseNotesLink": "Release notes on GitHub",
     "restarting": "The update is verified. Shellfin closes, installs it and starts again.",
     "retry": "Try again",
     "skip": "Skip this version",

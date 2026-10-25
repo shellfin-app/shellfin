@@ -4,6 +4,7 @@ import { Buffer } from "node:buffer";
 import { describe, expect, it } from "vitest";
 import {
   MANIFEST_FILES,
+  MAX_NOTES_CHARS,
   assembleManifest,
   assertStableRelease,
   compareSemver,
@@ -13,6 +14,7 @@ import {
   notesFromChangelog,
   parseSignature,
   shouldWrite,
+  truncateNotes,
 } from "./updater-manifest.mjs";
 
 /** The release public key committed in src-tauri/tauri.conf.json (key id 559240A91983C276). */
@@ -144,7 +146,84 @@ describe("assemble latest.json", () => {
     const m = assembleManifest(input({ notes: null }));
     expect(m.notes).toBe("Shellfin 0.2.0. Release notes: https://github.com/shellfin-app/shellfin/releases/tag/v0.2.0");
     const long = assembleManifest(input({ notes: "x".repeat(20_000) }));
-    expect(Array.from(long.notes).length).toBe(8000);
+    expect(Array.from(long.notes).length).toBeLessThanOrEqual(MAX_NOTES_CHARS);
+    expect(long.notes.endsWith(`\n\n[Full release notes on GitHub](${PAGE})`)).toBe(true);
+  });
+});
+
+const PAGE = "https://github.com/shellfin-app/shellfin/releases/tag/v0.2.0";
+const LINK = `\n\n[Full release notes on GitHub](${PAGE})`;
+const item = (n, words = 30) => `- Item ${n}: ${"word ".repeat(words).trim()}\n  continued line of item ${n}.`;
+const len = (s) => Array.from(s).length;
+
+describe("release notes bounded for the manifest", () => {
+  it("leaves notes within the limit unchanged, CRLF included", () => {
+    const notes = "### Added\r\n\r\n- One\r\n- Two";
+    expect(truncateNotes(notes, 100, PAGE)).toBe(notes);
+    const exact = "x".repeat(100);
+    expect(truncateNotes(exact, 100, PAGE)).toBe(exact);
+  });
+
+  it("cuts long notes after a whole item, within the limit, and ends with the release page link", () => {
+    const items = Array.from({ length: 40 }, (_, i) => item(i));
+    const notes = `### Added\n\n${items.join("\n")}`;
+    const max = 2000;
+    const out = truncateNotes(notes, max, PAGE);
+    expect(len(out)).toBeLessThanOrEqual(max);
+    expect(out.endsWith(LINK)).toBe(true);
+    const body = out.slice(0, -LINK.length);
+    // A prefix of whole items: the last kept item ends with its continuation line.
+    expect(notes.startsWith(body)).toBe(true);
+    expect(body).toMatch(/continued line of item \d+\.$/);
+    const kept = body.split("\n").filter((l) => l.startsWith("- ")).length;
+    expect(kept).toBeGreaterThan(5);
+    // The next item would not have fitted.
+    expect(len(`${body}\n${items[kept]}${LINK}`)).toBeGreaterThan(max);
+  });
+
+  it("never leaves a heading without items at the end", () => {
+    const notes = `### Added\n\n${item(1)}\n${item(2)}\n\n### Changed\n\n${item(3, 400)}\n\n### Fixed\n\n${item(4)}`;
+    const out = truncateNotes(notes, 900, PAGE);
+    expect(len(out)).toBeLessThanOrEqual(900);
+    expect(out).toBe(`### Added\n\n${item(1)}\n${item(2)}${LINK}`);
+    expect(out).not.toContain("### Changed");
+  });
+
+  it("cuts a single giant item hard and still links the release page", () => {
+    const notes = `- ${"long ".repeat(5000)}`;
+    const out = truncateNotes(notes, 8000, PAGE);
+    expect(len(out)).toBeLessThanOrEqual(8000);
+    expect(out.endsWith(`…${LINK}`)).toBe(true);
+    expect(out.startsWith("- long long")).toBe(true);
+    // A heading alone before the giant item is dropped as dangling, so the hard cut applies too.
+    const headed = truncateNotes(`### Added\n\n${notes}`, 8000, PAGE);
+    expect(headed.startsWith("### Added\n\n- long")).toBe(true);
+    expect(headed.endsWith(`…${LINK}`)).toBe(true);
+  });
+
+  it("handles CRLF input: cuts at item boundaries and outputs LF", () => {
+    const notes = `### Added\r\n\r\n${Array.from({ length: 40 }, (_, i) => item(i)).join("\r\n")}`;
+    const out = truncateNotes(notes, 2000, PAGE);
+    expect(len(out)).toBeLessThanOrEqual(2000);
+    expect(out).not.toContain("\r");
+    expect(out.endsWith(LINK)).toBe(true);
+    expect(out.slice(0, -LINK.length)).toMatch(/continued line of item \d+\.$/);
+  });
+
+  it("returns CRLF notes that fit once converted to LF whole, without the link", () => {
+    const lf = `### Added\n\n${item(1)}\n${item(2)}`;
+    const crlf = lf.replace(/\n/g, "\r\n");
+    const max = len(lf);
+    expect(len(crlf)).toBeGreaterThan(max);
+    expect(truncateNotes(crlf, max, PAGE)).toBe(lf);
+  });
+
+  it("counts code points, not UTF-16 units", () => {
+    const notes = Array.from({ length: 200 }, (_, i) => `- 🐟 item ${i} 😀😀😀`).join("\n");
+    const out = truncateNotes(notes, 1000, PAGE);
+    expect(len(out)).toBeLessThanOrEqual(1000);
+    expect(out.endsWith(LINK)).toBe(true);
+    expect(out.slice(0, -LINK.length)).toMatch(/😀😀😀$/);
   });
 });
 

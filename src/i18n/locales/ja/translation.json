@@ -1324,6 +1324,7 @@
     "notes": "新機能",
     "notesTruncated": "リリースノートは省略されています。全文はリリースページにあります。",
     "published": "{{date}} にリリース",
+    "releaseNotesLink": "GitHub のリリースノート",
     "restarting": "アップデートを検証しました。Shellfin を終了してインストールし、再起動します。",
     "retry": "再試行",
     "skip": "このバージョンをスキップ",

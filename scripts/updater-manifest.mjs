@@ -41,8 +41,9 @@ export const PLATFORMS = {
  * So it must keep receiving every stable release and must never be deleted.
  */
 export const MANIFEST_FILES = ["stable.json", "experimental.json"];
-/** Longest release notes put into a manifest (the app shows at most 10 000 characters). */
-export const MAX_NOTES_CHARS = 8000;
+/** Longest release notes put into a manifest. The app shows at most 10 000 characters; the margin covers the
+ * markers its escaping adds for invisible characters, so the final release-page link stays visible. */
+export const MAX_NOTES_CHARS = 9500;
 /** Asset names GitHub serves unchanged (no spaces or characters it would rewrite). */
 const SAFE_ASSET = /^[A-Za-z0-9][A-Za-z0-9._+-]*$/;
 
@@ -133,9 +134,49 @@ export function notesFromChangelog(changelog, version) {
   return text.length > 0 ? text : null;
 }
 
-function truncate(text, max) {
-  const chars = Array.from(text);
-  return chars.length <= max ? text : `${chars.slice(0, max - 1).join("")}…`;
+/** Length in code points (what MAX_NOTES_CHARS counts). */
+const codePoints = (text) => Array.from(text).length;
+
+/** A top-level heading (`#` to `###`, as the app's notes parser reads them) or a top-level `- ` / `* ` list item. */
+const BLOCK_START = /^(?:#{1,3}(?: |$)|[-*] )/;
+const HEADING = /^#{1,3}(?: |$)/;
+
+/**
+ * Release notes bounded to `max` code points. Notes within the limit come back unchanged. Longer notes are cut after
+ * the last whole top-level block that fits (a `- ` item with its indented continuation lines, or a heading with what
+ * follows it up to the next block), trailing headings without items are dropped, and a final paragraph links to the
+ * full notes on `releasePage`, so that clients of every version (they render the notes as they come) show where the
+ * rest is. When not even the first block fits, the text is cut hard and gets the same link.
+ */
+export function truncateNotes(text, max, releasePage) {
+  if (codePoints(text) <= max) return text;
+  const lf = text.replace(/\r\n?/g, "\n");
+  if (codePoints(lf) <= max) return lf;
+  const footer = `\n\n[Full release notes on GitHub](${releasePage})`;
+  const budget = max - codePoints(footer);
+  if (budget < 2) throw new Error("release notes limit too small for the release page link");
+  const blocks = [];
+  for (const line of lf.split("\n")) {
+    if (BLOCK_START.test(line) || blocks.length === 0) blocks.push([line]);
+    else blocks[blocks.length - 1].push(line);
+  }
+  const kept = [];
+  let used = 0;
+  for (const block of blocks) {
+    // Blocks keep their trailing blank lines, so joining them gives back the original text.
+    const chunk = block.join("\n");
+    const cost = (kept.length > 0 ? 1 : 0) + codePoints(chunk.trimEnd());
+    if (used + cost > budget) break;
+    kept.push({ chunk, headingOnly: HEADING.test(block[0]) && block.slice(1).every((l) => l.trim() === "") });
+    used += (kept.length > 1 ? 1 : 0) + codePoints(chunk);
+  }
+  while (kept.length > 0 && kept[kept.length - 1].headingOnly) kept.pop();
+  const body = kept
+    .map((k) => k.chunk)
+    .join("\n")
+    .trim();
+  if (body.length > 0) return `${body}${footer}`;
+  return `${Array.from(lf).slice(0, budget - 1).join("").trimEnd()}…${footer}`;
 }
 
 /**
@@ -171,7 +212,7 @@ export function assembleManifest({ files, readSig, repo, tag, pubkey, notes, pub
   const releasePage = `https://github.com/${repo}/releases/tag/${tag}`;
   return {
     version,
-    notes: truncate(notes ?? `Shellfin ${version}. Release notes: ${releasePage}`, MAX_NOTES_CHARS),
+    notes: truncateNotes(notes ?? `Shellfin ${version}. Release notes: ${releasePage}`, MAX_NOTES_CHARS, releasePage),
     pub_date: pubDate,
     platforms,
   };
