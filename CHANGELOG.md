@@ -22,6 +22,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Japanese user interface (beta), including the Windows installer. Settings > General > Language lists it as
   "日本語 (beta)"; "System" picks it on a Japanese system. On Linux, install Noto Sans CJK (`fonts-noto-cjk`) for the
   Japanese text to show. Wording problems can be reported through the link below the language setting.
+- Brazilian Portuguese user interface (beta), including the Windows installer. Settings > General > Language lists
+  it as "Português (Brasil) (beta)"; "System" picks it on any Portuguese system (Brazil, Portugal and other regions).
+  Wording problems can be reported through the link below the language setting.
 - Importing bookmarks can now keep the startup commands from the file, but only when you explicitly choose to for that
   import. The bookmarks and their commands are listed before anything is saved. By default startup commands are still
   dropped, and a command that is not a single valid line is always dropped.

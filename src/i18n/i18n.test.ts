@@ -98,6 +98,14 @@ describe("resolveLocale", () => {
     expect(resolveLocale("ja")).toBe("ja");
   });
 
+  it("detects Brazilian Portuguese for every Portuguese variant", () => {
+    expect(resolveLocale("system", ["pt-BR", "uk"])).toBe("pt-BR");
+    expect(resolveLocale("system", ["it", "pt-PT"])).toBe("pt-BR");
+    expect(resolveLocale("system", ["pt"])).toBe("pt-BR");
+    expect(resolveLocale("system", ["pt_br"])).toBe("pt-BR");
+    expect(resolveLocale("pt-BR")).toBe("pt-BR");
+  });
+
   // The planned first wave (#17) as a fixture list: the rules must work before any of these ships.
   const WAVE = ["en", "uk", "de", "es", "fr", "pt-BR", "ja", "ko", "zh-CN"];
   const table: [string, string | undefined][] = [
@@ -148,7 +156,7 @@ describe("resolveLocale", () => {
 
   it("a rule never returns a language that is not supported", () => {
     expect(matchLanguage("zh-CN")).toBeUndefined();
-    expect(matchLanguage("pt-PT")).toBeUndefined();
+    expect(matchLanguage("pt-PT", ["en", "uk"])).toBeUndefined();
     expect(resolveLocale("system", ["zh-CN", "uk"])).toBe("uk");
   });
 });
