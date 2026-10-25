@@ -6,6 +6,7 @@ import { errorIcon } from "../../lib/errorIcon";
 import { ServerText } from "../../components/ServerText";
 import { StatePanel } from "../../components/StatePanel";
 import { errorMessage } from "../../i18n/errorMessage";
+import { openErrorDetails, sourceFromAppError } from "../errorReport/errorReport";
 import { formatList } from "../../i18n/format";
 import type { AppError, AuthMethodKind } from "../../ipc/types";
 import { COPIED } from "../../lib/notices";
@@ -188,6 +189,7 @@ export function SessionErrorPanel({ sessionId }: { sessionId: string }) {
           <Button icon="copy" onClick={copyDetails}>
             {t("session.copyDetails")}
           </Button>
+          {error ? <Button onClick={() => openErrorDetails(sourceFromAppError(error))}>{t("errorReport.details")}</Button> : null}
           <Button icon="edit" onClick={() => editConnection(sessionId)}>
             {needsCopy ? t("session.editCopy") : t("session.edit")}
           </Button>

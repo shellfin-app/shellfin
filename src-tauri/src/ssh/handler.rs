@@ -351,7 +351,8 @@ async fn learn(policy: &HostKeyPolicy, key_type: &str, blob: &[u8]) -> bool {
             false
         }
         Err(e) => {
-            tracing::warn!(error = %e, "known_hosts learn task failed");
+            // Never `%e`: a `JoinError`'s text carries the panic payload.
+            tracing::warn!(panicked = e.is_panic(), "known_hosts learn task failed");
             false
         }
     }

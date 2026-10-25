@@ -215,6 +215,7 @@ pub const MENUS: &[MenuSpec] = &[
         entries: &[
             item("help.shortcuts", "Keyboard Shortcuts", None),
             item("help.openLogs", "Open Log Folder", None),
+            item("help.reportProblem", "Report a Problem\u{2026}", None),
             item("help.website", "Shellfin Website", None),
         ],
     },
@@ -472,6 +473,22 @@ mod tests {
         assert!(is_action(id));
         let ok = validate_labels(map(&[(id, "Panel maximieren")])).unwrap();
         assert_eq!(ok[id], "Panel maximieren");
+    }
+
+    /// Error reports: "Report a Problem…" is in the Help menu (the error details dialog without
+    /// an error), has no accelerator and takes a translated label.
+    #[test]
+    fn report_problem_item_is_in_the_help_menu_and_localizable() {
+        let help = MENUS.iter().find(|m| m.key == "menu.help").unwrap();
+        let id = "help.reportProblem";
+        assert!(
+            help.entries
+                .iter()
+                .any(|e| matches!(e, Entry::Item(i) if i.id == id && i.accelerator.is_none()))
+        );
+        assert!(is_action(id));
+        let ok = validate_labels(map(&[(id, "Повідомити про проблему…")])).unwrap();
+        assert_eq!(ok[id], "Повідомити про проблему…");
     }
 
     /// Updater: "Check for Updates…" sits in the app menu (macOS convention), right after

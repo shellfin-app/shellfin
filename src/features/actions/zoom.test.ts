@@ -44,7 +44,7 @@ describe("font zoom", () => {
     vi.spyOn(backend, "settingsUpdate").mockImplementation(async (settings: Settings) => {
       call += 1;
       await new Promise((r) => setTimeout(r, 5));
-      if (call === 1) throw { code: "internal" };
+      if (call === 1) throw { code: "storageReadOnly" }; // an expected failure: a notice (`internal` would open the error dialog)
       return settings;
     });
     await Promise.all([zoomFonts(1, "both"), zoomFonts(1, "both")]);

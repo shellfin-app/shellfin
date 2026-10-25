@@ -20,7 +20,7 @@ import type {
 } from "../ipc/types";
 
 export const ERROR_CODES = [
-  "internal", "cancelled", "promptTimeout", "storageReadOnly", "keyringUnavailable", "keyringError", "promptNotFound",
+  "internal", "bug", "cancelled", "promptTimeout", "storageReadOnly", "keyringUnavailable", "keyringError", "promptNotFound",
   "invalidArgument", "notFound", "io", "storageCorrupt", "invalidHostSpec", "invalidHostname", "proxyJumpCycle",
   "proxyJumpTooDeep", "proxyCommandUnsupported", "dnsFailed", "connectRefused", "connectTimeout",
   "networkUnreachable", "jumpChannelFailed", "kexFailed", "protocolError", "hostKeyUnknownStrict",

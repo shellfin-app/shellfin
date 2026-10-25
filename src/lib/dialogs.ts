@@ -65,4 +65,5 @@ export const DIALOG_KIND = {
   goToFolder: "goToFolder",
   replaceTransfers: "replaceTransfers",
   configWarnings: "configWarnings",
+  errorReport: "errorReport",
 } as const satisfies Record<string, DialogState["kind"]>;

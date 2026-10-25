@@ -17,6 +17,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "keys_list",
     "keys_read_public",
     "dialog_pick_identity_file",
+    "app_error_report",
     // hosts & storage
     "ssh_config_reload",
     "bookmarks_get",

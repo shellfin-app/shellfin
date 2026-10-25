@@ -20,6 +20,7 @@
     "allow-keys-list",
     "allow-keys-read-public",
     "allow-dialog-pick-identity-file",
+    "allow-app-error-report",
     "allow-ssh-config-reload",
     "allow-bookmarks-get",
     "allow-bookmark-save",

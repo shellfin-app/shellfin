@@ -686,10 +686,14 @@ pub async fn connect(
         let hop_ref = hop_ref(index, hop);
         let profile = ctx.profile_root.clone();
         let hop_owned = hop.clone();
-        let kh =
-            tokio::task::spawn_blocking(move || load_known_hosts(&hop_owned, profile.as_deref()))
-                .await
-                .map_err(|e| AppError::internal(format!("known_hosts task: {e}")))?;
+        // A panic is caught on the blocking thread: the `JoinError` text would carry its payload.
+        let kh = tokio::task::spawn_blocking(move || {
+            crate::error::catch_panic("known_hosts", || {
+                load_known_hosts(&hop_owned, profile.as_deref())
+            })
+        })
+        .await
+        .map_err(|e| crate::error::join_failed(e.is_panic(), "known_hosts"))??;
         // §5.3: an ignored known_hosts file is reported, once per session (re-dials and
         // reconnects already carry a pin for this hop).
         if pins.get(index).is_none_or(Option::is_none) {

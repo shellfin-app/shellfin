@@ -5,6 +5,7 @@ import { Icon } from "../../components/Icon";
 import { IconButton } from "../../components/IconButton";
 import { Progress } from "../../components/Progress";
 import { errorMessage } from "../../i18n/errorMessage";
+import { openErrorDetails, sourceFromAppError } from "../errorReport/errorReport";
 import { formatBytes, formatRate } from "../../i18n/format";
 import { effectiveLimits } from "../../lib/bandwidth";
 import { guard } from "../../lib/reportError";
@@ -60,6 +61,9 @@ function TransferItem({ row }: { row: TransferRow }) {
           <Button onClick={() => guard(retryTransfer(row.transferId, true))}>{t("transfers.replace")}</Button>
         ) : row.status === "failed" && row.retryable ? (
           <Button onClick={() => guard(retryTransfer(row.transferId, false))}>{t("transfers.retry")}</Button>
+        ) : null}
+        {row.status === "failed" && row.error && !isReplaceable(row) ? (
+          <Button onClick={() => row.error && openErrorDetails(sourceFromAppError(row.error))}>{t("errorReport.details")}</Button>
         ) : null}
         {row.status === "done" && row.direction === "upload" && row.remoteDir !== null ? (
           <IconButton icon="folder" iconSize={12} size={24} label={t("transfers.showInTree", { name })} onClick={() => showInTree(row)} />

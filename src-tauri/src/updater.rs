@@ -581,8 +581,14 @@ pub async fn apply_staged<R: Runtime>(app: &AppHandle<R>, staged: Staged) -> App
             AppError::new(ErrorCode::UpdateInstallFailed).with_detail(detail)
         }
         Err(e) => {
-            tracing::error!(error = %e, "update install task failed");
-            AppError::new(ErrorCode::UpdateInstallFailed).with_detail(e.to_string())
+            // Never the `JoinError` text: it carries the panic payload.
+            let panicked = crate::error::tauri_task_panicked(&e);
+            tracing::error!(panicked, "update install task failed");
+            AppError::new(ErrorCode::UpdateInstallFailed).with_detail(if panicked {
+                "the install task panicked"
+            } else {
+                "the install task was cancelled"
+            })
         }
     }
 }

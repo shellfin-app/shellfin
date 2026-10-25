@@ -1119,7 +1119,12 @@ impl<T: AuthTransport> Run<'_, '_, T> {
         .unwrap_or_else(|e| {
             Err(DecryptError::Failed(KeyLoadFailure {
                 reason: crate::error::KeyLoadReason::Corrupt,
-                detail: format!("decrypt task failed: {e}"),
+                // Never the `JoinError` text: it carries the panic payload.
+                detail: if e.is_panic() {
+                    "decrypt task panicked".to_owned()
+                } else {
+                    "decrypt task cancelled".to_owned()
+                },
             }))
         })
     }

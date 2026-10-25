@@ -178,25 +178,29 @@ impl SessionManager {
         let stores = self.deps.stores.clone();
         let service = self.ssh_config.clone();
         let keychain_available = self.deps.ctx_template.keychain_available;
+        // A panic is caught on the blocking thread (the `JoinError` text would carry its
+        // payload); `session_open` fills in its name.
         let (resolved, prompt_timeout) = tokio::task::spawn_blocking(move || {
-            let config = service.current();
-            let settings = stores.settings();
-            let bookmarks = stores.lock_bookmarks();
-            let input = ResolveInput {
-                config: &config,
-                env: service.env(),
-                bookmarks: &*bookmarks,
-                settings: &settings,
-                keychain_available,
-            };
-            let resolved = target::resolve(req.target, &input)?;
-            Ok::<_, AppError>((
-                resolved,
-                Duration::from_secs(u64::from(settings.connection.prompt_timeout_secs)),
-            ))
+            crate::error::catch_panic("", || {
+                let config = service.current();
+                let settings = stores.settings();
+                let bookmarks = stores.lock_bookmarks();
+                let input = ResolveInput {
+                    config: &config,
+                    env: service.env(),
+                    bookmarks: &*bookmarks,
+                    settings: &settings,
+                    keychain_available,
+                };
+                let resolved = target::resolve(req.target, &input)?;
+                Ok::<_, AppError>((
+                    resolved,
+                    Duration::from_secs(u64::from(settings.connection.prompt_timeout_secs)),
+                ))
+            })
         })
         .await
-        .map_err(|e| AppError::internal(format!("resolve task: {e}")))??;
+        .map_err(|e| crate::error::join_failed(e.is_panic(), ""))???;
 
         let id = uuid::Uuid::new_v4().to_string();
         let registry = self.sessions.clone();

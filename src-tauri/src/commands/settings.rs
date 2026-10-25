@@ -4,7 +4,7 @@
 use tauri::{AppHandle, Emitter, State};
 
 use crate::app_state::AppState;
-use crate::commands::blocking;
+use crate::commands::{blocking, guarded};
 use crate::error::AppError;
 use crate::ipc::dto::{NotificationTexts, Settings, events};
 
@@ -12,7 +12,7 @@ use crate::ipc::dto::{NotificationTexts, Settings, events};
 /// under a separate writer lock), so this stays on the async runtime.
 #[tauri::command]
 pub async fn settings_get(state: State<'_, AppState>) -> Result<Settings, AppError> {
-    Ok(state.stores.settings())
+    guarded("settings_get", async move { Ok(state.stores.settings()) }).await
 }
 
 /// Write the defaults atomically, apply them like `settings_update`, return them.
@@ -21,10 +21,13 @@ pub async fn settings_reset(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Settings, AppError> {
-    let stores = state.stores.clone();
-    let saved = blocking(move || stores.reset_settings()).await?;
-    apply(&app, &state).await;
-    Ok(saved)
+    guarded("settings_reset", async move {
+        let stores = state.stores.clone();
+        let saved = blocking(move || stores.reset_settings()).await?;
+        apply(&app, &state).await;
+        Ok(saved)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -33,10 +36,13 @@ pub async fn settings_update(
     state: State<'_, AppState>,
     settings: Settings,
 ) -> Result<Settings, AppError> {
-    let stores = state.stores.clone();
-    let saved = blocking(move || stores.update_settings(settings)).await?;
-    apply(&app, &state).await;
-    Ok(saved)
+    guarded("settings_update", async move {
+        let stores = state.stores.clone();
+        let saved = blocking(move || stores.update_settings(settings)).await?;
+        apply(&app, &state).await;
+        Ok(saved)
+    })
+    .await
 }
 
 /// Settings that take effect immediately: transfer limits, gate and timestamps, log level, and
@@ -75,5 +81,8 @@ pub async fn notifications_set_texts(
     state: State<'_, AppState>,
     texts: NotificationTexts,
 ) -> Result<(), AppError> {
-    state.notifications.set_texts(texts)
+    guarded("notifications_set_texts", async move {
+        state.notifications.set_texts(texts)
+    })
+    .await
 }

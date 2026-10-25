@@ -20,6 +20,7 @@ import { ConnectConfirmDialog } from "../session/ConnectConfirmDialog";
 import { PromptHost } from "../session/PromptHost";
 import { PasteConfirmDialog } from "../terminal/PasteConfirmDialog";
 import { CloseTerminalsDialog } from "../terminal/CloseTerminalsDialog";
+import { ErrorReportHost } from "../errorReport/ErrorReportDialog";
 import { UpdateDialog } from "../updates/UpdateDialog";
 import { ConfigWarningsDialog } from "../welcome/ConfigWarningsDialog";
 import { QuitConfirmDialog } from "./QuitConfirmDialog";
@@ -147,6 +148,7 @@ export function DialogHost() {
         <Suspense fallback={null}>{palette ? <CommandPalette key={palette} mode={palette} /> : null}</Suspense>
       </LazyDialogBoundary>
       <PromptHost />
+      <ErrorReportHost />
       {dialog?.kind === "quit" ? <QuitConfirmDialog /> : null}
     </>
   );
