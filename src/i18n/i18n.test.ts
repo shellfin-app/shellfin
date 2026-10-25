@@ -85,6 +85,13 @@ describe("resolveLocale", () => {
     expect(resolveLocale("de")).toBe("de");
   });
 
+  it("detects Spanish, including regional variants", () => {
+    expect(resolveLocale("system", ["es-ES", "uk"])).toBe("es");
+    expect(resolveLocale("system", ["it", "es-MX"])).toBe("es");
+    expect(resolveLocale("system", ["es-419"])).toBe("es");
+    expect(resolveLocale("es")).toBe("es");
+  });
+
   it("detects Japanese from the system languages or an explicit setting", () => {
     expect(resolveLocale("system", ["ja-JP", "en"])).toBe("ja");
     expect(resolveLocale("system", ["it", "ja"])).toBe("ja");
