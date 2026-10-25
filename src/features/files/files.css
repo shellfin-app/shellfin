@@ -84,13 +84,13 @@
  * tabular), so they follow --ui-scale; `columns.test.ts` checks that every formatted value fits. Which columns show
  * depends on the width of the `.sidebar` container (hosts.css). The breakpoints are in `em` of the sidebar's UI font
  * (13px at 100 %), so they scale with the UI too, and must stay in this order (checked by a test):
- *   size (and the header) from 21em (~273 px), date from 29em (~377 px), permissions back from 48em (~624 px).
+ *   size (and the header) from 21em (~273 px), date from 30em (~390 px), permissions back from 49em (~637 px).
  * They are computed, not guessed (`columns.test.ts` re-does the sum at UI 13 px and 16 px): at each one a row up to
  * depth 2 fits its indent, icon, the name at its minimum (6ch; 16ch once permissions show), a typical permissions
  * text (23ch), the marks slot and the cells, with the tree and row paddings and a thin scrollbar.
  * Below the first one (and in a webview without container queries) the tree looks as without columns: sideways
- * scrolling, no header, the permissions span shown. Between 21em and 48em the permissions span makes room for the
- * columns; from 48em it truncates before the name goes below 16ch. With columns showing, a row never scrolls
+ * scrolling, no header, the permissions span shown. Between 21em and 49em the permissions span makes room for the
+ * columns; from 49em it truncates before the name goes below 16ch. With columns showing, a row never scrolls
  * sideways: it clips, and only a row too deep for the width loses its indent and icons on the left (flex-end
  * overflow), so the cells stay under the header; very deep levels then line up (the indentation plateaus).
  */
@@ -106,9 +106,10 @@
 }
 .file-row--selected .file-row__col { color: inherit; }
 /* Column widths, shared by the rows and the header (both use the mono tree font, so `ch` is the same). */
-.file-tree-wrap { --file-col-size: 9ch; --file-col-date: 12ch; }
+.file-tree-wrap { --file-col-size: 9ch; --file-col-date: 14ch; }
 .file-row__col--size { width: var(--file-col-size); }
-.file-row__col--date { width: var(--file-col-date); }
+/* Safety net for a future language: the shipped ones always fit (`columns.test.ts`). */
+.file-row__col--date { width: var(--file-col-date); overflow: hidden; text-overflow: ellipsis; }
 
 .file-tree-header {
   display: none;
@@ -166,9 +167,9 @@
   .file-tree-header__cell--size { display: flex; }
 }
 /* Sorting by the (still hidden) date column stays visible next to "Name". */
-@container (21em <= width < 29em) { .file-tree-header__hint--mtime { display: inline-flex; } }
-@container (width >= 29em) {
+@container (21em <= width < 30em) { .file-tree-header__hint--mtime { display: inline-flex; } }
+@container (width >= 30em) {
   .file-tree--columns .file-row__col--date { display: block; }
   .file-tree-header__cell--mtime { display: flex; }
 }
-@container (21em <= width < 48em) { .file-tree--columns .file-row__meta { display: none; } }
+@container (21em <= width < 49em) { .file-tree--columns .file-row__meta { display: none; } }

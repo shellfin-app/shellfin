@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import i18next from "i18next";
 import { makeSettings } from "../ipc/mock/fixtures";
 import { resetStore, useStore } from "../state/store";
-import { formatBytes, formatDateTime, formatFileDate, formatFileDateShort, formatList, formatNumber, formatRate, formatRelativeTime } from "./format";
+import { COMPACT_DATE_MAX_CHARS, formatBytes, formatDateTime, formatFileDate, formatFileDateShort, formatList, formatNumber, formatRate, formatRelativeTime } from "./format";
 import { setLanguage } from "./index";
 
 describe("format (Intl-based)", () => {
@@ -58,7 +58,7 @@ describe("format (Intl-based)", () => {
     expect(formatNumber(1234.5)).toBe("1,234.5");
   });
   it("falls back to English for a language without a bundle", async () => {
-    await setLanguage("fr");
+    await setLanguage("it");
     expect(i18next.language).toBe("en");
   });
 });
@@ -90,6 +90,43 @@ describe("file tree date column (formatFileDateShort)", () => {
       expect(formatRelativeTime(yearAgo, now, "narrow")).toBe(narrow("uk", "always", -1, "year"));
       expect(formatRelativeTime(twoDaysAgo, now, "narrow")).toBe(narrow("uk", "always", -2, "day")); // not «позавчора»
       expect(formatRelativeTime(now - 24 * 3600_000, now, "narrow")).toBe(narrow("uk", "auto", -1, "day")); // «учора»
+    } finally {
+      await setLanguage("en");
+    }
+  });
+
+  it("relative: words, not a sign, where the narrow style uses one (fr '-5 min' -> 'il y a 5 min'); en and de keep narrow", async () => {
+    const fiveMinAgo = sec(now - 5 * 60_000);
+    const inThreeHours = sec(now + 3 * 3600_000);
+    expect(formatFileDateShort(fiveMinAgo, now, "relative")).toBe("5m ago");
+    await setLanguage("de");
+    try {
+      expect(formatFileDateShort(fiveMinAgo, now, "relative")).toBe(new Intl.RelativeTimeFormat("de", { numeric: "always", style: "narrow" }).format(-5, "minute"));
+      await setLanguage("fr");
+      const short = (v: number, u: Intl.RelativeTimeFormatUnit) => new Intl.RelativeTimeFormat("fr", { numeric: "always", style: "short" }).format(v, u);
+      expect(formatFileDateShort(fiveMinAgo, now, "relative")).toBe(short(-5, "minute"));
+      expect(formatFileDateShort(fiveMinAgo, now, "relative")).toMatch(/^il y a 5\smin$/);
+      expect(formatFileDateShort(inThreeHours, now, "relative")).toMatch(/^dans 3\sh$/);
+      expect(formatFileDateShort(sec(now - 24 * 3600_000), now, "relative")).toBe("hier");
+      for (const ms of [now - 5 * 60_000, now - 3 * 3600_000, now - 40 * 24 * 3600_000, now + 3 * 3600_000]) {
+        expect(formatFileDateShort(sec(ms), now, "relative")).not.toMatch(/[-+−]/);
+      }
+    } finally {
+      await setLanguage("en");
+    }
+  });
+
+  it("relative: a text too long for the column gives the absolute compact form (es 'dentro de 10 min' -> the time)", async () => {
+    const inTenMinutes = now + 10 * 60_000;
+    const inThreeDays = now + 3 * 24 * 3600_000;
+    await setLanguage("es");
+    try {
+      const long = new Intl.RelativeTimeFormat("es", { numeric: "always", style: "narrow" }).format(10, "minute");
+      expect([...long].length).toBeGreaterThan(COMPACT_DATE_MAX_CHARS); // "dentro de 10 min"
+      expect(formatFileDateShort(sec(inTenMinutes), now, "relative")).toBe(new Intl.DateTimeFormat("es", { timeStyle: "short" }).format(inTenMinutes));
+      // a text that fits keeps the relative form
+      expect(formatFileDateShort(sec(now - 10 * 60_000), now, "relative")).toBe(new Intl.RelativeTimeFormat("es", { numeric: "always", style: "narrow" }).format(-10, "minute"));
+      expect(formatFileDateShort(sec(inThreeDays), now, "relative")).toBe(new Intl.RelativeTimeFormat("es", { numeric: "always", style: "narrow" }).format(3, "day"));
     } finally {
       await setLanguage("en");
     }

@@ -255,9 +255,9 @@ right to contribute under these terms.
 ## Adding a translation
 
 The UI ships in English (default and fallback), Ukrainian (`uk`), German (`de`, beta; glossary
-`docs/i18n-glossary-de.md`), Spanish (`es`, beta; glossary `docs/i18n-glossary-es.md`), Japanese (`ja`, beta;
-glossary `docs/i18n-glossary-ja.md`) and Brazilian Portuguese (`pt-BR`, beta; glossary
-`docs/i18n-glossary-pt-BR.md`). Translations into other languages are welcome;
+`docs/i18n-glossary-de.md`), Spanish (`es`, beta; glossary `docs/i18n-glossary-es.md`), French (`fr`, beta; glossary
+`docs/i18n-glossary-fr.md`), Japanese (`ja`, beta; glossary `docs/i18n-glossary-ja.md`) and Brazilian Portuguese
+(`pt-BR`, beta; glossary `docs/i18n-glossary-pt-BR.md`). Translations into other languages are welcome;
 please open an issue first. `src/i18n/locales/uk/translation.json` is the reference for how a second language
 looks, and `docs/i18n-glossary-uk.md` shows how a glossary is kept (add one for your language).
 
