@@ -138,7 +138,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   are shown with a marker too unless they really change how the preceding emoji looks, so emoji names keep working
   and names such as report.pdf and a report.pdf with a hidden selector stay distinguishable. "Copy path" copies such
   a path in its escaped, visible form.
-- The SSH key arithmetic libraries are updated to crypto-bigint 0.7.8 and ctutils 0.4.5, which remove timing side
+- The SSH key arithmetic libraries are updated to crypto-bigint 0.7.9 and ctutils 0.4.5, which remove timing side
   channels in operations meant to run in constant time (RUSTSEC-2026-0387, RUSTSEC-2026-0385).
 
 ## [0.1.1] - 2026-10-22
