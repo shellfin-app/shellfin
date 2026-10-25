@@ -12,7 +12,7 @@ React/TypeScript. Licensed MIT OR Apache-2.0.
 
 Website: <https://shellfin.app>
 
-> **Status: version 0.1.1 (early release).** Expect rough edges and breaking changes before 1.0. The security
+> **Status: version 0.2.0 (early release).** Expect rough edges and breaking changes before 1.0. The security
 > design has not had an independent audit.
 
 <p align="center">
