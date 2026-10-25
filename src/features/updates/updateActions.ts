@@ -94,7 +94,8 @@ export async function skipUpdateVersion(): Promise<void> {
   s.setUpdateInfo(null);
 }
 
-/** Linux .deb/.rpm: open the release page through the backend's confirmed opener (§9.4). */
+/** Open the release page through the backend's confirmed opener (§9.4): the Linux .deb/.rpm download and the
+ * "Release notes on GitHub" link of the update dialog. */
 export function openReleasePage(): void {
   const current = useStore.getState().update;
   if (!current) return;

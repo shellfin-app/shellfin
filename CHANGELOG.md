@@ -7,6 +7,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Long release notes in the update dialog no longer stop in the middle of a sentence. When the notes of a version do
+  not fit, they end after the last complete entry with a link to the full release notes on GitHub, and the dialog
+  always offers a "Release notes on GitHub" link under the notes.
+
 ## [0.2.0] - 2026-10-26
 
 ### Added

@@ -213,6 +213,32 @@ describe("Check for updates… (manual)", () => {
     expect(within(dialog).queryByText(/The notes are shortened/)).toBeNull();
   });
 
+  it("always offers the release page under the notes, through the confirmed opener", async () => {
+    const { user, backend } = await setupWithUpdate({ ...makeMockUpdate(), notes: "- a", notesTruncated: false });
+    const open = vi.spyOn(backend, "appOpenExternal").mockResolvedValue(true);
+    await checkNow();
+    const dialog = await screen.findByRole("dialog", { name: /is available/ });
+    await user.click(within(dialog).getByRole("button", { name: "Release notes on GitHub" }));
+    const page = "https://github.com/shellfin-app/shellfin/releases/tag/v0.2.0";
+    expect(open).toHaveBeenCalledWith(page, expect.any(String), expect.stringContaining(page));
+  });
+
+  it("notes shortened by the manifest end with a clickable link to the full release notes", async () => {
+    // The form scripts/updater-manifest.mjs (truncateNotes) appends when it cuts the CHANGELOG section.
+    const page = "https://github.com/shellfin-app/shellfin/releases/tag/v0.2.0";
+    const { user, backend } = await setupWithUpdate({
+      ...makeMockUpdate(),
+      notes: `### Added\n\n- One\n- Two\n\n[Full release notes on GitHub](${page})`,
+      notesTruncated: false,
+    });
+    const open = vi.spyOn(backend, "appOpenExternal").mockResolvedValue(true);
+    await checkNow();
+    const box = (await screen.findByRole("dialog", { name: /is available/ })).querySelector(".update__notes");
+    expect(box?.lastElementChild?.tagName).toBe("P");
+    await user.click(within(box as HTMLElement).getByRole("button", { name: "Full release notes on GitHub" }));
+    expect(open).toHaveBeenCalledWith(page, expect.any(String), expect.stringContaining(page));
+  });
+
   it("pathological notes render quickly and stay bounded", async () => {
     const notes = [
       "**".repeat(1500),
@@ -356,6 +382,8 @@ describe("Linux .deb/.rpm (no self-update)", () => {
     const dialog = await screen.findByRole("dialog", { name: /is available/ });
     expect(within(dialog).getByText(/installed from a .deb or .rpm package/)).toBeTruthy();
     expect(within(dialog).queryByRole("button", { name: "Update and restart" })).toBeNull();
+    // Download already opens the release page: no second link under the notes.
+    expect(within(dialog).queryByRole("button", { name: "Release notes on GitHub" })).toBeNull();
     await user.click(within(dialog).getByRole("button", { name: "Download" }));
     expect(open).toHaveBeenCalledWith("https://github.com/shellfin-app/shellfin/releases/tag/v0.2.0", expect.any(String), expect.any(String));
     expect(install).not.toHaveBeenCalled();

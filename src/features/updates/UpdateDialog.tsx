@@ -131,6 +131,15 @@ export function UpdateDialog() {
         <p className="dialog__hint">{t("update.noNotes")}</p>
       )}
       {info.notesTruncated || notes.truncated ? <p className="dialog__hint">{t("update.notesTruncated")}</p> : null}
+      {manual || phase === "restarting" ? null : (
+        // Reachable until the restart: the manifest may carry shortened notes (scripts/updater-manifest.mjs). The
+        // manual-download footer already opens the release page.
+        <p className="dialog__hint">
+          <button type="button" className="update__link" onClick={openReleasePage}>
+            {t("update.releaseNotesLink")}
+          </button>
+        </p>
+      )}
     </Dialog>
   );
 }
