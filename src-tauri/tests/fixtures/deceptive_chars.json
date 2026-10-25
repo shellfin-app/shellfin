@@ -1,0 +1,27 @@
+{
+  "_about": "The code points Rust is_deceptive_char (src-tauri/src/ssh/shellquote.rs) and the frontend displayServerText (src/lib/serverText.ts) treat as invisible or deceptive, docs/ARCHITECTURE.md section 9.5. A Rust and a Vitest test check every code point against this list. 'control' is C0, DEL and C1 (Rust: char::is_control). 'deceptive' is the is_deceptive_char set. 'presentationSelectors' are inside 'deceptive' for Rust; the frontend escapes them on their own and keeps them only after an emoji whose presentation they change. Ranges are inclusive hex code points.",
+  "control": [
+    ["0000", "001F"],
+    ["007F", "009F"]
+  ],
+  "deceptive": [
+    ["00AD", "00AD"],
+    ["034F", "034F"],
+    ["061C", "061C"],
+    ["115F", "1160"],
+    ["17B4", "17B5"],
+    ["180B", "180F"],
+    ["200B", "200F"],
+    ["2028", "202E"],
+    ["2060", "206F"],
+    ["3164", "3164"],
+    ["FE00", "FE0F"],
+    ["FEFF", "FEFF"],
+    ["FFA0", "FFA0"],
+    ["FFF0", "FFFB"],
+    ["1BCA0", "1BCA3"],
+    ["1D173", "1D17A"],
+    ["E0000", "E0FFF"]
+  ],
+  "presentationSelectors": ["FE0E", "FE0F"]
+}

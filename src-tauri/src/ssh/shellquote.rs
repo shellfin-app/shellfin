@@ -95,14 +95,21 @@ pub fn powershell_quote(s: &str) -> Result<String, QuoteError> {
 }
 
 /// Characters that render differently from what is copied (bidi controls, zero-width and other
-/// default-ignorable/invisible code points). A copy-paste security instruction must not contain
-/// them.
+/// default-ignorable/invisible code points, interlinear annotation marks, the shorthand format
+/// controls U+1BCA0–1BCA3 and the musical symbol format controls U+1D173–1D17A). A copy-paste
+/// security instruction must not contain them.
+///
+/// The same set as the frontend `displayServerText` (`src/lib/serverText.ts`, §9.5) minus C0/C1
+/// (callers check `char::is_control`), with every U+FE00–FE0F deceptive here (the frontend keeps
+/// U+FE0E/FE0F where they change an emoji's presentation). Both are pinned to
+/// `tests/fixtures/deceptive_chars.json` by a Rust and a Vitest test.
 pub fn is_deceptive_char(c: char) -> bool {
     matches!(c,
         '\u{00AD}' | '\u{034F}' | '\u{061C}' | '\u{115F}' | '\u{1160}' | '\u{17B4}' | '\u{17B5}'
         | '\u{180B}'..='\u{180F}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}'
         | '\u{2028}' | '\u{2029}' | '\u{2060}'..='\u{206F}' | '\u{3164}' | '\u{FE00}'..='\u{FE0F}'
-        | '\u{FEFF}' | '\u{FFA0}' | '\u{FFF0}'..='\u{FFF8}' | '\u{E0000}'..='\u{E0FFF}')
+        | '\u{FEFF}' | '\u{FFA0}' | '\u{FFF0}'..='\u{FFFB}' | '\u{1BCA0}'..='\u{1BCA3}'
+        | '\u{1D173}'..='\u{1D17A}' | '\u{E0000}'..='\u{E0FFF}')
 }
 
 /// The copyable removal hint for `hostKeyChanged` (§5.3):
@@ -363,6 +370,66 @@ mod tests {
                 keygen_remove_hint("h", bad, Powershell).is_none(),
                 "{bad:?}"
             );
+        }
+    }
+
+    /// Interlinear annotation marks U+FFF9–FFFB (#33) and the edges of the U+FFF0–FFFB block.
+    #[test]
+    fn specials_block_boundaries() {
+        for (code, deceptive) in [
+            (0xFFEF, false),
+            (0xFFF0, true),
+            (0xFFF8, true),
+            (0xFFF9, true),
+            (0xFFFA, true),
+            (0xFFFB, true),
+            (0xFFFC, false), // object replacement character: visible
+            (0xFFFD, false), // replacement character: visible
+        ] {
+            let c = char::from_u32(code).unwrap();
+            assert_eq!(is_deceptive_char(c), deceptive, "U+{code:04X}");
+        }
+        // An annotation hides "evil" from the rendered text while it stays in what is copied.
+        let hostile = "ok\u{FFF9}base\u{FFFA}evil\u{FFFB}.example";
+        use crate::error::HintShell::{Posix, Powershell};
+        assert!(keygen_remove_hint(hostile, "/f", Posix).is_none());
+        assert!(keygen_remove_hint("h", hostile, Powershell).is_none());
+        assert!(keygen_remove_hint("ok\u{FFFC}", "/f", Posix).is_some());
+    }
+
+    fn fixture_ranges(v: &serde_json::Value, key: &str) -> Vec<(u32, u32)> {
+        let hex = |x: &serde_json::Value| u32::from_str_radix(x.as_str().unwrap(), 16).unwrap();
+        v[key]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| (hex(&r[0]), hex(&r[1])))
+            .collect()
+    }
+
+    /// Parity with the frontend `displayServerText`: the shared fixture (also read by
+    /// `src/lib/serverText.parity.test.ts`) matches `char::is_control` and `is_deceptive_char`
+    /// for every code point.
+    #[test]
+    fn deceptive_set_matches_shared_fixture() {
+        let v: serde_json::Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/deceptive_chars.json"))
+                .unwrap();
+        let control = fixture_ranges(&v, "control");
+        let deceptive = fixture_ranges(&v, "deceptive");
+        let within = |set: &[(u32, u32)], c: u32| set.iter().any(|&(a, b)| (a..=b).contains(&c));
+        for c in (0..=0x10FFFF).filter_map(char::from_u32) {
+            let code = u32::from(c);
+            assert_eq!(c.is_control(), within(&control, code), "U+{code:04X}");
+            assert_eq!(
+                is_deceptive_char(c),
+                within(&deceptive, code),
+                "U+{code:04X}"
+            );
+        }
+        for sel in v["presentationSelectors"].as_array().unwrap() {
+            let code = u32::from_str_radix(sel.as_str().unwrap(), 16).unwrap();
+            assert!(is_deceptive_char(char::from_u32(code).unwrap()));
         }
     }
 }

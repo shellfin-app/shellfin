@@ -1,7 +1,8 @@
 //! Local file names for downloads (§6.6, §9.4): the remote name is server-controlled and hostile.
 //!
 //! `sanitize_local_name(remote)`: last segment after `/` and `\`; `<>:"/\|?*`, C0, DEL and C1 →
-//! `_`; bidi, zero-width and other invisible format characters removed; reserved device names
+//! `_`; bidi, zero-width and other invisible format characters (`is_deceptive_char` without
+//! U+FE0E/FE0F) removed; reserved device names
 //! (`CON`, `NUL`, `COM1`…, with any extension) get `_` appended to the stem; trailing dots and
 //! spaces trimmed; at most 200 UTF-8 bytes (the extension is kept; bytes, not
 //! characters, so the name plus a `.NN.part` suffix stays within 255 bytes on Linux/macOS and
@@ -10,17 +11,12 @@
 
 use crate::platform::local_path::is_reserved_device_name;
 
-/// Characters that are removed outright (bidi controls and invisible formatting).
+/// Characters that are removed outright: the `is_deceptive_char` set (bidi controls, zero-width
+/// and other invisible format characters, annotation marks, tags, §9.5) except the presentation
+/// selectors U+FE0E/FE0F, which stay so emoji file names (`❤️.txt`) keep their look and their
+/// on-disk name.
 fn is_invisible(c: char) -> bool {
-    matches!(
-        c,
-        '\u{061C}'
-            | '\u{200B}'..='\u{200F}'
-            | '\u{202A}'..='\u{202E}'
-            | '\u{2060}'..='\u{2064}'
-            | '\u{2066}'..='\u{2069}'
-            | '\u{FEFF}'
-    )
+    !matches!(c, '\u{FE0E}' | '\u{FE0F}') && crate::ssh::shellquote::is_deceptive_char(c)
 }
 
 fn is_forbidden(c: char) -> bool {
@@ -114,6 +110,54 @@ mod tests {
         assert_eq!(sanitize_local_name("q?<>|*\"x"), "q______x");
         assert_eq!(sanitize_local_name("Привіт ✓.txt"), "Привіт ✓.txt");
         assert_eq!(sanitize_local_name("CON .txt"), "CON _.txt");
+    }
+
+    /// The whole `is_deceptive_char` set is removed (#33), presentation selectors stay.
+    #[test]
+    fn invisible_and_annotation_characters_are_removed() {
+        assert_eq!(
+            sanitize_local_name("invoice\u{FFF9}.pdf\u{FFFA}.exe"),
+            "invoice.pdf.exe"
+        );
+        assert_eq!(
+            sanitize_local_name("\u{FFEF}a\u{FFF0}b\u{FFF8}c\u{FFF9}d\u{FFFB}e\u{FFFC}"),
+            "\u{FFEF}abcde\u{FFFC}"
+        );
+        for hostile in [
+            "re\u{00AD}port.pdf",
+            "re\u{034F}port.pdf",
+            "re\u{115F}\u{1160}\u{3164}\u{FFA0}port.pdf",
+            "re\u{17B4}\u{180E}port.pdf",
+            "re\u{2028}\u{2029}port.pdf",
+            "re\u{2065}\u{206A}\u{206F}port.pdf",
+            "re\u{FE00}\u{FE0D}port.pdf",
+            "re\u{1BCA0}\u{1D173}port.pdf",
+            "re\u{E0041}\u{E007F}\u{E0100}port.pdf",
+            "\u{FEFF}report\u{202E}.pdf",
+        ] {
+            assert_eq!(sanitize_local_name(hostile), "report.pdf", "{hostile:?}");
+        }
+        // Emoji names keep their presentation selectors (unchanged on disk).
+        for emoji in [
+            "\u{2764}\u{FE0F}.txt",
+            "1\u{FE0F}\u{20E3} notes.md",
+            "\u{1F600}\u{FE0E}",
+        ] {
+            assert_eq!(sanitize_local_name(emoji), emoji);
+        }
+        // Nothing usable left, or only dots after stripping: the fallback.
+        for empty in [
+            "\u{FFF9}\u{FFFA}\u{FFFB}",
+            "\u{FFF9}..\u{FFFB}",
+            ".\u{200B}.",
+            "dir/\u{E0001}",
+            "\u{00AD} . \u{2028}",
+        ] {
+            assert_eq!(sanitize_local_name(empty), FALLBACK, "{empty:?}");
+        }
+        // Stripping cannot smuggle in a reserved device name or a separator.
+        assert_eq!(sanitize_local_name("C\u{FFF9}ON.txt"), "CON_.txt");
+        assert_eq!(sanitize_local_name("..\u{200B}/x\u{FFFA}"), "x");
     }
 
     #[test]

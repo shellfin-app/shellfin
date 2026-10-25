@@ -1174,11 +1174,9 @@ pub fn collect_known(
 // ---------------------------------------------------------------------------------------------
 
 /// The characters `displayServerText` escapes (C0, DEL, C1, bidi, invisible; Rust treats every
-/// U+FE00–FE0F as invisible and adds U+FFF9–FFFB like the frontend).
+/// U+FE00–FE0F as invisible).
 fn needs_escape(c: char) -> bool {
-    c.is_control()
-        || crate::ssh::shellquote::is_deceptive_char(c)
-        || matches!(c, '\u{FFF9}'..='\u{FFFB}')
+    c.is_control() || crate::ssh::shellquote::is_deceptive_char(c)
 }
 
 /// Escape one line: `\x1b` for C0/DEL/C1, `⟨U+202E⟩` for the others.

@@ -177,6 +177,18 @@ mod tests {
             ),
             "a b cdefghi"
         );
+        // Interlinear annotation marks (#33) and the edges of the U+FFF0–FFFB block.
+        assert_eq!(
+            sanitize_dialog_text("\u{FFEF}a\u{FFF0}b\u{FFF8}c\u{FFF9}d\u{FFFA}e\u{FFFB}f\u{FFFC}"),
+            "\u{FFEF}abcdef\u{FFFC}"
+        );
+        assert_eq!(
+            sanitize_dialog_text("\u{FFFB} Save\u{FFF9}report\u{FFFA}.exe\u{FFFB} as \u{FFF9}"),
+            "Savereport.exe as"
+        );
+        let u = normalize_external_url("https://example.com/").unwrap();
+        let msg = confirm_message(&u, "Open\u{FFF9}docs\u{FFFA}evil\u{FFFB}?");
+        assert_eq!(msg, "https://example.com/\n\nOpendocsevil?");
         let long = "x".repeat(500);
         let s = sanitize_dialog_text(&long);
         assert_eq!(s.chars().count(), MAX_TEXT_CHARS);

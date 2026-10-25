@@ -7,3 +7,7 @@ declare module "node:fs" {
 declare module "node:path" {
   export function join(...parts: string[]): string;
 }
+// lib/serverText.parity.test.ts resolves the shared Rust fixture relative to the test file.
+declare module "node:url" {
+  export function fileURLToPath(url: string | URL): string;
+}
