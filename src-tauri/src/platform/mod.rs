@@ -41,29 +41,83 @@ impl Paths {
 }
 
 /// The local account name (`%u`, default remote user, `Match localuser`).
-/// Unix: `getpwuid_r(getuid())`, falling back to `$USER`/`$LOGNAME`; Windows: `%USERNAME%`.
-pub fn local_user_name() -> String {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalUser {
+    pub name: String,
+    /// `name` is exactly OpenSSH's `pw_name` (what its `%u`, default user and `%C` use). When
+    /// `false` the name is a best-effort fallback: `%u`, and `%r`/`%C` of a hop that uses it,
+    /// are unavailable (§7.4) instead of naming a file OpenSSH does not use.
+    pub openssh_exact: bool,
+}
+
+/// Unix: `getpwuid_r(getuid())` (exact, as OpenSSH), falling back to `$USER`/`$LOGNAME`.
+/// Windows: the Win32-OpenSSH form ([`openssh_windows_user`]: the account name of the token
+/// user, lowercased), falling back to `%USERNAME%` as is.
+pub fn local_user() -> LocalUser {
     #[cfg(unix)]
     {
         if let Some(name) = passwd_name() {
-            return name;
+            return LocalUser {
+                name,
+                openssh_exact: true,
+            };
         }
-        for var in ["USER", "LOGNAME"] {
-            if let Ok(v) = std::env::var(var)
-                && !v.is_empty()
-            {
-                return v;
-            }
+        let name = ["USER", "LOGNAME"]
+            .into_iter()
+            .find_map(|var| std::env::var(var).ok().filter(|v| !v.is_empty()))
+            .unwrap_or_else(|| "user".to_owned());
+        LocalUser {
+            name,
+            openssh_exact: false,
         }
-        "user".to_owned()
     }
     #[cfg(not(unix))]
     {
-        std::env::var("USERNAME")
-            .ok()
-            .filter(|v| !v.is_empty())
-            .unwrap_or_else(|| "user".to_owned())
+        #[cfg(windows)]
+        {
+            if let Some(name) =
+                win_security::current_account().and_then(|(user, domain, computer)| {
+                    openssh_windows_user(&user, &domain, &computer)
+                })
+            {
+                return LocalUser {
+                    name,
+                    openssh_exact: true,
+                };
+            }
+        }
+        LocalUser {
+            name: std::env::var("USERNAME")
+                .ok()
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| "user".to_owned()),
+            openssh_exact: false,
+        }
     }
+}
+
+/// Win32-OpenSSH's `pw_name` for the current user (`contrib/win32/win32compat/pwd.c`
+/// `get_passwd`): `LookupAccountSidW` gives `user` and `domain`; if `domain` equals the
+/// NetBIOS computer name (`_wcsicmp`) it is a local account and the name is `user`, otherwise
+/// `domain\user`; the result is lowercased (`_wcslwr_s`). Win32-OpenSSH 9.5p2 `ssh -G` confirms
+/// the local case (`Smith` → `smith`).
+///
+/// Returns `None` (the caller falls back and `%u`/`%C` become unavailable) where the exact
+/// result is not certain:
+/// - a domain (or Azure AD) account: the `domain\user` form is read from the source, but not
+///   checked against a real domain-joined `ssh -G`, and logging in as `domain\user` would change
+///   which account Shellfin uses;
+/// - any non-ASCII name: `_wcsicmp`/`_wcslwr_s` depend on the C runtime locale ssh sets;
+/// - an empty part.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn openssh_windows_user(user: &str, domain: &str, computer: &str) -> Option<String> {
+    let plain = |s: &str| !s.is_empty() && s.is_ascii();
+    if !(plain(user) && plain(domain) && plain(computer)) {
+        return None;
+    }
+    domain
+        .eq_ignore_ascii_case(computer)
+        .then(|| user.to_ascii_lowercase())
 }
 
 #[cfg(unix)]
@@ -88,6 +142,83 @@ fn passwd_name() -> Option<String> {
             .to_str()
             .ok()
             .map(str::to_owned)
+    }
+}
+
+/// The local host name for the ssh_config `%l`/`%L` tokens (and the `%C` hash), without spawning
+/// a process: Unix `gethostname()` (macOS gives e.g. `name.local`, which is what OpenSSH uses),
+/// Windows `GetComputerNameExW(ComputerNameDnsHostname)` (what Win32-OpenSSH's `gethostname`
+/// returns). Never `$HOSTNAME`/`%COMPUTERNAME%`. `None` if unavailable or not a plain ASCII host
+/// name ([`plain_local_host`]): the tokens are then unsupported, never guessed.
+pub fn local_host_name() -> Option<String> {
+    raw_local_host_name().and_then(|n| plain_local_host(&n).then_some(n))
+}
+
+/// Accept only a name that is safe as a path component and as hash input: ASCII letters,
+/// digits, `-`, `_`, `.`; not starting with `-` or `.`; at most 253 bytes; and
+/// `valid_hostname`. Everything else (`/`, `\`, `..`, `%`, whitespace, controls, non-ASCII,
+/// empty, too long) makes the name unavailable.
+pub fn plain_local_host(name: &str) -> bool {
+    crate::sshconfig::validate::valid_hostname(name)
+        && !name.starts_with(['-', '.'])
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+}
+
+#[cfg(unix)]
+fn raw_local_host_name() -> Option<String> {
+    let mut buf = [0u8; 256];
+    // SAFETY: `buf` is a valid, writable buffer of `buf.len()` bytes that outlives the call.
+    let rc = unsafe { libc::gethostname(buf.as_mut_ptr().cast::<libc::c_char>(), buf.len()) };
+    if rc != 0 {
+        return None;
+    }
+    // A truncated name is not guaranteed to be NUL-terminated: treat that as unavailable.
+    std::ffi::CStr::from_bytes_until_nul(&buf)
+        .ok()?
+        .to_str()
+        .ok()
+        .map(str::to_owned)
+}
+
+#[cfg(windows)]
+fn raw_local_host_name() -> Option<String> {
+    use windows_sys::Win32::System::SystemInformation::{
+        ComputerNameDnsHostname, GetComputerNameExW,
+    };
+    let mut buf = [0u16; 256];
+    let mut len = u32::try_from(buf.len()).ok()?;
+    // SAFETY: `buf` holds `len` UTF-16 units and outlives the call; on success `len` is the
+    // number of units written (without the terminating NUL).
+    let ok = unsafe { GetComputerNameExW(ComputerNameDnsHostname, buf.as_mut_ptr(), &mut len) };
+    if ok == 0 {
+        return None;
+    }
+    let units = buf.get(..usize::try_from(len).ok()?)?;
+    String::from_utf16(units).ok()
+}
+
+#[cfg(not(any(unix, windows)))]
+fn raw_local_host_name() -> Option<String> {
+    None
+}
+
+/// The numeric local user id for the ssh_config `%i` token: Unix `getuid()`; Windows `1`, as
+/// Win32-OpenSSH (which has no numeric uid and reports 1).
+pub fn local_uid() -> Option<String> {
+    #[cfg(unix)]
+    {
+        // SAFETY: `getuid` has no preconditions and cannot fail.
+        Some(unsafe { libc::getuid() }.to_string())
+    }
+    #[cfg(windows)]
+    {
+        Some("1".to_owned())
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        None
     }
 }
 
@@ -311,6 +442,96 @@ mod tests {
             tmp.path().join("log"),
         );
         assert!(harden_process(&paths).is_empty());
+    }
+
+    /// HIGH (#7 review): the Win32-OpenSSH form of the local account. `Alice` on a machine
+    /// `LAPTOP` is `alice`; a domain account, non-ASCII or empty parts are not guessed.
+    #[test]
+    fn openssh_windows_user_form() {
+        assert_eq!(
+            openssh_windows_user("Alice", "LAPTOP", "laptop").as_deref(),
+            Some("alice")
+        );
+        assert_eq!(
+            openssh_windows_user("SMITH", "Desktop-AB12", "DESKTOP-AB12").as_deref(),
+            Some("smith")
+        );
+        for (user, domain, computer) in [
+            ("alice", "CONTOSO", "LAPTOP"),
+            ("alice", "AzureAD", "LAPTOP"),
+            ("Ålice", "LAPTOP", "LAPTOP"),
+            ("alice", "ПК", "ПК"),
+            ("", "LAPTOP", "LAPTOP"),
+            ("alice", "", ""),
+        ] {
+            assert_eq!(
+                openssh_windows_user(user, domain, computer),
+                None,
+                "{user} {domain} {computer}"
+            );
+        }
+    }
+
+    /// This machine's account: on Windows a local account comes out lowercased.
+    #[test]
+    fn local_user_is_plausible() {
+        let u = local_user();
+        assert!(!u.name.is_empty());
+        #[cfg(windows)]
+        if u.openssh_exact {
+            assert_eq!(u.name, u.name.to_ascii_lowercase());
+        }
+    }
+
+    #[test]
+    fn local_host_name_and_uid() {
+        // Whatever this machine reports, it is either unavailable or a plain name.
+        if let Some(name) = local_host_name() {
+            assert!(plain_local_host(&name), "{name:?}");
+        }
+        let uid = local_uid().unwrap();
+        assert!(!uid.is_empty() && uid.bytes().all(|b| b.is_ascii_digit()));
+        #[cfg(windows)]
+        assert_eq!(uid, "1");
+    }
+
+    /// (hostile input) a host name that could act as path syntax, a token, an option or
+    /// invisible text is never used for `%l`/`%L`/`%C`.
+    #[test]
+    fn plain_local_host_rejects_hostile_names() {
+        for ok in [
+            "laptop",
+            "laptop.example.org",
+            "DESKTOP-AB12",
+            "build_01",
+            "mac.local",
+        ] {
+            assert!(plain_local_host(ok), "{ok}");
+        }
+        let long = "a".repeat(300);
+        let rtl = format!("lap{}top", '\u{202e}');
+        let nul = format!("lap{}top", char::from(0));
+        let esc = format!("lap{}top", char::from(0x1b));
+        for bad in [
+            "",
+            "a/b",
+            "..",
+            ".",
+            ".hidden",
+            r"a\b",
+            "%h",
+            "-x",
+            "a b",
+            "a:b",
+            "${X}",
+            "ноутбук",
+            long.as_str(),
+            rtl.as_str(),
+            nul.as_str(),
+            esc.as_str(),
+        ] {
+            assert!(!plain_local_host(bad), "{bad:?}");
+        }
     }
 
     #[cfg(windows)]

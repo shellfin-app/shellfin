@@ -258,6 +258,40 @@ enum JumpElem {
     Bookmark(String),
 }
 
+/// See [`Resolver::elem_host`].
+fn elem_host(elem: &JumpElem, bookmarks: &dyn BookmarkLookup) -> String {
+    match elem {
+        JumpElem::Spec { host, .. } => host.clone(),
+        JumpElem::Bookmark(id) => bookmarks.bookmark(id).map(|b| b.host).unwrap_or_default(),
+    }
+}
+
+/// `%j` of a bookmark that has its own jump list, computed exactly as the connection does
+/// (`Resolver::resolve_bookmark`): the host of the list's last element (`""` for an empty
+/// list). `None` if the list does not parse (connecting fails anyway). Used for the
+/// keychain binding (`commands::hosts::destination_binding`), so `User x-%j` binds the user
+/// the connection will use.
+pub fn bookmark_jump_host(r: &JumpRef, bookmarks: &dyn BookmarkLookup) -> Option<String> {
+    let last = match r {
+        JumpRef::SshConfig { alias } => return Some(alias.clone()),
+        JumpRef::Bookmark { id } => JumpElem::Bookmark(id.clone()),
+        JumpRef::Spec { spec } => {
+            let elems = spec
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(spec_elem)
+                .collect::<Result<Vec<_>, _>>()
+                .ok()?;
+            match elems.into_iter().last() {
+                Some(e) => e,
+                None => return Some(String::new()),
+            }
+        }
+    };
+    Some(elem_host(&last, bookmarks))
+}
+
 struct Resolver<'a> {
     input: &'a ResolveInput<'a>,
     /// Cycle detection keys of the chain currently being resolved.
@@ -271,18 +305,18 @@ fn invalid_hostname(value: impl Into<String>) -> AppError {
 }
 
 /// Query with the connection's own user/port applied first (OpenSSH command-line
-/// semantics for `Match user`, `%r`, `%p`).
+/// semantics for `Match user`, `%r`, `%p`) and the connection chain's last jump host (`%j`;
+/// `None` = from the config). A user with a path separator (`DOMAIN\alice`, or a hostile
+/// imported bookmark) never reaches a local path through `%r` (see `QueryOverrides::user`).
 fn query(
     cfg: &ParsedConfig,
     alias: &str,
     env: &ConfigEnv,
     user: Option<&str>,
     port: Option<u16>,
+    jump: Option<&str>,
 ) -> Result<HostConfig, AppError> {
-    // `%r` ends up in local file paths (`IdentityFile ~/.ssh/id_%r`); a user with a path
-    // separator (`DOMAIN\alice`, or a hostile imported bookmark) is not used for that.
-    let user = user.filter(|u| !u.contains(['/', '\\']) && !u.contains(".."));
-    cfg.query_with(alias, env, QueryOverrides { user, port })
+    cfg.query_with(alias, env, QueryOverrides { user, port, jump })
         .map_err(|e| match e {
             QueryError::InvalidHostname { value } => invalid_hostname(value),
         })
@@ -310,6 +344,9 @@ impl<'a> Resolver<'a> {
     }
 
     /// Hops for a config alias / spec host (`honour_jump` = resolve its own ProxyJump).
+    /// `chain_jump`: `%j` given by the jump list this host is an element of (`None` = from the
+    /// config).
+    #[allow(clippy::too_many_arguments)]
     fn resolve_spec(
         &mut self,
         host: &str,
@@ -317,12 +354,20 @@ impl<'a> Resolver<'a> {
         port: Option<u16>,
         label: &str,
         honour_jump: bool,
+        chain_jump: Option<&str>,
     ) -> Result<Vec<ResolvedHop>, AppError> {
         if !valid_hostname(host) {
             return Err(invalid_hostname(host));
         }
         self.enter(format!("host:{}", host.to_ascii_lowercase()), label)?;
-        let cfg = query(self.input.config, host, self.input.env, user, port)?;
+        let cfg = query(
+            self.input.config,
+            host,
+            self.input.env,
+            user,
+            port,
+            chain_jump,
+        )?;
         let mut hops = Vec::new();
         if honour_jump {
             hops = self.jumps_from_config(&cfg, host)?;
@@ -368,20 +413,34 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// `a,b,c`: `a` with its own ProxyJump, `b`/`c` without.
+    /// `a,b,c`: `a` with its own ProxyJump, `b`/`c` without. Like `ssh -J a,b c`, each later
+    /// element is reached through the previous one, so its `%j` is that element's host.
     fn resolve_jump_list(&mut self, elems: Vec<JumpElem>) -> Result<Vec<ResolvedHop>, AppError> {
         let mut hops = Vec::new();
+        let mut prev_host: Option<String> = None;
         for (i, elem) in elems.into_iter().enumerate() {
             let honour = i == 0;
+            let this_host = self.elem_host(&elem);
+            let chain_jump = prev_host.take();
             let mut part = match elem {
                 JumpElem::Spec {
                     host,
                     user,
                     port,
                     label,
-                } => self.resolve_spec(&host, user.as_deref(), port, &label, honour)?,
-                JumpElem::Bookmark(id) => self.resolve_bookmark_id(&id, honour)?,
+                } => self.resolve_spec(
+                    &host,
+                    user.as_deref(),
+                    port,
+                    &label,
+                    honour,
+                    chain_jump.as_deref(),
+                )?,
+                JumpElem::Bookmark(id) => {
+                    self.resolve_bookmark_id(&id, honour, chain_jump.as_deref())?
+                }
             };
+            prev_host = Some(this_host);
             hops.append(&mut part);
             if hops.len() > MAX_JUMPS {
                 return Err(AppError::new(ErrorCode::ProxyJumpTooDeep));
@@ -422,10 +481,18 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// The host a jump-list element names (`%j` of the element after it): the alias or spec
+    /// host, or the referenced bookmark's `host` (`""` for a missing bookmark, which fails
+    /// resolution anyway).
+    fn elem_host(&self, elem: &JumpElem) -> String {
+        elem_host(elem, self.input.bookmarks)
+    }
+
     fn resolve_bookmark_id(
         &mut self,
         id: &str,
         honour_jump: bool,
+        chain_jump: Option<&str>,
     ) -> Result<Vec<ResolvedHop>, AppError> {
         let b = self.input.bookmarks.bookmark(id).ok_or_else(|| {
             AppError::new(ErrorCode::NotFound {
@@ -434,13 +501,15 @@ impl<'a> Resolver<'a> {
             })
         })?;
         let view = BookmarkView::stored(b, &self.input.env.home);
-        self.resolve_bookmark(view, honour_jump)
+        self.resolve_bookmark(view, honour_jump, chain_jump)
     }
 
+    /// `chain_jump`: `%j` given by the jump list this bookmark is a later element of.
     fn resolve_bookmark(
         &mut self,
         b: BookmarkView,
         honour_jump: bool,
+        chain_jump: Option<&str>,
     ) -> Result<Vec<ResolvedHop>, AppError> {
         if !valid_hostname(&b.host) {
             return Err(invalid_hostname(b.host));
@@ -450,6 +519,15 @@ impl<'a> Resolver<'a> {
             None => "draft".to_owned(),
         };
         self.enter(key, &b.name)?;
+        // The bookmark's own jump list (if honoured) decides `%j`: the host of its last element.
+        let own_jumps = match (&b.proxy_jump, honour_jump) {
+            (Some(r), true) => Some(self.jump_ref_elems(r)?),
+            _ => None,
+        };
+        let jump = match &own_jumps {
+            Some(elems) => Some(elems.last().map(|e| self.elem_host(e)).unwrap_or_default()),
+            None => chain_jump.map(str::to_owned),
+        };
         let cfg = if b.use_ssh_config {
             query(
                 self.input.config,
@@ -457,17 +535,15 @@ impl<'a> Resolver<'a> {
                 self.input.env,
                 b.user.as_deref(),
                 b.port,
+                jump.as_deref(),
             )?
         } else {
             HostConfig::default()
         };
         let mut hops = Vec::new();
         if honour_jump {
-            match &b.proxy_jump {
-                Some(r) => {
-                    let elems = self.jump_ref_elems(r)?;
-                    hops = self.resolve_jump_list(elems)?;
-                }
+            match own_jumps {
+                Some(elems) => hops = self.resolve_jump_list(elems)?,
                 None => hops = self.jumps_from_config(&cfg, &b.host)?,
             }
         }
@@ -529,10 +605,15 @@ impl<'a> Resolver<'a> {
         if !valid_hostname(&hostname) {
             return Err(invalid_hostname(hostname));
         }
-        let user = explicit_user
-            .map(str::to_owned)
-            .or_else(|| cfg.user.clone())
-            .unwrap_or_else(|| env.local_user.clone());
+        let user = match (explicit_user, &cfg.user_unresolved) {
+            (Some(u), _) => u.to_owned(),
+            // The config names a user we cannot compute: never guess (the local user may
+            // be the wrong account, and its password would be offered to this server).
+            (None, Some(raw)) => {
+                return Err(AppError::new(ErrorCode::InvalidUser { value: raw.clone() }));
+            }
+            (None, None) => cfg.user.clone().unwrap_or_else(|| env.local_user.clone()),
+        };
         let port = explicit_port.or(cfg.port).unwrap_or(22);
 
         let mut identity_files: Vec<IdentityFile> = Vec::new();
@@ -673,7 +754,7 @@ pub fn resolve(target: Target, input: &ResolveInput<'_>) -> Result<ResolvedTarge
     match target {
         Target::SshConfig { alias } => {
             r.require_config_alias(&alias)?;
-            let hops = finish(r.resolve_spec(&alias, None, None, &alias, true)?)?;
+            let hops = finish(r.resolve_spec(&alias, None, None, &alias, true, None)?)?;
             Ok(ResolvedTarget {
                 label: alias.clone(),
                 recent: RecentTarget::SshConfig { alias },
@@ -694,6 +775,7 @@ pub fn resolve(target: Target, input: &ResolveInput<'_>) -> Result<ResolvedTarge
                 parsed.port,
                 &parsed.host,
                 true,
+                None,
             )?)?;
             Ok(ResolvedTarget {
                 label: parsed.host.clone(),
@@ -721,7 +803,7 @@ pub fn resolve(target: Target, input: &ResolveInput<'_>) -> Result<ResolvedTarge
             let start_dir = view.start_dir.clone();
             let (upload_kibps, download_kibps) =
                 (view.upload_limit_kibps, view.download_limit_kibps);
-            let hops = finish(r.resolve_bookmark(view, true)?)?;
+            let hops = finish(r.resolve_bookmark(view, true, None)?)?;
             Ok(ResolvedTarget {
                 label,
                 recent: RecentTarget::Bookmark { id: id.clone() },
@@ -746,7 +828,7 @@ pub fn resolve(target: Target, input: &ResolveInput<'_>) -> Result<ResolvedTarge
             let start_dir = view.start_dir.clone();
             let (upload_kibps, download_kibps) =
                 (view.upload_limit_kibps, view.download_limit_kibps);
-            let hops = finish(r.resolve_bookmark(view, true)?)?;
+            let hops = finish(r.resolve_bookmark(view, true, None)?)?;
             let dest = hops
                 .last()
                 .map(ResolvedHop::user_at_host)
@@ -1296,6 +1378,291 @@ mod tests {
             .hops[0];
         assert_eq!(c.identity_agent, AgentChoice::Disabled);
         assert_eq!(b.user_known_hosts.len(), 2);
+    }
+
+    /// #6: a config `User` that cannot be expanded refuses to connect (no fallback to the
+    /// local user) unless the connection names its own user.
+    #[test]
+    fn invalid_config_user_refuses_without_own_user() {
+        let f = fx(concat!(
+            "Host broken\n  HostName broken.example.com\n  User ${UNSET}\n",
+            "Host gw\n  User %r\n",
+            "Host viagw\n  ProxyJump gw\n",
+            "Host viaspec\n  ProxyJump bob@gw\n",
+        ));
+        let invalid = |err: AppError, value: &str| {
+            assert_eq!(
+                err.kind,
+                ErrorCode::InvalidUser {
+                    value: value.into()
+                }
+            );
+        };
+        invalid(
+            run(
+                &f,
+                &no_books(),
+                Target::SshConfig {
+                    alias: "broken".into(),
+                },
+            )
+            .unwrap_err(),
+            "${UNSET}",
+        );
+        invalid(
+            run(
+                &f,
+                &no_books(),
+                Target::SshConfig {
+                    alias: "viagw".into(),
+                },
+            )
+            .unwrap_err(),
+            "%r",
+        );
+        let t = run(
+            &f,
+            &no_books(),
+            Target::Quick {
+                spec: "bob@broken".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(t.hops[0].user, "bob");
+        let t = run(
+            &f,
+            &no_books(),
+            Target::SshConfig {
+                alias: "viaspec".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(t.hops[0].user, "bob", "the jump spec's own user");
+        assert_eq!(t.hops[1].user, "alice");
+
+        let mut own = bm("own", "broken", None, true);
+        own.user = Some(r"DOMAIN\carol".into());
+        let books = Books(HashMap::from([
+            ("own".into(), own),
+            ("none".into(), bm("none", "broken", None, true)),
+        ]));
+        let t = run(&f, &books, Target::Bookmark { id: "own".into() }).unwrap();
+        assert_eq!(t.hops[0].user, r"DOMAIN\carol");
+        assert_eq!(t.hops[0].hostname, "broken.example.com");
+        invalid(
+            run(&f, &books, Target::Bookmark { id: "none".into() }).unwrap_err(),
+            "${UNSET}",
+        );
+    }
+
+    /// #6: an expanded `User` becomes the hop user and feeds `%r` and the keychain account.
+    #[test]
+    fn expanded_config_user_is_the_hop_user() {
+        let f =
+            fx("Host db\n  HostName db.example.com\n  User ops-%u\n  IdentityFile ~/.ssh/id_%r\n");
+        let t = run(&f, &no_books(), Target::SshConfig { alias: "db".into() }).unwrap();
+        let h = &t.hops[0];
+        assert_eq!(h.user, "ops-alice");
+        assert!(h.identity_files[0].path.ends_with("id_ops-alice"));
+        assert_eq!(
+            h.keychain.as_ref().unwrap().account,
+            "sshconfig:ops-alice@db.example.com:22"
+        );
+    }
+
+    /// Decision (a), Windows: without a user of its own the hop logs in as the lowercased
+    /// local account (`Alice` → `alice`, as Win32-OpenSSH), and `%C` hashes that name; a user
+    /// set in the bookmark is used as written. With an inexact local name `%C` is unavailable
+    /// and `accept-new` asks.
+    #[test]
+    fn implicit_windows_user_logs_in_lowercase() {
+        let mut f = fx(concat!(
+            "Host db\n  HostName db.example.com\n  StrictHostKeyChecking accept-new\n",
+            "  UserKnownHostsFile ~/.ssh/known_hosts.d/%C\n",
+        ));
+        f.env.local_host = Some("laptop.example.org".into());
+        f.env.local_user =
+            crate::platform::openssh_windows_user("Alice", "LAPTOP", "laptop").unwrap();
+        let t = run(&f, &no_books(), Target::SshConfig { alias: "db".into() }).unwrap();
+        let dest = t.destination().unwrap();
+        assert_eq!(dest.user, "alice");
+        assert_eq!(
+            dest.user_known_hosts,
+            [KnownHostsFile::Path(f.env.home.join(
+                ".ssh/known_hosts.d/1227bff8334e0ddbb57c2fb46f0c25b8ecac5c7f"
+            ))]
+        );
+        assert_eq!(dest.strict, StrictMode::AcceptNew);
+
+        let mut own = bm("own", "db", None, true);
+        own.user = Some("Alice".into());
+        let books = Books(HashMap::from([("own".into(), own)]));
+        let t = run(&f, &books, Target::Bookmark { id: "own".into() }).unwrap();
+        assert_eq!(
+            t.destination().unwrap().user,
+            "Alice",
+            "an explicit user is kept"
+        );
+
+        f.env.local_user_exact = false;
+        let t = run(&f, &no_books(), Target::SshConfig { alias: "db".into() }).unwrap();
+        let dest = t.destination().unwrap();
+        assert_eq!(dest.strict, StrictMode::Ask, "never trust silently");
+        assert_eq!(
+            dest.user_known_hosts,
+            [
+                KnownHostsFile::Path(f.env.user_ssh_dir.join("known_hosts")),
+                KnownHostsFile::Path(f.env.user_ssh_dir.join("known_hosts2")),
+            ]
+        );
+    }
+
+    /// The single `UserKnownHostsFile` of a hop, as its file name (`j=<%j>`).
+    fn kh_name(h: &ResolvedHop) -> String {
+        match &h.user_known_hosts[..] {
+            [KnownHostsFile::Path(p)] => p.file_name().unwrap().to_string_lossy().into_owned(),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// #7: `%j` follows the real chain like OpenSSH (`ProxyJump a,b` runs `ssh -J a b`):
+    /// config targets, a bookmark's own jump list, the previous element of a jump list.
+    #[test]
+    fn j_token_follows_the_jump_chain() {
+        let f = fx(concat!(
+            "Host t1\n  ProxyJump alice@gw1:2222,gw2\n",
+            "Host gw1\n  ProxyJump gw0\n",
+            "Host direct\n  ProxyJump none\n",
+            "Host viacfg\n  ProxyJump gw3.example.com\n",
+            "Host *\n  UserKnownHostsFile ~/.ssh/kh.d/j=%j\n",
+        ));
+        let names = |t: &ResolvedTarget| -> Vec<(String, String)> {
+            t.hops
+                .iter()
+                .map(|h| (h.label.clone(), kh_name(h)))
+                .collect()
+        };
+        let pairs = |list: &[(&str, &str)]| -> Vec<(String, String)> {
+            list.iter()
+                .map(|(a, b)| ((*a).to_owned(), (*b).to_owned()))
+                .collect()
+        };
+        let t = run(&f, &no_books(), Target::SshConfig { alias: "t1".into() }).unwrap();
+        assert_eq!(
+            names(&t),
+            pairs(&[
+                ("gw0", "j="),
+                ("gw1", "j=gw0"),
+                ("gw2", "j=gw1"),
+                ("t1", "j=gw2"),
+            ])
+        );
+        let t = run(
+            &f,
+            &no_books(),
+            Target::SshConfig {
+                alias: "direct".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(names(&t), pairs(&[("direct", "j=")]));
+
+        let mut spec = bm("spec", "dest.example.com", None, true);
+        spec.proxy_jump = Some(JumpRef::Spec {
+            spec: "a.example.com, bob@b.example.com:2022".into(),
+        });
+        let alias = bm(
+            "alias",
+            "dest.example.com",
+            Some(JumpRef::SshConfig {
+                alias: "gw1".into(),
+            }),
+            true,
+        );
+        let viabm = bm(
+            "viabm",
+            "dest.example.com",
+            Some(JumpRef::Bookmark { id: "jb".into() }),
+            true,
+        );
+        let books = Books(HashMap::from([
+            ("spec".into(), spec),
+            ("alias".into(), alias),
+            ("viabm".into(), viabm),
+            ("jb".into(), bm("jb", "jump.example.com", None, true)),
+            ("cfg".into(), bm("cfg", "viacfg", None, true)),
+        ]));
+        let t = run(&f, &books, Target::Bookmark { id: "spec".into() }).unwrap();
+        assert_eq!(
+            names(&t),
+            pairs(&[
+                ("a.example.com", "j="),
+                ("b.example.com", "j=a.example.com"),
+                ("bm-spec", "j=b.example.com"),
+            ])
+        );
+        let t = run(&f, &books, Target::Bookmark { id: "alias".into() }).unwrap();
+        assert_eq!(
+            names(&t),
+            pairs(&[("gw0", "j="), ("gw1", "j=gw0"), ("bm-alias", "j=gw1")])
+        );
+        let t = run(&f, &books, Target::Bookmark { id: "viabm".into() }).unwrap();
+        assert_eq!(
+            names(&t),
+            pairs(&[("bm-jb", "j="), ("bm-viabm", "j=jump.example.com")])
+        );
+        let t = run(&f, &books, Target::Bookmark { id: "cfg".into() }).unwrap();
+        assert_eq!(
+            names(&t),
+            pairs(&[("gw3.example.com", "j="), ("bm-cfg", "j=gw3.example.com")])
+        );
+    }
+
+    /// #7: the destination reads `known_hosts.d/<%C>`, the file OpenSSH ≥ 9.6 uses (fixed
+    /// vector, through a jump), keeps `accept-new`, and learning creates exactly that file.
+    #[test]
+    fn connection_hash_known_hosts_file_end_to_end() {
+        let mut f = fx(concat!(
+            "Host db\n  HostName db.example.com\n  Port 2222\n  User deploy\n  ProxyJump bastion\n",
+            "  StrictHostKeyChecking accept-new\n  UserKnownHostsFile ~/.ssh/known_hosts.d/%C\n",
+        ));
+        f.env.local_host = Some("laptop.example.org".into());
+        let t = run(&f, &no_books(), Target::SshConfig { alias: "db".into() }).unwrap();
+        let dest = t.destination().unwrap();
+        let file = f
+            .env
+            .home
+            .join(".ssh/known_hosts.d/afe40bf82d1a691f8e0b53bfb83376182ea83392");
+        assert_eq!(dest.user_known_hosts, [KnownHostsFile::Path(file.clone())]);
+        assert_eq!(dest.strict, StrictMode::AcceptNew);
+
+        let blob = crate::known_hosts::test_keys::ed25519(7);
+        let key = crate::known_hosts::HostKeyRef {
+            key_type: "ssh-ed25519",
+            blob: &blob,
+        };
+        crate::known_hosts::write::learn(&file, "[db.example.com]:2222", key, false, None).unwrap();
+        assert!(file.is_file());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(file.parent().unwrap()), 0o700);
+            assert_eq!(mode(&file), 0o600);
+        }
+
+        // Without a usable local host name the same config falls back and asks.
+        f.env.local_host = None;
+        let t = run(&f, &no_books(), Target::SshConfig { alias: "db".into() }).unwrap();
+        let dest = t.destination().unwrap();
+        assert_eq!(dest.strict, StrictMode::Ask);
+        assert_eq!(
+            dest.user_known_hosts,
+            [
+                KnownHostsFile::Path(f.env.user_ssh_dir.join("known_hosts")),
+                KnownHostsFile::Path(f.env.user_ssh_dir.join("known_hosts2")),
+            ]
+        );
     }
 
     #[test]

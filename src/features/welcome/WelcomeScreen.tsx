@@ -26,7 +26,9 @@ export function resolveQuickConnect(
   const text = input.trim();
   if (!text) return null;
   const lower = text.toLowerCase();
-  const alias = aliases.find((a) => a.toLowerCase() === lower);
+  // ssh_config `Host` patterns are case-sensitive (OpenSSH): `LAB` is not the alias `lab`, it is
+  // a quick target that the config then resolves on its own (as `ssh LAB` would).
+  const alias = aliases.find((a) => a === text);
   if (alias) return { target: sshConfigTarget(alias), label: alias };
   const bookmark = bookmarks.find((b) => b.name.toLowerCase() === lower);
   if (bookmark) return { target: bookmarkTarget(bookmark.id), label: bookmark.name };

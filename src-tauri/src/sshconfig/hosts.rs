@@ -23,7 +23,9 @@ fn collect_aliases(
         match item {
             Item::Host { patterns, loc } => {
                 for p in patterns.iter().filter(|p| is_concrete(p)) {
-                    if seen.insert(p.to_lowercase()) {
+                    // Exact dedup: `Host` matching is case-sensitive (OpenSSH), so `Lab` and
+                    // `lab` are different hosts, each listed and each connecting as written.
+                    if seen.insert(p.clone()) {
                         out.push((p.clone(), loc.clone()));
                     }
                 }
@@ -59,7 +61,7 @@ fn push_unique(warnings: &mut UniqueWarnings, w: ConfigWarning) {
 }
 
 impl ParsedConfig {
-    /// Concrete aliases in order of first appearance (case-insensitive dedup), with the location
+    /// Concrete aliases in order of first appearance (exact dedup), with the location
     /// of the first `Host` line naming them.
     pub(crate) fn concrete_aliases(&self) -> Vec<(String, SourceLocation)> {
         let mut seen = HashSet::new();
@@ -215,13 +217,18 @@ mod tests {
                 ),
                 ("work2".into(), "work2.corp.example.com".into(), 22, i, 2),
                 ("nas".into(), "nas.local".into(), 2222, c.clone(), 5),
+                // `Host` is case-sensitive (OpenSSH): `Nas` is its own row, and it resolves
+                // through the same block because it is spelled as in the pattern.
+                ("Nas".into(), "nas.local".into(), 2222, c.clone(), 5),
                 ("bastion".into(), "bastion".into(), 22, c.clone(), 8),
                 ("viajump".into(), "viajump".into(), 22, c, 10),
             ]
         );
         assert!(s.hosts.iter().all(|h| h.user.as_deref() == Some("alice")));
-        assert_eq!(s.hosts[3].proxy_jump, None);
-        assert_eq!(s.hosts[4].proxy_jump.as_deref(), Some("bastion"));
+        assert_eq!(s.hosts[4].proxy_jump, None);
+        assert_eq!(s.hosts[5].proxy_jump.as_deref(), Some("bastion"));
+        // Every listed alias connects through its own block (`lists_host` = same rule).
+        assert!(s.hosts.iter().all(|h| f.load().lists_host(&h.alias)));
         assert!(s.hosts.iter().all(|h| !h.has_warnings));
         assert!(s.warnings.is_empty());
     }

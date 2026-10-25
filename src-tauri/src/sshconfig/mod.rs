@@ -108,8 +108,13 @@ pub type EnvLookup = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 pub struct ConfigEnv {
     /// `~` and `%d`.
     pub home: PathBuf,
-    /// `%u`, the default remote user, and `Match localuser`.
+    /// `%u`, the default remote user, and `Match localuser` (`platform::local_user`: on Windows
+    /// the lowercased Win32-OpenSSH form, so Shellfin logs in as the user OpenSSH would).
     pub local_user: String,
+    /// `local_user` is exactly OpenSSH's name. `false` ⇒ `%u`, and `%r`/`%C` of a hop whose
+    /// user is the implicit local user, are unavailable (`unavailableToken`; known_hosts
+    /// options fall back and the hop asks). `true` in [`ConfigEnv::new`].
+    pub local_user_exact: bool,
     /// `~/.ssh` — base for relative `Include`s in user files.
     pub user_ssh_dir: PathBuf,
     /// `/etc/ssh` or `%ProgramData%\ssh` — base for relative `Include`s in system files.
@@ -120,10 +125,16 @@ pub struct ConfigEnv {
     pub system_config: PathBuf,
     /// `${VAR}` lookup.
     pub env: EnvLookup,
+    /// `%l` (full) and `%L` (up to the first `.`), and part of the `%C` hash: the local host name
+    /// (`platform::local_host_name`). `None` ⇒ those tokens are unavailable (`unavailableToken`).
+    pub local_host: Option<String>,
+    /// `%i`: the local numeric user id (`platform::local_uid`; `1` on Windows). `None` ⇒ unavailable.
+    pub uid: Option<String>,
 }
 
 impl ConfigEnv {
-    /// Conventional layout below `home` with the process environment.
+    /// Conventional layout below `home` with the process environment. `local_host` and `uid`
+    /// start unset (`service::production_env` fills them).
     pub fn new(
         home: PathBuf,
         local_user: String,
@@ -136,9 +147,12 @@ impl ConfigEnv {
             user_ssh_dir,
             home,
             local_user,
+            local_user_exact: true,
             system_ssh_dir,
             system_config,
             env: Arc::new(|name| std::env::var(name).ok()),
+            local_host: None,
+            uid: None,
         }
     }
 }
@@ -148,6 +162,7 @@ impl fmt::Debug for ConfigEnv {
         f.debug_struct("ConfigEnv")
             .field("home", &self.home)
             .field("local_user", &self.local_user)
+            .field("local_user_exact", &self.local_user_exact)
             .field("user_ssh_dir", &self.user_ssh_dir)
             .field("system_ssh_dir", &self.system_ssh_dir)
             .field("user_config", &self.user_config)

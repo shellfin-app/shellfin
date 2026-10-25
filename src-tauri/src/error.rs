@@ -68,6 +68,12 @@ pub enum ErrorCode {
     InvalidHostname {
         value: String,
     },
+    /// The ssh_config `User` for this hop could not be expanded (`invalidUser` config warning)
+    /// and the connection has no user of its own. `value` = the config text as written.
+    #[serde(rename_all = "camelCase")]
+    InvalidUser {
+        value: String,
+    },
     #[serde(rename_all = "camelCase")]
     ProxyJumpCycle {
         chain: Vec<String>,

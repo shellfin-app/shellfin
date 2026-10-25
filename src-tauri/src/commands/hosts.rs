@@ -16,8 +16,10 @@ use crate::ipc::secret::Secret;
 use crate::platform::file_trust::FileKind;
 use crate::platform::local_path::{LocalPathError, read_local};
 use crate::secrets;
+use crate::ssh::target::{BookmarkLookup, bookmark_jump_host};
 use crate::sshconfig::ConfigEnv;
 use crate::sshconfig::ParsedConfig;
+use crate::sshconfig::QueryOverrides;
 use crate::storage::bookmarks::{self, PasswordBinding};
 use crate::storage::file::now_ms;
 use crate::window::MAIN_WINDOW_LABEL;
@@ -135,12 +137,42 @@ pub async fn bookmark_copy_from_ssh_config(
 }
 
 /// The keychain binding of a bookmark's destination (§5.6, §7.2): bookmark fields win; with
-/// `useSshConfig` the config fills empty fields; defaults hostname = host, port 22, local user.
-fn destination_binding(b: &Bookmark, cfg: &ParsedConfig, env: &ConfigEnv) -> PasswordBinding {
+/// `useSshConfig` the config fills empty fields (queried with the bookmark's user and port, as
+/// the connection does); defaults hostname = host, port 22, local user. A config `User` that
+/// cannot be expanded is `invalidUser`, never the local user: connecting refuses that hop too
+/// (`ssh::target`), so a password bound to the local user would be for another account.
+/// `%j` comes from the bookmark's own jump list when it has one, as when connecting
+/// (`target::bookmark_jump_host`), else from the config.
+fn destination_binding(
+    b: &Bookmark,
+    cfg: &ParsedConfig,
+    env: &ConfigEnv,
+    bookmarks: &dyn BookmarkLookup,
+) -> Result<PasswordBinding, AppError> {
+    let jump = b
+        .proxy_jump
+        .as_ref()
+        .and_then(|r| bookmark_jump_host(r, bookmarks));
     let from_cfg = b
         .use_ssh_config
-        .then(|| cfg.query(&b.host, env).ok())
+        .then(|| {
+            cfg.query_with(
+                &b.host,
+                env,
+                QueryOverrides {
+                    user: b.user.as_deref(),
+                    port: b.port,
+                    jump: jump.as_deref(),
+                },
+            )
+            .ok()
+        })
         .flatten();
+    if b.user.is_none()
+        && let Some(value) = from_cfg.as_ref().and_then(|c| c.user_unresolved.clone())
+    {
+        return Err(AppError::new(ErrorCode::InvalidUser { value }));
+    }
     let hostname = from_cfg
         .as_ref()
         .and_then(|c| c.hostname.clone())
@@ -154,11 +186,11 @@ fn destination_binding(b: &Bookmark, cfg: &ParsedConfig, env: &ConfigEnv) -> Pas
         .clone()
         .or_else(|| from_cfg.as_ref().and_then(|c| c.user.clone()))
         .unwrap_or_else(|| env.local_user.clone());
-    PasswordBinding {
+    Ok(PasswordBinding {
         hostname,
         port,
         user,
-    }
+    })
 }
 
 /// No new secret is stored while `connection.rememberPasswords` is off
@@ -203,7 +235,12 @@ pub async fn bookmark_set_password(
                 Some(pw) => {
                     secret_storage_allowed(&stores.settings())?;
                     secrets::availability()?;
-                    let binding = destination_binding(&bookmark, &service.current(), service.env());
+                    let binding = destination_binding(
+                        &bookmark,
+                        &service.current(),
+                        service.env(),
+                        &*stores.lock_bookmarks(),
+                    )?;
                     secrets::set_password(&account, pw.expose())?;
                     let saved =
                         stores
@@ -523,7 +560,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
-    use crate::ipc::dto::AuthConfig;
+    use crate::ipc::dto::{AuthConfig, JumpRef};
     use crate::sshconfig::{StdFsSource, load};
 
     /// The export file is written atomically and privately; secrets are not in it.
@@ -620,7 +657,97 @@ mod tests {
         std::fs::create_dir(home.join(".ssh")).unwrap();
         std::fs::write(
             home.join(".ssh/config"),
-            "Host nas\n  HostName nas.example.com\n  Port 2222\n  User admin\n",
+            concat!(
+                "Host nas\n  HostName nas.example.com\n  Port 2222\n  User admin\n",
+                "Host broken\n  HostName broken.example.com\n  User ${SHELLFIN_TEST_UNSET_VAR}\n",
+                "Host exp\n  User ops-%u\n",
+                "Match user bob\n  Port 2200\n",
+            ),
+        )
+        .unwrap();
+        let mut env = ConfigEnv::new(
+            home.clone(),
+            "alice".into(),
+            home.join("etc"),
+            home.join("etc/ssh_config"),
+        );
+        env.env = std::sync::Arc::new(|_| None);
+        let cfg = load(&StdFsSource, &env);
+        let destination_binding = |b: &Bookmark,
+                                   cfg: &ParsedConfig,
+                                   env: &ConfigEnv|
+         -> Result<PasswordBinding, AppError> {
+            super::destination_binding(b, cfg, env, &NoBooks)
+        };
+        let b = destination_binding(&bookmark("nas", None, None, true), &cfg, &env).unwrap();
+        assert_eq!(
+            (b.hostname.as_str(), b.port, b.user.as_str()),
+            ("nas.example.com", 2222, "admin")
+        );
+        let b =
+            destination_binding(&bookmark("nas", Some(22), Some("bob"), true), &cfg, &env).unwrap();
+        assert_eq!(
+            (b.hostname.as_str(), b.port, b.user.as_str()),
+            ("nas.example.com", 22, "bob")
+        );
+        let b = destination_binding(&bookmark("nas", None, None, false), &cfg, &env).unwrap();
+        assert_eq!(
+            (b.hostname.as_str(), b.port, b.user.as_str()),
+            ("nas", 22, "alice")
+        );
+        // An expanded config User is the bound user.
+        let b = destination_binding(&bookmark("exp", None, None, true), &cfg, &env).unwrap();
+        assert_eq!(b.user, "ops-alice");
+        // The bookmark's user feeds `Match user`, as when connecting.
+        let b = destination_binding(&bookmark("exp", None, Some("bob"), true), &cfg, &env).unwrap();
+        assert_eq!((b.port, b.user.as_str()), (2200, "bob"));
+        // (LOW, #6 review) an unexpandable config User is never replaced by the local user.
+        let err =
+            destination_binding(&bookmark("broken", None, None, true), &cfg, &env).unwrap_err();
+        assert_eq!(
+            err.kind,
+            ErrorCode::InvalidUser {
+                value: "${SHELLFIN_TEST_UNSET_VAR}".into()
+            }
+        );
+        let b = destination_binding(&bookmark("broken", None, Some("carol"), true), &cfg, &env)
+            .unwrap();
+        assert_eq!(
+            (b.hostname.as_str(), b.user.as_str()),
+            ("broken.example.com", "carol")
+        );
+    }
+
+    struct NoBooks;
+    impl BookmarkLookup for NoBooks {
+        fn bookmark(&self, _id: &str) -> Option<Bookmark> {
+            None
+        }
+        fn stored_binding(&self, _id: &str) -> Option<PasswordBinding> {
+            None
+        }
+    }
+
+    struct OneBook(Bookmark);
+    impl BookmarkLookup for OneBook {
+        fn bookmark(&self, id: &str) -> Option<Bookmark> {
+            (self.0.id == id).then(|| self.0.clone())
+        }
+        fn stored_binding(&self, _id: &str) -> Option<PasswordBinding> {
+            None
+        }
+    }
+
+    /// (L3, #7 re-review) `%j` in the bound user follows the bookmark's own jump list, as the
+    /// connection does (`target::resolve_bookmark`), not the config's `ProxyJump`.
+    #[test]
+    fn binding_uses_the_bookmarks_own_jump_for_j() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().to_path_buf();
+        std::fs::create_dir(home.join(".ssh")).unwrap();
+        std::fs::write(
+            home.join(".ssh/config"),
+            "Host db\n  HostName db.example.com\n  ProxyJump cfg-gw.example.com\n  User x-%j\n",
         )
         .unwrap();
         let env = ConfigEnv::new(
@@ -630,20 +757,36 @@ mod tests {
             home.join("etc/ssh_config"),
         );
         let cfg = load(&StdFsSource, &env);
-        let b = destination_binding(&bookmark("nas", None, None, true), &cfg, &env);
+        let mut jb = bookmark("jump.example.com", None, None, false);
+        jb.id = "jb".into();
+        let books = OneBook(jb);
+        let user = |jump: Option<JumpRef>| {
+            let mut b = bookmark("db", None, None, true);
+            b.proxy_jump = jump;
+            destination_binding(&b, &cfg, &env, &books).unwrap().user
+        };
         assert_eq!(
-            (b.hostname.as_str(), b.port, b.user.as_str()),
-            ("nas.example.com", 2222, "admin")
+            user(None),
+            "x-cfg-gw.example.com",
+            "no own jump: the config's"
         );
-        let b = destination_binding(&bookmark("nas", Some(22), Some("bob"), true), &cfg, &env);
         assert_eq!(
-            (b.hostname.as_str(), b.port, b.user.as_str()),
-            ("nas.example.com", 22, "bob")
+            user(Some(JumpRef::Spec {
+                spec: "a.example.com, bob@b.example.com:2022".into()
+            })),
+            "x-b.example.com",
+            "the last element's host"
         );
-        let b = destination_binding(&bookmark("nas", None, None, false), &cfg, &env);
         assert_eq!(
-            (b.hostname.as_str(), b.port, b.user.as_str()),
-            ("nas", 22, "alice")
+            user(Some(JumpRef::SshConfig {
+                alias: "gw-alias".into()
+            })),
+            "x-gw-alias"
+        );
+        assert_eq!(
+            user(Some(JumpRef::Bookmark { id: "jb".into() })),
+            "x-jump.example.com",
+            "the referenced bookmark's host"
         );
     }
 }

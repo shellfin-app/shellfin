@@ -445,6 +445,9 @@ describe("default user", () => {
     expect(resolveQuickConnect("host.example.com", [], [], "")?.target).toEqual({ kind: "quick", spec: "host.example.com" });
     // names of bookmarks and ssh-config hosts are never rewritten
     expect(resolveQuickConnect("bastion", ["bastion"], [], "deploy")?.target).toEqual({ kind: "sshConfig", alias: "bastion" });
+    // Aliases are case-sensitive like OpenSSH `Host` patterns: `LAB` is not the alias `Lab`.
+    expect(resolveQuickConnect("Lab", ["lab", "Lab"], [])?.target).toEqual({ kind: "sshConfig", alias: "Lab" });
+    expect(resolveQuickConnect("LAB", ["Lab"], [])?.target).toEqual({ kind: "quick", spec: "LAB" });
   });
 
   it("prefills a new bookmark in the dialog", async () => {
