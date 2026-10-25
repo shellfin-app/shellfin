@@ -569,30 +569,10 @@ mod tests {
         );
     }
 
-    /// Logs written on this thread while `f` runs.
+    /// Logs written on this thread while `f` runs (see `logging::test_capture` for why this is
+    /// not a scoped `with_default` subscriber).
     fn captured_logs(f: impl FnOnce()) -> String {
-        use std::sync::{Arc, Mutex};
-        use tracing_subscriber::layer::SubscriberExt;
-        #[derive(Clone, Default)]
-        struct Buf(Arc<Mutex<Vec<u8>>>);
-        impl std::io::Write for Buf {
-            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
-                self.0.lock().unwrap().extend_from_slice(b);
-                Ok(b.len())
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
-        let buf = Buf::default();
-        let sink = buf.clone();
-        let subscriber = tracing_subscriber::registry().with(
-            tracing_subscriber::fmt::layer()
-                .with_ansi(false)
-                .with_writer(move || sink.clone()),
-        );
-        tracing::subscriber::with_default(subscriber, f);
-        String::from_utf8(buf.0.lock().unwrap().clone()).unwrap()
+        crate::logging::test_capture::capture(f)
     }
 
     #[test]

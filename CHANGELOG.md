@@ -71,6 +71,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- On Windows, saving settings, bookmarks, recents or an exported file no longer fails with "Access is denied" when
+  another program (an antivirus scan, the search indexer, a sync client, an editor) has the file open for a moment.
+  The save waits up to about a second for the file to be released.
 - Selected text in the editor is clearly visible again: the current-line highlight no longer covers the selection.
   The selection is a tint of the accent colour, in both themes, with or without focus. To keep syntax colours readable
   on it, comments are a little lighter in the dark theme (and purple slightly lighter), and the light theme's syntax
