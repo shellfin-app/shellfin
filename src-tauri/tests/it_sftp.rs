@@ -330,6 +330,11 @@ impl Recorder {
             .iter()
             .filter(|e| match e {
                 TransferEvent::Started { transfer_id, .. }
+                | TransferEvent::ScanProgress { transfer_id, .. }
+                | TransferEvent::Scanned { transfer_id, .. }
+                | TransferEvent::AwaitingDecision { transfer_id, .. }
+                | TransferEvent::ItemIssue { transfer_id, .. }
+                | TransferEvent::Conflicts { transfer_id, .. }
                 | TransferEvent::Progress { transfer_id, .. }
                 | TransferEvent::Done { transfer_id, .. }
                 | TransferEvent::Failed { transfer_id, .. }

@@ -82,7 +82,7 @@ describe("buffers and transfers", () => {
 
   it("removing a session removes its transfers", () => {
     const s = useStore.getState();
-    const base = { bytes: 0, total: 1, status: "running" as const, retryable: false, error: null, remoteDir: null, direction: "upload" as const };
+    const base = { bytes: 0, total: 1, status: "running" as const, retryable: false, error: null, remoteDir: null, direction: "upload" as const, kind: "file" as const };
     s.upsertTransfer({ ...base, transferId: "t1", sessionId: "s1", name: "a" });
     s.upsertTransfer({ ...base, transferId: "t2", sessionId: "other", name: "b" });
     s.removeSession("s1");

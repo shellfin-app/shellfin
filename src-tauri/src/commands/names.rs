@@ -65,6 +65,8 @@ pub const COMMAND_NAMES: &[&str] = &[
     "sftp_delete",
     // transfers
     "transfer_download",
+    "transfer_download_folder",
+    "transfer_decide",
     "transfer_upload_pick",
     "transfer_upload_dropped",
     "transfer_retry",

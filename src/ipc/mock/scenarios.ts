@@ -14,7 +14,8 @@ import type {
   SessionInfo,
   TermEvent,
 } from "../types";
-import type { FakeFs } from "./fakeFs";
+import { type FakeFs, TREE_SPECIAL, type TreeSpec, treeLink } from "./fakeFs";
+import type { MockLocalDisk } from "./folderJob";
 
 export const SCENARIO_NAMES = [
   "happy",
@@ -42,6 +43,7 @@ export const SCENARIO_NAMES = [
   "configWarnings",
   "bugReport",
   "fileColumns",
+  "folderTransfers",
 ] as const;
 
 export type ScenarioName = (typeof SCENARIO_NAMES)[number];
@@ -120,6 +122,10 @@ export interface ScenarioHooks {
   conflictOnSave?: boolean;
   /** What the native upload picker returns (local file names and sizes); default: one new file. */
   pickedFiles?: readonly { name: string; size: number }[];
+  /** Folder downloads: what exists on the "local disk" (folders in the chosen parent, free space, items that fail once). */
+  localDisk?: Partial<MockLocalDisk>;
+  /** The native folder picker of "Download folder…" is cancelled (`transfer_download_folder` resolves `null`). */
+  folderPickerCancelled?: boolean;
   /** The file the bookmark import "picks" (default: one plain bookmark). */
   importFile?: MockImportFile;
   /** Load warnings of the ssh config snapshot (and the `badLine` warnings dropped by the per-file cap). */
@@ -375,6 +381,73 @@ const implemented = (runSession: (s: SessionScript) => Promise<void>, extra: Par
   ...extra,
 });
 
+const LOSSY = String.fromCodePoint(0xfffd);
+const MIB = 1024 * 1024;
+
+/** 20 000 small files in 20 folders: above the 10 000-file soft threshold ("Copy 20 000 files?"). */
+function hugeLogs(): TreeSpec {
+  const spec: Record<string, TreeSpec> = {};
+  for (let d = 0; d < 20; d += 1) {
+    const dir: Record<string, number> = {};
+    for (let f = 0; f < 1000; f += 1) dir[`app-${String(f).padStart(4, "0")}.log`] = 512;
+    spec[`day-${String(d + 1).padStart(2, "0")}`] = dir;
+  }
+  return spec;
+}
+
+/**
+ * Folder downloads (ARCHITECTURE §6.6 "Folders"). Right-click a folder > "Download folder…":
+ * - `release`: hostile names (bidi, markup, `CON`, `a:b` vs `a_b`, `README.md` vs `readme.md`, trailing dot), a link
+ *   to /etc and a link loop, a FIFO, a lossy file and a lossy folder, a NUL name; it exists locally, so the job asks
+ *   Merge / Keep both; on Merge two files conflict ("Files already exist", one older, one newer locally) and
+ *   `data/locked.db` fails once (Retry copies only it).
+ * - `huge-logs`: 20 000 files, the soft-threshold prompt.
+ * - `backup`: a file of that name is in the way locally (Keep both / Cancel only).
+ * - `release-link`: a symlink to `release` (the root link is resolved once); `caf?-files`: a lossy name (menu off).
+ */
+const FOLDER_TRANSFERS: Partial<ScenarioHooks> = {
+  extraFiles: (fs) => {
+    fs.addTree("/srv/app/release", {
+      bin: { app: 4 * MIB, "tools.sh": 2048 },
+      docs: {
+        "README.md": 900,
+        "readme.md": 120,
+        CON: 10,
+        "a:b.txt": 5,
+        "a_b.txt": 5,
+        [`evil${RLO}gpj.exe`]: 100,
+        "<img src=x onerror=alert(1)>.html": 50,
+        "notes.": 1,
+      },
+      data: { "locked.db": MIB, "rows.csv": 30_000 },
+      "link-to-etc": treeLink("/etc"),
+      loop: treeLink("/srv/app/release"),
+      "queue.fifo": TREE_SPECIAL,
+      [`caf${LOSSY}.txt`]: 12,
+      [`caf${LOSSY}-dir`]: { "inner.txt": 1 },
+      [`bad\u0000name`]: 3,
+    });
+    fs.addTree("/srv/app/huge-logs", hugeLogs());
+    fs.addTree("/srv/app/backup", { "db.sql": 2 * MIB });
+    fs.addLink("/srv/app/release-link", "/srv/app/release");
+    fs.addTree(`/srv/app/caf${LOSSY}-files`, { "x.txt": 1 });
+  },
+  localDisk: {
+    folders: {
+      release: {
+        isDir: true,
+        files: {
+          // Older than the server copy (Replace older replaces it) and newer (Replace older keeps it).
+          "bin/tools.sh": { size: 1900, mtime: 1_600_000_000 },
+          "docs/README.md": { size: 800, mtime: 4_000_000_000 },
+        },
+      },
+      backup: { isDir: false },
+    },
+    failing: ["data/locked.db"],
+  },
+};
+
 const happy = implemented(happyScript);
 export const SCENARIOS: Record<ScenarioName, ScenarioHooks> = {
   happy,
@@ -439,6 +512,7 @@ export const SCENARIOS: Record<ScenarioName, ScenarioHooks> = {
       fs.addLink("/srv/app/data/latest.csv", "/srv/app/data/report.csv");
     },
   }),
+  folderTransfers: implemented(happyScript, FOLDER_TRANSFERS),
   sftpUnavailable: implemented(happyScript, { sftpAvailable: false }),
   uploadConflict: implemented(happyScript, {
     pickedFiles: [

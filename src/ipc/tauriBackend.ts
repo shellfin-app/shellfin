@@ -25,6 +25,7 @@ import type {
   Settings,
   SshConfigSnapshot,
   TextDocument,
+  TransferDecision,
   TransferEvent,
   UpdateCheckOutcome,
   UpdateProgress,
@@ -157,6 +158,15 @@ export class TauriBackend implements Backend {
       dialogTitle,
       progress: channel<TransferEvent>(onEvent),
     });
+  transferDownloadFolder: Backend["transferDownloadFolder"] = (sessionId, remotePath, dialogTitle, onEvent) =>
+    call<string | null>("transfer_download_folder", {
+      sessionId,
+      remotePath,
+      dialogTitle,
+      progress: channel<TransferEvent>(onEvent),
+    });
+  transferDecide: Backend["transferDecide"] = (transferId, decision: TransferDecision) =>
+    call<void>("transfer_decide", { transferId, decision });
   transferUploadPick: Backend["transferUploadPick"] = (sessionId, remoteDir, dialogTitle, overwrite, onEvent) =>
     call<string[]>("transfer_upload_pick", {
       sessionId,

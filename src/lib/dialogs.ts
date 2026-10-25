@@ -41,6 +41,8 @@ export const deleteEntryDialog = (sessionId: string, path: string, entry: "file"
 export const moveEntryDialog = (sessionId: string, path: string): DialogState => ({ kind: "moveEntry", sessionId, path });
 export const goToFolderDialog = (sessionId: string): DialogState => ({ kind: "goToFolder", sessionId });
 export const replaceTransfersDialog = (sessionId: string): DialogState => ({ kind: "replaceTransfers", sessionId });
+export const transferDecisionDialog = (sessionId: string, transferId: string): DialogState => ({ kind: "transferDecision", sessionId, transferId });
+export const transferConflictsDialog = (sessionId: string, transferId: string): DialogState => ({ kind: "transferConflicts", sessionId, transferId });
 
 export const confirmCloseTerminalsDialog = (sessionId: string, termIds?: string[]): DialogState =>
   termIds === undefined ? { kind: "confirmCloseTerminals", sessionId } : { kind: "confirmCloseTerminals", sessionId, termIds };
@@ -64,6 +66,8 @@ export const DIALOG_KIND = {
   moveEntry: "moveEntry",
   goToFolder: "goToFolder",
   replaceTransfers: "replaceTransfers",
+  transferDecision: "transferDecision",
+  transferConflicts: "transferConflicts",
   configWarnings: "configWarnings",
   errorReport: "errorReport",
 } as const satisfies Record<string, DialogState["kind"]>;

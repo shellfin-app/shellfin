@@ -39,6 +39,7 @@ import type {
   TermEvent,
   TermSize,
   TextDocument,
+  TransferDecision,
   TransferEvent,
   AppError,
   UpdateCheckOutcome,
@@ -205,6 +206,22 @@ export interface Backend {
     dialogTitle: string,
     onEvent: (event: TransferEvent) => void,
   ): Promise<string | null>;
+  /**
+   * "Download folder…": the backend opens the native folder picker for the parent and copies the whole tree into
+   * `<chosen>/<folder name>` as one job (one `transferId`). Resolves with the id, or `null` when the picker was
+   * cancelled.
+   */
+  transferDownloadFolder(
+    sessionId: string,
+    remotePath: string,
+    dialogTitle: string,
+    onEvent: (event: TransferEvent) => void,
+  ): Promise<string | null>;
+  /**
+   * Answers what a folder job waits for (`awaitingDecision`, `conflicts`). Rejects with `notFound{what: "transfer"}`
+   * when the job no longer runs; a decision that does not fit what the job waits for is ignored.
+   */
+  transferDecide(transferId: string, decision: TransferDecision): Promise<void>;
   transferUploadPick(
     sessionId: string,
     remoteDir: string,

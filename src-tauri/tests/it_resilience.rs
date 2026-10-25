@@ -24,14 +24,14 @@ use std::time::{Duration, Instant};
 
 use shellfin_lib::error::{AppError, DisconnectKind, ErrorCode};
 use shellfin_lib::ipc::dto::{
-    OpenSessionRequest, Prompt, PromptAnswer, ReconnectStage, SessionEvent, SessionState, Target,
-    TermEvent, TermSize, TransferEvent,
+    ConflictPolicy, OpenSessionRequest, Prompt, PromptAnswer, ReconnectStage, SessionEvent,
+    SessionState, Target, TermEvent, TermSize, TransferEvent,
 };
 use shellfin_lib::known_hosts::TrustOnceApprovals;
 use shellfin_lib::session::manager::SessionManager;
 use shellfin_lib::session::session::{ConnectCtxTemplate, SessionDeps, SessionHandle};
 use shellfin_lib::sftp::client::Sftp;
-use shellfin_lib::sftp::transfer::{TransferSink, TransferSpec};
+use shellfin_lib::sftp::transfer::{TransferSink, TransferSpec, TreeSpec};
 use shellfin_lib::ssh::prompt::EventSink;
 use shellfin_lib::sshconfig::ConfigEnv;
 use shellfin_lib::sshconfig::service::SshConfigService;
@@ -329,6 +329,33 @@ async fn docker_pause_reconnects_automatically() {
         false,
         sink.clone(),
     );
+    // A folder download running at the same time (folder_retry_after_pause).
+    let folder = format!(
+        "/tmp/it-resilience-folder-{}",
+        uuid::Uuid::new_v4().simple()
+    );
+    support::docker_exec_ok(
+        support::TARGET,
+        &[
+            "sh",
+            "-c",
+            &format!(
+                "mkdir -p '{folder}/sub' && chmod -R 755 '{folder}' && for i in 1 2 3; do \
+                 head -c 67108864 /dev/urandom > '{folder}/sub/f'$i; done && chmod -R a+r '{folder}'"
+            ),
+        ],
+    );
+    let folder_local = tempfile::tempdir().unwrap();
+    let job = transfers.start_tree(
+        s.handle.clone(),
+        TreeSpec::download(
+            folder.clone(),
+            folder_local.path().to_path_buf(),
+            "res".into(),
+        ),
+        ConflictPolicy::Ask,
+        sink.clone(),
+    );
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     let paused_at = Instant::now();
@@ -524,6 +551,49 @@ async fn docker_pause_reconnects_automatically() {
         .await
         .unwrap();
     assert_eq!(entry.size, Some(256 * 1024 * 1024));
+
+    // The folder job failed with the connection (retryable) and its retry copies the rest.
+    match trec.finished(&job, Duration::from_secs(60)).await {
+        TransferEvent::Failed {
+            error, retryable, ..
+        } => {
+            assert!(
+                matches!(error.kind, ErrorCode::Disconnected { .. }),
+                "{error:?}"
+            );
+            assert!(retryable);
+        }
+        // Small enough to finish before the freeze on a fast machine: nothing to retry then.
+        TransferEvent::Done { .. } => {}
+        other => panic!("{other:?}"),
+    }
+    if let Ok((_, TransferSpec::Tree(state))) = transfers.take_failed(&job) {
+        let retry = transfers.restart_tree(
+            s.handle.clone(),
+            state,
+            false,
+            ConflictPolicy::Ask,
+            sink.clone(),
+        );
+        match trec.finished(&retry, Duration::from_secs(120)).await {
+            TransferEvent::Done {
+                summary: Some(summary),
+                ..
+            } => assert_eq!(summary.failed, 0, "{summary:?}"),
+            other => panic!("{other:?}"),
+        }
+    }
+    for i in 1..=3 {
+        let p = folder_local.path().join(format!("res/sub/f{i}"));
+        assert_eq!(std::fs::metadata(&p).unwrap().len(), 67_108_864, "{p:?}");
+    }
+    let leftovers: Vec<_> = std::fs::read_dir(folder_local.path().join("res/sub"))
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().ends_with(".part"))
+        .collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+    support::docker_exec_ok(support::TARGET, &["rm", "-rf", &folder]);
 
     support::docker_exec_ok(support::TARGET, &["rm", "-rf", &upload_dir]);
     e.manager.close(&s.id, None).await;

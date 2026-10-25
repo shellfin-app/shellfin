@@ -64,7 +64,7 @@ describe("uploads", () => {
     expect(dialog.textContent).toContain("On the server:");
     // Waiting for the Replace decision is not a failure.
     const statusButton = screen.getByRole("button", { name: /need your decision/ });
-    expect(statusButton.textContent).toContain("2 uploads need your decision");
+    expect(statusButton.textContent).toContain("2 transfers need your decision");
     expect(statusButton.textContent).not.toContain("failed");
     await waitFor(() => expect(rowsOf().filter((r) => r.status === "done").map((r) => r.name)).toEqual(["notes.txt"]));
     await user.click(within(dialog).getByRole("button", { name: "Replace selected (2)" }));
@@ -128,6 +128,7 @@ describe("uploads", () => {
       sessionId,
       name: "old.txt",
       direction: "upload",
+      kind: "file",
       bytes: 0,
       total: 1,
       status: "failed",

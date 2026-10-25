@@ -33,6 +33,7 @@ export const ID_NEW_FILE = "newFile";
 export const ID_GO_INTO = "goInto";
 export const ID_NEW_FOLDER = "newFolder";
 export const ID_TERMINAL_HERE = "terminalHere";
+export const ID_DOWNLOAD_FOLDER = "downloadFolder";
 
 // Selectors for focus movement, zoom and edit routing.
 export const SEL_HOST_NAV = "[data-host-nav]";
@@ -41,3 +42,4 @@ export const SEL_SIDEBAR_HOST_CURRENT = ".sidebar [data-host-nav][tabindex='0']"
 export const SEL_SIDEBAR_HOST_ANY = ".sidebar [data-host-nav]";
 export const SEL_TERMINAL_AREA = ".xterm, .terminal-panel";
 export const SEL_EDITOR_AREA = ".cm-editor, .editor-area";
+export const SEL_TRANSFER_DISMISS = "[data-dismiss]";

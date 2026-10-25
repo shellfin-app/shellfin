@@ -20,7 +20,8 @@ downloadLimitKiBps: number,
 maxConcurrent: number, 
 /**
  * What to do when an upload's destination exists (`overwrite: true` always
- * wins). Not applied to downloads through the Save dialog.
+ * wins), and when a folder download's destination folder or one of its files exists
+ * locally. Not applied to single downloads through the Save dialog.
  */
 onConflict: ConflictPolicy, 
 /**

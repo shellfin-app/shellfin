@@ -38,6 +38,7 @@ import type {
   SshConfigSnapshot,
   TermSize,
   TextDocument,
+  TransferDecision,
   TransferDirection,
   TransferEvent,
   UpdateCheckOutcome,
@@ -46,8 +47,9 @@ import type {
   WindowState,
 } from "../types";
 import { validStartupCommand } from "../../lib/bookmarkForm";
-import { dirname, joinPath } from "../../lib/remotePath";
+import { basename, dirname, joinPath } from "../../lib/remotePath";
 import { FakeFs } from "./fakeFs";
+import { type FolderJobContext, type MockLocalDisk, MockFolderJob, mockLocalName } from "./folderJob";
 import { FakeShell } from "./fakeShell";
 import {
   makeAgent,
@@ -197,6 +199,10 @@ export class MockBackend implements Backend {
   private readonly transferStepMs: number;
   private readonly conflicted = new Set<string>();
   private readonly transfers = new Map<string, MockTransfer>();
+  /** Folder jobs: running, or finished with retryable failures (kept for `transfer_retry`). */
+  private readonly folderJobs = new Map<string, MockFolderJob>();
+  /** Tests/dev: what the folder downloads find on the "local disk" (existing folders, free space, failing items). */
+  readonly localDisk: MockLocalDisk;
   private readonly drops = new Map<string, { entries: DropEntry[]; at: number }>();
   private readonly savedPasswords = new Set<string>();
   private seq = 0;
@@ -228,6 +234,12 @@ export class MockBackend implements Backend {
     this.recents = makeRecents(now);
     this.fs = new FakeFs(now);
     this.hooks.extraFiles?.(this.fs);
+    const local = this.hooks.localDisk;
+    this.localDisk = {
+      folders: JSON.parse(JSON.stringify(local?.folders ?? {})) as MockLocalDisk["folders"],
+      freeBytes: local?.freeBytes ?? 500 * 1024 ** 3,
+      failing: [...(local?.failing ?? [])],
+    };
     this.importFile = this.hooks.importFile ?? { bookmarks: [{ name: "imported-box", host: "imported.example.com", user: "root" }] };
     if (this.hooks.update) this.publishedUpdate = makeMockUpdate(this.hooks.update);
   }
@@ -976,9 +988,7 @@ export class MockBackend implements Backend {
     const session = this.sessions.get(sessionId);
     if (!session) throw new IpcError({ code: "sessionNotFound", params: { sessionId } });
     if (session.lastState?.phase === "disconnected") return;
-    for (const t of this.transfers.values()) {
-      if (t.sessionId === sessionId) t.cancelled = true;
-    }
+    this.cancelSessionTransfers(sessionId);
     session.userDisconnected = true;
     session.lastState = {
       phase: "disconnected",
@@ -998,9 +1008,7 @@ export class MockBackend implements Backend {
       s.pending = null;
     }
     s.waitRelease?.();
-    for (const t of this.transfers.values()) {
-      if (t.sessionId === sessionId) t.cancelled = true;
-    }
+    this.cancelSessionTransfers(sessionId);
     s.onEvent({ type: "state", state: { phase: "closed" } });
     this.sessions.delete(sessionId);
     for (const t of this.terminals.values()) if (t.sessionId === sessionId) t.closed = true;
@@ -1166,6 +1174,15 @@ export class MockBackend implements Backend {
   }
 
   // ---- transfers ----
+  private cancelSessionTransfers(sessionId: string): void {
+    for (const t of this.transfers.values()) {
+      if (t.sessionId === sessionId) t.cancelled = true;
+    }
+    for (const job of this.folderJobs.values()) {
+      if (job.sessionId === sessionId && !job.done) job.cancel();
+    }
+  }
+
   private pause(): Promise<void> {
     return this.wait(this.transferStepMs);
   }
@@ -1192,7 +1209,7 @@ export class MockBackend implements Backend {
       if (!retryable) this.transfers.delete(t.id);
       emit({ type: "failed", transferId: t.id, error, retryable });
     };
-    emit({ type: "started", transferId: t.id, name: t.name, direction: t.direction, total: t.size });
+    emit({ type: "started", transferId: t.id, name: t.name, direction: t.direction, total: t.size, kind: "file" });
     if (t.localIsDir) return fail({ code: "localIsADirectory", params: { path: t.name } }, false);
     const target = t.direction === "upload" ? joinPath(t.remoteDir, t.name) : t.remotePath;
     if (t.direction === "upload" && target && this.fs.has(target) && !overwrite) {
@@ -1238,6 +1255,48 @@ export class MockBackend implements Backend {
       true,
     );
   }
+  async transferDownloadFolder(
+    sessionId: string,
+    remotePath: string,
+    _dialogTitle: string,
+    onEvent: (event: TransferEvent) => void,
+  ): Promise<string | null> {
+    const session = this.requireSftp(sessionId);
+    // `validate_exact`: a lossy path cannot be sent back to the server.
+    if (remotePath.includes("�")) throw new IpcError({ code: "invalidArgument", params: { field: "remotePath" } });
+    const entry = this.fs.stat(remotePath);
+    // A symlink root is resolved once (the user chose that row); nothing below it is followed.
+    const real = entry.kind === "symlink" ? this.fs.resolve(remotePath) : remotePath;
+    if (!this.fs.has(real) || this.fs.stat(real).kind !== "dir") throw new IpcError({ code: "notADirectory", params: { path: remotePath } });
+    if (this.hooks.folderPickerCancelled) return null;
+    const name = remotePath === "/" ? "download" : basename(remotePath);
+    const id = this.id("transfer");
+    const job = new MockFolderJob(id, session.id, name, real, mockLocalName(name), onEvent, this.folderContext(session.id, id));
+    this.folderJobs.set(id, job);
+    void job.run(false);
+    return id;
+  }
+
+  private folderContext(sessionId: string, id: string): FolderJobContext {
+    return {
+      fs: this.fs,
+      local: this.localDisk,
+      pause: () => this.pause(),
+      alive: () => this.sessions.has(sessionId),
+      connected: () => this.sessions.get(sessionId)?.lastState?.phase === "connected",
+      onConflict: () => this.settings.transfers.onConflict,
+      finished: (retained) => {
+        if (!retained) this.folderJobs.delete(id);
+      },
+    };
+  }
+
+  async transferDecide(transferId: string, decision: TransferDecision): Promise<void> {
+    const job = this.folderJobs.get(transferId);
+    if (!job || job.done) throw new IpcError({ code: "notFound", params: { what: "transfer", id: transferId } });
+    job.decide(decision);
+  }
+
   async transferUploadPick(
     sessionId: string,
     remoteDir: string,
@@ -1273,6 +1332,19 @@ export class MockBackend implements Backend {
     );
   }
   async transferRetry(transferId: string, overwrite: boolean, onEvent: (event: TransferEvent) => void): Promise<string> {
+    const job = this.folderJobs.get(transferId);
+    if (job) {
+      // Only a finished job with retryable failures is kept; retry copies the failed and not-started items.
+      if (!job.done) throw new IpcError({ code: "notFound", params: { what: "transfer", id: transferId } });
+      const session = this.sessions.get(job.sessionId);
+      if (!session) throw new IpcError({ code: "sessionNotFound", params: { sessionId: job.sessionId } });
+      this.folderJobs.delete(transferId);
+      const id = this.id("transfer");
+      const next = job.retry(id, onEvent, overwrite, this.folderContext(job.sessionId, id));
+      this.folderJobs.set(id, next);
+      void next.run(true);
+      return id;
+    }
     const old = this.transfers.get(transferId);
     if (!old || !old.failed) throw new IpcError({ code: "notFound", params: { what: "transfer", id: transferId } });
     const session = this.sessions.get(old.sessionId);
@@ -1286,6 +1358,13 @@ export class MockBackend implements Backend {
     );
   }
   async transferCancel(transferId: string): Promise<void> {
+    const job = this.folderJobs.get(transferId);
+    if (job) {
+      // A running job stops (finished files stay); a retained one is forgotten.
+      if (job.done) this.folderJobs.delete(transferId);
+      else job.cancel();
+      return;
+    }
     const t = this.transfers.get(transferId);
     if (!t) return;
     t.cancelled = true;

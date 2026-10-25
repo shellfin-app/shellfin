@@ -1,14 +1,14 @@
 // Context menu of the file tree (rows and the empty area), built on the app's menu system (features/menu).
 import { t } from "../../i18n/translate";
 import { goToFolderDialog, moveEntryDialog } from "../../lib/dialogs";
-import { ID_GO_INTO, ID_NEW_FILE, ID_NEW_FOLDER, ID_TERMINAL_HERE, MENU_COPY_PATH } from "../../lib/domIds";
+import { ID_DOWNLOAD_FOLDER, ID_GO_INTO, ID_NEW_FILE, ID_NEW_FOLDER, ID_TERMINAL_HERE, MENU_COPY_PATH } from "../../lib/domIds";
 import { enterable, identityOf, writability } from "../../lib/permissions";
 import { dirname } from "../../lib/remotePath";
 import { guard } from "../../lib/reportError";
 import { useStore } from "../../state/store";
 import { openFile } from "../editor/editorActions";
 import type { MenuItem } from "../menu/menuStore";
-import { downloadFile, uploadFiles } from "../transfers/transferActions";
+import { downloadFile, downloadFolder, uploadFiles } from "../transfers/transferActions";
 import {
   changeRoot,
   copyPath,
@@ -83,6 +83,13 @@ export function treeMenuItems(sessionId: string, path: string): MenuItem[] {
       separatorBefore: true,
       disabled: !ok,
       onSelect: () => guard(uploadFiles(sessionId, path)),
+    });
+    // Folders and symlinks to folders (the backend resolves a link root once, never a link below it, §6.6).
+    items.push({
+      id: ID_DOWNLOAD_FOLDER,
+      label: t("files.downloadFolder"),
+      disabled: !ok,
+      onSelect: () => guard(downloadFolder(sessionId, path)),
     });
   } else {
     items.push({

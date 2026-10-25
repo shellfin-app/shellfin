@@ -13,11 +13,11 @@ use crate::app_state::AppState;
 use crate::commands::guarded;
 use crate::error::{AppError, ErrorCode};
 use crate::external_link::sanitize_dialog_text;
-use crate::ipc::dto::{ConflictPolicy, TransferEvent};
+use crate::ipc::dto::{ConflictPolicy, TransferDecision, TransferEvent};
 use crate::sftp::client::{Sftp, ensure_regular};
 use crate::sftp::names::sanitize_local_name;
 use crate::sftp::path;
-use crate::sftp::transfer::{Conflict, TransferSink, TransferSpec};
+use crate::sftp::transfer::{Conflict, TransferSink, TransferSpec, TreeSpec};
 use crate::window::MAIN_WINDOW_LABEL;
 
 /// `Channel<TransferEvent>` as a transfer's event sink.
@@ -104,6 +104,68 @@ pub async fn transfer_download(
             Arc::new(ChannelSink(progress)),
         );
         Ok(Some(id))
+    })
+    .await
+}
+
+/// "Download folder…": the remote folder (a symlink row is resolved once, nothing below it is
+/// followed), then the native folder picker for the **parent**; the job writes into
+/// `<chosen>/<sanitized folder name>` (§6.6 "Folders"). Returns the transferId, or `null` when
+/// the dialog was cancelled. `notADirectory` if the path is not a folder.
+#[tauri::command]
+pub async fn transfer_download_folder(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    session_id: String,
+    remote_path: String,
+    dialog_title: String,
+    progress: Channel<TransferEvent>,
+) -> Result<Option<String>, AppError> {
+    guarded("transfer_download_folder", async move {
+        path::validate_exact(&remote_path, "remotePath")?;
+        let session = state.sessions.session(&session_id)?;
+        let sftp = Sftp::for_session(&session).await?;
+        let root = crate::sftp::tree::resolve_root(&sftp, &remote_path).await?;
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let mut dialog = app
+            .dialog()
+            .file()
+            .set_title(sanitize_dialog_text(&dialog_title));
+        if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+            dialog = dialog.set_parent(&window);
+        }
+        dialog.pick_folder(move |picked| {
+            let _ = tx.send(picked);
+        });
+        let Some(picked) = rx.await.ok().flatten() else {
+            return Ok(None);
+        };
+        let Some(parent) = into_paths(vec![picked]).pop() else {
+            return Ok(None);
+        };
+        // The row's name (not the link target's): what the user saw and chose.
+        let name = crate::sftp::tree::sanitize_component(path::basename(&remote_path));
+        let id = state.sessions.transfers().start_tree(
+            session,
+            TreeSpec::download(root, parent, name),
+            state.sessions.settings().transfers.on_conflict,
+            Arc::new(ChannelSink(progress)),
+        );
+        Ok(Some(id))
+    })
+    .await
+}
+
+/// Answer a folder job that waits (`awaitingDecision`, `conflicts`). `notFound{what:"transfer"}`
+/// when the job is not running; a decision that does not fit what the job waits for is ignored.
+#[tauri::command]
+pub async fn transfer_decide(
+    state: State<'_, AppState>,
+    transfer_id: String,
+    decision: TransferDecision,
+) -> Result<(), AppError> {
+    guarded("transfer_decide", async move {
+        state.sessions.transfers().decide(&transfer_id, decision)
     })
     .await
 }
@@ -205,13 +267,29 @@ pub async fn transfer_retry(
                 id: transfer_id,
             }));
         };
+        let policy = state.sessions.settings().transfers.on_conflict;
         let conflict = match &spec {
-            TransferSpec::Upload { .. } => {
-                Conflict::resolve(overwrite, state.sessions.settings().transfers.on_conflict)
-            }
+            TransferSpec::Upload { .. } => Conflict::resolve(overwrite, policy),
             // The target was chosen in the Save dialog of the original download.
-            TransferSpec::Download { .. } => {
-                download_conflict(true, state.sessions.settings().transfers.on_conflict)
+            TransferSpec::Download { .. } => download_conflict(true, policy),
+            // Only the failed and not-started files of the folder job run again.
+            TransferSpec::Tree(tree) => {
+                return Ok(transfers.restart_tree(
+                    session,
+                    tree.clone(),
+                    overwrite,
+                    policy,
+                    Arc::new(ChannelSink(progress)),
+                ));
+            }
+            // Failed before its scan finished: starts over.
+            TransferSpec::TreeScan(spec) => {
+                return Ok(transfers.start_tree(
+                    session,
+                    spec.clone(),
+                    policy,
+                    Arc::new(ChannelSink(progress)),
+                ));
             }
         };
         Ok(transfers.start_with(session, spec, conflict, Arc::new(ChannelSink(progress))))

@@ -13,6 +13,7 @@
 //! copies), `local` the local-filesystem side (`.part`, provenance mark, upload source).
 
 mod download;
+mod job;
 mod local;
 mod upload;
 
@@ -21,11 +22,13 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use tokio::sync::{OwnedSemaphorePermit, Semaphore, watch};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, watch};
 
 use crate::error::{AppError, DisconnectKind, EntityKind, ErrorCode};
-use crate::ipc::dto::{FileEntry, TransferEvent};
+use crate::ipc::dto::{ConflictPolicy, FileEntry, TransferDecision, TransferEvent};
+
 use crate::session::session::SessionHandle;
+pub use job::{TreeSpec, TreeState};
 
 use super::client::{SESSION_EXTRA_REQUESTS, Sftp, Window};
 use super::path;
@@ -51,14 +54,26 @@ pub trait TransferSink: Send + Sync + 'static {
 /// What a transfer does; kept for `transfer_retry`.
 #[derive(Debug, Clone)]
 pub enum TransferSpec {
-    Download { remote: String, local: PathBuf },
-    Upload { local: PathBuf, remote_dir: String },
+    Download {
+        remote: String,
+        local: PathBuf,
+    },
+    Upload {
+        local: PathBuf,
+        remote_dir: String,
+    },
+    /// A scanned folder download (its manifest and per-entry state, for retry).
+    Tree(Arc<TreeState>),
+    /// A folder download that failed before its scan finished (a retry starts over).
+    TreeScan(TreeSpec),
 }
 
 struct Running {
     session_id: String,
     cancel: watch::Sender<bool>,
     task: Option<tokio::task::JoinHandle<()>>,
+    /// Folder jobs: where `transfer_decide` answers go.
+    decide: Option<mpsc::Sender<TransferDecision>>,
 }
 
 struct Failed {
@@ -76,6 +91,8 @@ struct Inner {
     /// Per-session pool of pipelined requests above `PIPELINE_DEPTH`
     /// ([`SESSION_EXTRA_REQUESTS`]), shared by the session's transfers.
     pools: HashMap<String, Arc<Semaphore>>,
+    /// Per-session folder job slots ([`job::MAX_JOBS_PER_SESSION`]).
+    jobs: HashMap<String, Arc<Semaphore>>,
     /// Successful transfers since the last "transfers done" notification, and the
     /// name of the last one.
     batch_done: u32,
@@ -165,6 +182,7 @@ pub fn retryable(e: &AppError) -> bool {
     matches!(
         e.kind,
         ErrorCode::RemoteExists { .. }
+            | ErrorCode::LocalDiskFull { .. }
             | ErrorCode::Disconnected { .. }
             | ErrorCode::NotConnected { .. }
             | ErrorCode::SftpUnavailable
@@ -250,6 +268,7 @@ impl TransferRegistry {
                 session_id,
                 cancel,
                 task: Some(task),
+                decide: None,
             },
         );
         id
@@ -316,6 +335,7 @@ impl TransferRegistry {
             }
             inner.slots.remove(session_id);
             inner.pools.remove(session_id);
+            inner.jobs.remove(session_id);
             inner
                 .running
                 .values_mut()
@@ -332,6 +352,181 @@ impl TransferRegistry {
         let all = futures_util::future::join_all(tasks);
         if tokio::time::timeout(CANCEL_WAIT, all).await.is_err() {
             tracing::warn!("transfers did not finish their cleanup in time");
+        }
+    }
+
+    /// Start a folder download job (§6.6 "Folders"); returns its id at once.
+    pub fn start_tree(
+        self: &Arc<Self>,
+        session: Arc<SessionHandle>,
+        spec: TreeSpec,
+        policy: ConflictPolicy,
+        sink: Arc<dyn TransferSink>,
+    ) -> String {
+        self.spawn_tree(session, policy, sink, TreeRun::New(spec))
+    }
+
+    /// `transfer_retry` of a kept folder job: only its failed and not-started files run;
+    /// `overwrite` answers the set-aside conflicts with Replace.
+    pub fn restart_tree(
+        self: &Arc<Self>,
+        session: Arc<SessionHandle>,
+        state: Arc<TreeState>,
+        overwrite: bool,
+        policy: ConflictPolicy,
+        sink: Arc<dyn TransferSink>,
+    ) -> String {
+        self.spawn_tree(session, policy, sink, TreeRun::Retry(state, overwrite))
+    }
+
+    fn spawn_tree(
+        self: &Arc<Self>,
+        session: Arc<SessionHandle>,
+        policy: ConflictPolicy,
+        sink: Arc<dyn TransferSink>,
+        what: TreeRun,
+    ) -> String {
+        let max = self.max_active();
+        let id = uuid::Uuid::new_v4().to_string();
+        let (cancel, cancel_rx) = watch::channel(false);
+        let (decide, decisions) = mpsc::channel(16);
+        let mut inner = self.lock();
+        Self::purge_expired(&mut inner);
+        let session_id = session.id.clone();
+        let slot = slot_for(&mut inner.slots, &session_id, max);
+        let pool = inner
+            .pools
+            .entry(session_id.clone())
+            .or_insert_with(|| Arc::new(Semaphore::new(SESSION_EXTRA_REQUESTS)))
+            .clone();
+        let job_slot = inner
+            .jobs
+            .entry(session_id.clone())
+            .or_insert_with(|| Arc::new(Semaphore::new(job::MAX_JOBS_PER_SESSION)))
+            .clone();
+        let gate = Gate::new(slot, cancel_rx.clone()).with_pool(pool);
+        let inputs = job::Inputs::new(decisions, cancel_rx);
+        let env = job::JobEnv {
+            id: id.clone(),
+            session: session.clone(),
+            sink: sink.clone(),
+            policy,
+            preserve_times: self.preserve_timestamps(),
+            max_files: max,
+        };
+        let reg = self.clone();
+        let task = tokio::spawn(async move {
+            let name = match &what {
+                TreeRun::New(spec) => spec.name().to_owned(),
+                TreeRun::Retry(state, _) => state.name().to_owned(),
+            };
+            let end = match what {
+                TreeRun::New(spec) => job::run_new(&env, spec, gate, inputs, job_slot).await,
+                TreeRun::Retry(state, overwrite) => {
+                    job::run_retry(&env, state, overwrite, gate, inputs, job_slot).await
+                }
+            };
+            reg.finish_tree(&env, name, end);
+        });
+        inner.running.insert(
+            id.clone(),
+            Running {
+                session_id,
+                cancel,
+                task: Some(task),
+                decide: Some(decide),
+            },
+        );
+        id
+    }
+
+    /// The bookkeeping and final event of a folder job.
+    fn finish_tree(&self, env: &job::JobEnv, name: String, end: job::JobEnd) {
+        let id = &env.id;
+        let failed = |kept: Option<job::Kept>| {
+            kept.map(|k| Failed {
+                session_id: env.session.id.clone(),
+                spec: match k {
+                    job::Kept::State(s) => TransferSpec::Tree(s),
+                    job::Kept::Spec(s) => TransferSpec::TreeScan(s),
+                },
+                at: Instant::now(),
+            })
+        };
+        let (event, keep, done_name) = match end {
+            job::JobEnd::Done {
+                bytes,
+                summary,
+                keep,
+            } => (
+                TransferEvent::Done {
+                    transfer_id: id.clone(),
+                    bytes,
+                    entry: None,
+                    summary: Some(summary),
+                },
+                failed(keep.map(job::Kept::State)),
+                Some(name),
+            ),
+            job::JobEnd::Skipped => (
+                TransferEvent::Skipped {
+                    transfer_id: id.clone(),
+                },
+                None,
+                None,
+            ),
+            job::JobEnd::Cancelled => (
+                TransferEvent::Cancelled {
+                    transfer_id: id.clone(),
+                },
+                None,
+                None,
+            ),
+            job::JobEnd::Failed { error, keep } => {
+                let retryable = keep.is_some();
+                tracing::info!(code = ?error.kind, retryable, "folder transfer failed");
+                (
+                    TransferEvent::Failed {
+                        transfer_id: id.clone(),
+                        error,
+                        retryable,
+                    },
+                    failed(keep),
+                    None,
+                )
+            }
+        };
+        // Bookkeeping first: a `failed` event must find its retry entry.
+        self.finished_with(id, keep, done_name);
+        env.sink.send(event);
+    }
+
+    /// `transfer_decide`: hand a decision to a running folder job (ignored when it does not
+    /// wait for that kind of decision); `notFound{what:"transfer"}` when nothing runs under `id`.
+    pub fn decide(&self, transfer_id: &str, decision: TransferDecision) -> Result<(), AppError> {
+        let inner = self.lock();
+        match inner.running.get(transfer_id) {
+            Some(Running {
+                decide: Some(tx), ..
+            }) => match tx.try_send(decision) {
+                Ok(()) => Ok(()),
+                // The job is ending: as if it were gone.
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    Err(AppError::new(ErrorCode::NotFound {
+                        what: EntityKind::Transfer,
+                        id: transfer_id.to_owned(),
+                    }))
+                }
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    Err(AppError::invalid_argument("decision")
+                        .with_detail("too many decisions queued for this transfer"))
+                }
+            },
+            Some(_) => Ok(()),
+            None => Err(AppError::new(ErrorCode::NotFound {
+                what: EntityKind::Transfer,
+                id: transfer_id.to_owned(),
+            })),
         }
     }
 
@@ -365,7 +560,11 @@ impl TransferRegistry {
             let mut inner = self.lock();
             inner.running.remove(id);
             if let Some(f) = failed {
+                let tree_of = f.spec.is_tree().then(|| f.session_id.clone());
                 inner.failed.insert(id.to_owned(), f);
+                if let Some(session_id) = tree_of {
+                    retain_trees(&mut inner.failed, &session_id);
+                }
             }
             if let Some(name) = done_name {
                 inner.batch_done = inner.batch_done.saturating_add(1);
@@ -376,6 +575,30 @@ impl TransferRegistry {
         if let (Some((count, name)), Some(n)) = (batch, self.notifier.get()) {
             n.transfers_done(count, name.as_deref());
         }
+    }
+}
+
+/// What a folder job task runs.
+enum TreeRun {
+    New(TreeSpec),
+    Retry(Arc<TreeState>, bool),
+}
+
+/// At most [`job::MAX_RETAINED_JOBS`] kept folder jobs per session (their manifests can be
+/// large): the oldest are forgotten (a retry then reports `notFound{what:"transfer"}`).
+fn retain_trees(failed: &mut HashMap<String, Failed>, session_id: &str) {
+    let mut trees: Vec<(Instant, String)> = failed
+        .iter()
+        .filter(|(_, f)| f.session_id == session_id && f.spec.is_tree())
+        .map(|(id, f)| (f.at, id.clone()))
+        .collect();
+    if trees.len() <= job::MAX_RETAINED_JOBS {
+        return;
+    }
+    trees.sort();
+    let excess = trees.len() - job::MAX_RETAINED_JOBS;
+    for (_, id) in trees.into_iter().take(excess) {
+        failed.remove(&id);
     }
 }
 
@@ -397,6 +620,15 @@ fn spec_name(spec: &TransferSpec) -> String {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default(),
+        TransferSpec::Tree(state) => state.name().to_owned(),
+        TransferSpec::TreeScan(spec) => spec.name().to_owned(),
+    }
+}
+
+impl TransferSpec {
+    /// A folder job (kept ones count against [`job::MAX_RETAINED_JOBS`]).
+    fn is_tree(&self) -> bool {
+        matches!(self, Self::Tree(_) | Self::TreeScan(_))
     }
 }
 
@@ -435,7 +667,83 @@ impl Progress {
             transfer_id: self.id.clone(),
             bytes,
             total: self.total,
+            files_done: None,
+            files_total: None,
+            current: None,
+            failed: None,
+            skipped: None,
         });
+    }
+}
+
+/// Integration-test hooks (cargo feature `it`, never in the app): a simulated full disk for
+/// downloads whose remote path contains a marker, and per-session counters of downloads that
+/// hold a slot (to prove folder jobs and single transfers share `maxConcurrent`).
+#[cfg(feature = "it")]
+pub mod test_hooks {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, PoisonError};
+
+    static DISK_FULL: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    static ACTIVE: Mutex<Option<HashMap<String, (usize, usize)>>> = Mutex::new(None);
+
+    /// Downloads whose remote path contains `marker` fail with a full disk after their first
+    /// chunk (`clear_disk_full` ends it).
+    pub fn fail_disk_for(marker: &str) {
+        DISK_FULL
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(marker.to_owned());
+    }
+
+    pub fn clear_disk_full(marker: &str) {
+        DISK_FULL
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|m| m != marker);
+    }
+
+    pub(super) fn disk_full(remote: &str) -> bool {
+        DISK_FULL
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .any(|m| remote.contains(m.as_str()))
+    }
+
+    /// Most downloads of `session_id` that ran at once.
+    pub fn peak_downloads(session_id: &str) -> usize {
+        ACTIVE
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .and_then(|m| m.get(session_id))
+            .map_or(0, |(_, peak)| *peak)
+    }
+
+    /// Counts one running download of a session while alive.
+    pub(super) struct Active(String);
+
+    impl Active {
+        pub(super) fn enter(session_id: &str) -> Self {
+            let mut map = ACTIVE.lock().unwrap_or_else(PoisonError::into_inner);
+            let e = map
+                .get_or_insert_with(HashMap::new)
+                .entry(session_id.to_owned())
+                .or_insert((0, 0));
+            e.0 += 1;
+            e.1 = e.1.max(e.0);
+            Self(session_id.to_owned())
+        }
+    }
+
+    impl Drop for Active {
+        fn drop(&mut self) {
+            let mut map = ACTIVE.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(e) = map.as_mut().and_then(|m| m.get_mut(&self.0)) {
+                e.0 = e.0.saturating_sub(1);
+            }
+        }
     }
 }
 
@@ -454,6 +762,16 @@ impl Gate {
             slot,
             cancel,
             pool: Arc::new(Semaphore::new(SESSION_EXTRA_REQUESTS)),
+        }
+    }
+
+    /// Another gate on the same session slots, pool and cancel flag (one per file of a folder
+    /// job, so its files wait for slots independently).
+    pub fn fork(&self) -> Self {
+        Self {
+            slot: self.slot.clone(),
+            cancel: self.cancel.clone(),
+            pool: self.pool.clone(),
         }
     }
 
@@ -529,6 +847,10 @@ async fn run(
         TransferSpec::Upload { local, remote_dir } => {
             upload(&job, local, remote_dir, &mut gate).await
         }
+        // Folder jobs run through `start_tree` / `restart_tree`.
+        TransferSpec::Tree(_) | TransferSpec::TreeScan(_) => {
+            Err(AppError::internal("a folder job as a single transfer"))
+        }
     };
     let mut keep = None;
     let mut done_name = None;
@@ -539,6 +861,7 @@ async fn run(
                 transfer_id: id.clone(),
                 bytes,
                 entry,
+                summary: None,
             }
         }
         Ok(Finish::Skipped) => TransferEvent::Skipped {
@@ -771,6 +1094,39 @@ mod tests {
         drop(tx);
     }
 
+    /// The files of a folder job (forked gates) and single transfers (their own gates on the
+    /// same session semaphore) never run more than the session's slots together.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn folder_files_and_single_transfers_share_the_slots() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let slot = Arc::new(Semaphore::new(2));
+        let (_tx, rx) = watch::channel(false);
+        let job_gate = Gate::new(slot.clone(), rx.clone());
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let mut tasks = Vec::new();
+        for i in 0..12 {
+            // 8 files of one job, 4 single transfers.
+            let mut gate = if i < 8 {
+                job_gate.fork()
+            } else {
+                Gate::new(slot.clone(), rx.clone())
+            };
+            let (active, peak) = (active.clone(), peak.clone());
+            tasks.push(tokio::spawn(async move {
+                let _permit = gate.acquire().await.unwrap();
+                let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(now, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                active.fetch_sub(1, Ordering::SeqCst);
+            }));
+        }
+        for t in tasks {
+            t.await.unwrap();
+        }
+        assert_eq!(peak.load(Ordering::SeqCst), 2);
+    }
+
     #[test]
     fn conflict_resolution_never_overwrites_silently_when_asking() {
         use crate::ipc::dto::ConflictPolicy::{Ask, Overwrite, Skip};
@@ -809,6 +1165,7 @@ mod tests {
                     session_id: "s".into(),
                     cancel,
                     task: None,
+                    decide: None,
                 },
             );
         };
@@ -938,6 +1295,91 @@ mod tests {
         assert!(reg.take_failed("t3").is_err());
     }
 
+    /// Kept folder jobs (large manifests) are bounded per session: the oldest are forgotten;
+    /// single-file failures and other sessions do not count.
+    #[test]
+    fn at_most_four_folder_jobs_are_kept_per_session() {
+        let reg = TransferRegistry::default();
+        let tree = |session: &str, age: u64| Failed {
+            session_id: session.into(),
+            spec: TransferSpec::TreeScan(TreeSpec::download(
+                "/r".into(),
+                PathBuf::from("p"),
+                "r".into(),
+            )),
+            at: Instant::now() - Duration::from_secs(age),
+        };
+        reg.finished("file", Some(failed("s")));
+        reg.finished("other", Some(tree("o", 100)));
+        for i in 0..6u64 {
+            reg.finished(&format!("j{i}"), Some(tree("s", 60 - i)));
+        }
+        assert!(reg.take_failed("j0").is_err());
+        assert!(reg.take_failed("j1").is_err());
+        for i in 2..6 {
+            assert!(reg.take_failed(&format!("j{i}")).is_ok(), "j{i}");
+        }
+        assert!(reg.take_failed("file").is_ok());
+        assert!(reg.take_failed("other").is_ok());
+        assert_eq!(
+            spec_name(&TransferSpec::TreeScan(TreeSpec::download(
+                "/r".into(),
+                PathBuf::from("p"),
+                "proj".into()
+            ))),
+            "proj"
+        );
+    }
+
+    /// `transfer_decide` reaches a running folder job; unknown ids are `notFound`; a single
+    /// transfer ignores decisions.
+    #[test]
+    fn decisions_reach_running_jobs_only() {
+        let reg = TransferRegistry::default();
+        let (cancel, _) = watch::channel(false);
+        let (tx, mut rx) = mpsc::channel(4);
+        reg.lock().running.insert(
+            "job".into(),
+            Running {
+                session_id: "s".into(),
+                cancel,
+                task: None,
+                decide: Some(tx),
+            },
+        );
+        reg.decide("job", TransferDecision::Merge).unwrap();
+        assert_eq!(rx.try_recv().unwrap(), TransferDecision::Merge);
+        // A full queue is an error, not a silent drop.
+        for _ in 0..4 {
+            reg.decide("job", TransferDecision::Proceed).unwrap();
+        }
+        let e = reg.decide("job", TransferDecision::Proceed).unwrap_err();
+        assert!(matches!(e.kind, ErrorCode::InvalidArgument { ref field } if field == "decision"));
+        // A job whose receiver is gone is not found.
+        drop(rx);
+        let e = reg.decide("job", TransferDecision::Proceed).unwrap_err();
+        assert!(matches!(e.kind, ErrorCode::NotFound { .. }));
+        let (cancel, _) = watch::channel(false);
+        reg.lock().running.insert(
+            "file".into(),
+            Running {
+                session_id: "s".into(),
+                cancel,
+                task: None,
+                decide: None,
+            },
+        );
+        assert!(reg.decide("file", TransferDecision::Proceed).is_ok());
+        let e = reg.decide("gone", TransferDecision::Proceed).unwrap_err();
+        assert!(matches!(
+            e.kind,
+            ErrorCode::NotFound {
+                what: EntityKind::Transfer,
+                ..
+            }
+        ));
+    }
+
     fn failed(session_id: &str) -> Failed {
         Failed {
             session_id: session_id.into(),
@@ -962,6 +1404,7 @@ mod tests {
                 session_id: session_id.into(),
                 cancel,
                 task: Some(task),
+                decide: None,
             },
         );
         rx
@@ -997,6 +1440,7 @@ mod tests {
                 session_id: "s".into(),
                 cancel,
                 task: Some(tokio::spawn(std::future::pending::<()>())),
+                decide: None,
             },
         );
         let r2 = running(&reg, "r2", "other");

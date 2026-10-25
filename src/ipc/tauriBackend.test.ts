@@ -99,6 +99,12 @@ const ROWS: Row[] = [
     (b) => b.transferUploadDropped("s", "d", "/", false, noop),
     ["dropId", "overwrite", "progress", "remoteDir", "sessionId"],
   ],
+  [
+    "transfer_download_folder",
+    (b) => b.transferDownloadFolder("s", "/", "t", noop),
+    ["dialogTitle", "progress", "remotePath", "sessionId"],
+  ],
+  ["transfer_decide", (b) => b.transferDecide("t", "merge"), ["decision", "transferId"]],
   ["transfer_retry", (b) => b.transferRetry("t", false, noop), ["overwrite", "progress", "transferId"]],
   ["transfer_cancel", (b) => b.transferCancel("t"), ["transferId"]],
   ["update_check", (b) => b.updateCheck(), []],
@@ -117,7 +123,7 @@ describe("TauriBackend command mapping", () => {
 
   it("covers exactly the commands listed in src-tauri/src/commands/names.rs", () => {
     expect(ROWS.map(([cmd]) => cmd).sort()).toEqual([...rustCommands].sort());
-    expect(rustCommands.length).toBe(70);
+    expect(rustCommands.length).toBe(72);
   });
 
   for (const [command, run, keys] of ROWS) {

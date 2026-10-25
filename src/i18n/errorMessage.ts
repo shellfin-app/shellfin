@@ -3,6 +3,7 @@
 import i18next from "i18next";
 import type { AppError } from "../ipc/types";
 import { displayServerText } from "../lib/serverText";
+import { formatBytes, formatNumber } from "./format";
 
 export function errorMessage(error: AppError): string {
   const t = i18next.t.bind(i18next) as (key: string, options?: Record<string, unknown>) => string;
@@ -28,6 +29,12 @@ export function errorMessage(error: AppError): string {
       break;
     case "timeout":
       params["op"] = t(`timeoutOp.${error.params.op}`);
+      break;
+    case "treeTooLarge":
+      // depth: levels, entries / directory: entries, memory: bytes.
+      params["limit"] = t(`treeLimit.${error.params.limit}`, {
+        value: error.params.limit === "memory" ? formatBytes(error.params.value) : formatNumber(error.params.value),
+      });
       break;
     case "keyLoadFailed":
       params["reason"] = t(`keyLoadReason.${error.params.reason}`);

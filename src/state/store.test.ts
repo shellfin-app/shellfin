@@ -124,6 +124,8 @@ describe("root store", () => {
       { kind: "moveEntry", sessionId: "b", path: "/x" },
       { kind: "goToFolder", sessionId: "b" },
       { kind: "replaceTransfers", sessionId: "b" },
+      { kind: "transferDecision", sessionId: "b", transferId: "t" },
+      { kind: "transferConflicts", sessionId: "b", transferId: "t" },
     ] as const;
     for (const dialog of dialogs) {
       useStore.setState({ dialog, promptSession: "b", renamingSession: "b", renamingTerminal: "t1" });

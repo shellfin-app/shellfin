@@ -2,17 +2,18 @@
 //! remote times, rename over the chosen path; the `.part` is removed on failure or cancel.
 
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::io::AsyncWriteExt;
 
 use crate::error::{AppError, ErrorCode, IoOp};
-use crate::ipc::dto::{TransferDirection, TransferEvent};
+use crate::ipc::dto::{TransferDirection, TransferEvent, TransferKind};
 
 use super::super::client::{PipelinedReader, Sftp, ensure_regular};
 use super::super::path;
 use super::super::save;
-use super::local::{create_part, finish_part_with, local_error, local_target_exists, local_times};
+use super::local::{Dest, local_error, local_times};
 use super::{
     Conflict, Finish, Item, ItemCtx, Job, Progress, blocking, cancel_or_stop, lost_as_disconnected,
     stop_signal,
@@ -52,6 +53,7 @@ pub(super) async fn download(
         name,
         direction: TransferDirection::Download,
         total,
+        kind: TransferKind::File,
     });
     let sftp = sftp?;
     let attrs = attrs.map_err(|e| lost_as_disconnected(Some(&sftp), e))?;
@@ -78,19 +80,21 @@ pub(super) async fn download(
         gate,
         conflict,
     };
-    match download_item(&ctx, remote, local, times, &mut |n| progress.report(n)).await? {
+    let dest = Arc::new(Dest::Chosen(local.to_path_buf()));
+    match download_item(&ctx, remote, dest, times, &mut |n| progress.report(n)).await? {
         Item::Copied(bytes) => Ok(Finish::Done(bytes, None)),
         Item::Skipped => Ok(Finish::Skipped),
     }
 }
 
 /// One file's download once its slot is held: the `Skip` check, the `.part` copy and the
-/// finish (mark, `times`, rename over `local`). `remote` was checked to be a regular file by
-/// the caller; `progress` hears the bytes written so far.
+/// finish (mark, `times`, rename onto `dest`). **The caller checks that `remote` is a regular
+/// file** (`ensure_regular` on fresh attributes; a folder job also refuses links and entries
+/// without a type), right before this call; `progress` hears the bytes written so far.
 pub(super) async fn download_item(
     ctx: &ItemCtx<'_>,
     remote: &str,
-    local: &Path,
+    dest: Arc<Dest>,
     times: Option<std::fs::FileTimes>,
     progress: &mut (dyn FnMut(u64) + Send),
 ) -> Result<Item, AppError> {
@@ -102,14 +106,18 @@ pub(super) async fn download_item(
     } = *ctx;
     let cancelled = gate.cancelled_fn();
     let cancelled = &cancelled;
+    #[cfg(feature = "it")]
+    let _active = super::test_hooks::Active::enter(&session.id);
     if conflict == Conflict::Skip {
-        let chosen = local.to_path_buf();
-        if blocking(move || Ok(local_target_exists(&chosen))).await? {
+        let d = dest.clone();
+        if blocking(move || Ok(d.exists())).await? {
             return Ok(Item::Skipped);
         }
     }
-    let chosen = local.to_path_buf();
-    let (part, file) = blocking(move || create_part(&chosen)).await?;
+    let d = dest.clone();
+    let (part, file) = blocking(move || d.create()).await?;
+    let part = Arc::new(part);
+    let part_shown = Dest::part_shown(&part);
     // One local write per 256 KiB instead of per 32 KiB chunk.
     let mut file =
         tokio::io::BufWriter::with_capacity(LOCAL_WRITE, tokio::fs::File::from_std(file));
@@ -152,7 +160,15 @@ pub(super) async fn download_item(
                             .await?;
                         file.write_all(&chunk)
                             .await
-                            .map_err(|e| local_error(&e, &part, IoOp::WriteLocalFile))?;
+                            .map_err(|e| local_error(&e, &part_shown, IoOp::WriteLocalFile))?;
+                        #[cfg(feature = "it")]
+                        if super::test_hooks::disk_full(remote) {
+                            return Err(local_error(
+                                &std::io::Error::from(std::io::ErrorKind::StorageFull),
+                                &part_shown,
+                                IoOp::WriteLocalFile,
+                            ));
+                        }
                         progress(reader.position());
                     }
                     Ok(None) => return Ok(reader.position()),
@@ -172,11 +188,11 @@ pub(super) async fn download_item(
         // The buffered tail reaches the file before it is synced, marked and renamed.
         file.flush()
             .await
-            .map_err(|e| local_error(&e, &part, IoOp::WriteLocalFile))?;
+            .map_err(|e| local_error(&e, &part_shown, IoOp::WriteLocalFile))?;
         file.get_mut()
             .sync_all()
             .await
-            .map_err(|e| local_error(&e, &part, IoOp::WriteLocalFile))?;
+            .map_err(|e| local_error(&e, &part_shown, IoOp::WriteLocalFile))?;
         Ok::<u64, AppError>(n)
     }
     .await;
@@ -185,10 +201,9 @@ pub(super) async fn download_item(
     let bytes = match copy {
         Ok(n) if !cancelled() => n,
         other => {
-            drop(file);
-            let part = part.clone();
+            let (d, p) = (dest.clone(), part.clone());
             let _ = blocking(move || {
-                let _ = std::fs::remove_file(&part);
+                d.discard(&p, Some(file));
                 Ok(())
             })
             .await;
@@ -198,16 +213,21 @@ pub(super) async fn download_item(
             return Err(lost_as_disconnected(Some(sftp), e));
         }
     };
-    let chosen = local.to_path_buf();
-    let part_done = part.clone();
-    let with_times = times.map(|t| (file, t));
-    if let Err(e) = blocking(move || finish_part_with(&part_done, &chosen, with_times)).await {
-        let _ = blocking(move || {
-            let _ = std::fs::remove_file(&part);
-            Ok(())
-        })
-        .await;
-        return Err(e);
+    // The handle stays open until the rename (Windows renames and deletes through it).
+    let (d, p) = (dest.clone(), part.clone());
+    let finished = blocking(move || {
+        let keep = file.try_clone().ok();
+        match d.finish(&p, file, times) {
+            Ok(()) => Ok(Ok(())),
+            Err(e) => {
+                d.discard(&p, keep);
+                Ok(Err(e))
+            }
+        }
+    })
+    .await;
+    match finished {
+        Ok(Ok(())) => Ok(Item::Copied(bytes)),
+        Ok(Err(e)) | Err(e) => Err(e),
     }
-    Ok(Item::Copied(bytes))
 }

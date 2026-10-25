@@ -164,6 +164,8 @@ app_commands![
     sftp::sftp_rename,
     sftp::sftp_delete,
     transfer::transfer_download,
+    transfer::transfer_download_folder,
+    transfer::transfer_decide,
     transfer::transfer_upload_pick,
     transfer::transfer_upload_dropped,
     transfer::transfer_retry,
@@ -474,7 +476,7 @@ mod acl_tests {
             "duplicate handler command"
         );
         assert_eq!(handler, names());
-        assert_eq!(COMMAND_NAMES.len(), 70);
+        assert_eq!(COMMAND_NAMES.len(), 72);
     }
 
     /// Updater: the WebView reaches the updater only through our four commands.

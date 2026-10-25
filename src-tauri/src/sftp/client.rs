@@ -583,7 +583,7 @@ impl Sftp {
     }
 
     /// OpenSSH reports `opendir` on a file as `noSuchFile`/`failure`: stat to tell them apart.
-    async fn opendir_error(&self, e: &SftpError, dir: &str) -> AppError {
+    pub(crate) async fn opendir_error(&self, e: &SftpError, dir: &str) -> AppError {
         if is_status(e, StatusCode::NoSuchFile) || is_status(e, StatusCode::Failure) {
             match self.raw.stat(dir).await {
                 Ok(a) if kind_of(&a.attrs) != FileKind::Dir => {

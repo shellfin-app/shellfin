@@ -53,6 +53,8 @@ function dialogBelongsTo(dialog: DialogState, sessionId: string, buffers: Record
     case "moveEntry":
     case "goToFolder":
     case "replaceTransfers":
+    case "transferDecision":
+    case "transferConflicts":
     case "closeSession":
       return dialog.sessionId === sessionId;
     case "conflict":
