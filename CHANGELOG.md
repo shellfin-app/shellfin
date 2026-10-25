@@ -22,6 +22,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   tick the box, the last lines of the current log. Host names, IP addresses, user names, your home folder and
   remote paths are always replaced with placeholders. Nothing is sent automatically: the button copies the report
   and opens a pre-filled GitHub bug form in your browser for you to review and submit.
+- `User` in `~/.ssh/config` now expands `%` tokens and `${ENV}` like OpenSSH 10 (`%u`, `%L`, `%l`, `%h`, `%n`, `%p`,
+  `%k`, `%d`, `%i`, `%j`, `%%`; for example `User %u-admin`). An expanded user that is not a safe user name, or one
+  that cannot be expanded, shows a warning, and connecting to that host asks you to set a user instead of trying your
+  local user. A user you entered for the connection is used as is.
+- File options in the SSH config (`UserKnownHostsFile`, `GlobalKnownHostsFile`, `IdentityFile`, `CertificateFile`,
+  `IdentityAgent`) now support `%C` (the OpenSSH 9.6+ connection hash), `%l`, `%L`, `%i` and `%j`, so setups such as
+  `UserKnownHostsFile ~/.ssh/known_hosts.d/%C` work.
 
 ### Changed
 
@@ -30,6 +37,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   None). A saved on/off choice carries over as All or None.
 - In the editor, other occurrences of the selected text and the current search match are outlined instead of
   filled, so they no longer look stronger than the selection or make the text on it hard to read.
+- On Windows, when no user is set for a connection (in the bookmark, the quick connect text or the SSH config),
+  Shellfin now logs in with your local account name in lowercase (for example `smith` instead of `Smith`), as the
+  OpenSSH client included with Windows does. A user you set yourself is used exactly as written.
+- `%h` in SSH config file options and in `User` is now the host name in lowercase (and an IP address in its
+  standard form), as in OpenSSH. For example, `UserKnownHostsFile ~/.ssh/kh/%h` with `HostName DB.Example.COM` now
+  reads `~/.ssh/kh/db.example.com`.
+- `Host` patterns in the SSH config are now case-sensitive, as in OpenSSH: `Host Lab` applies when you connect to
+  `Lab`, but no longer to `lab` or `LAB`. `Match user` and `Match localuser` are case-sensitive too, while
+  `Match host` and `Match originalhost` still ignore case. Hosts listed under `~/.ssh/config` connect as before;
+  `Host Lab` and `Host lab` are now listed as two hosts. This applies to bookmarks too: a bookmark with the host `DB`
+  no longer gets the settings of `Host db`. The bookmark dialog now warns when the host differs from a
+  `~/.ssh/config` host only in case. Check your config and bookmarks if they relied on a different case.
+- Saved passwords may be asked for once more after this update: on Windows, for bookmarks without a user of their
+  own (the password was saved for `Smith`, the connection now uses `smith`) and for SSH config hosts (the keychain
+  entry `sshconfig:Smith@host:22` is now looked up as `sshconfig:smith@host:22`), and for bookmarks whose SSH config
+  settings no longer apply because of the case change above. Enter the password and save it again; the old keychain
+  entry is not used any more.
 
 ### Removed
 
@@ -47,6 +71,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Security
 
+- Host keys are now checked against the same known_hosts files OpenSSH uses when `UserKnownHostsFile` contains `%C`
+  or `%l` (for example `~/.ssh/known_hosts.d/%C`). Before, Shellfin read the default files for such hosts and asked
+  before trusting a key. If the file name still cannot be worked out exactly as OpenSSH does (no usable local host
+  name, `CanonicalizeHostname` is on, an IP address written in a short form such as `127.1` or an IPv6 address with an embedded IPv4
+  address such as `::ffff:1.2.3.4`, or on Windows a domain
+  account or a local account name with non-ASCII characters), Shellfin keeps reading the default files, shows a
+  warning, and asks instead of trusting a new key silently.
 - Remote names that contain invisible variation selectors (U+FE00 to U+FE0D) are now shown with a visible marker,
   so two different names no longer look identical. The text and emoji presentation selectors (U+FE0E and U+FE0F)
   are shown with a marker too unless they really change how the preceding emoji looks, so emoji names keep working

@@ -216,11 +216,33 @@ describe("BookmarkDialog: User placeholder", () => {
     expect(userInput(dialog).placeholder).toBe(DEFAULT);
   });
 
-  it("matches the alias ignoring surrounding spaces and case", async () => {
+  it("matches the alias ignoring surrounding spaces", async () => {
     const { user } = setupApp();
     const dialog = await openNewDialog(user);
-    await fill(user, dialog, { Host: " Staging-DB" });
+    await fill(user, dialog, { Host: " staging-db " });
     expect(userInput(dialog).placeholder).toBe("postgres (from SSH config)");
+  });
+
+  it("matches the alias case-sensitively, like OpenSSH Host patterns", async () => {
+    const { user } = setupApp();
+    const dialog = await openNewDialog(user);
+    await fill(user, dialog, { Host: "Staging-DB" });
+    expect(userInput(dialog).placeholder).toBe("Your local user name");
+    // ... and says why: a bookmark `Staging-DB` does not get the settings of `Host staging-db`.
+    expect(
+      within(dialog).getByText(
+        "~/.ssh/config has “staging-db”. Host names there are case-sensitive, so its settings are not used for this host.",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("shows no case hint for an exact alias or an unknown host", async () => {
+    const { user } = setupApp();
+    const dialog = await openNewDialog(user);
+    await fill(user, dialog, { Host: "staging-db" });
+    expect(within(dialog).queryByText(/case-sensitive/)).toBeNull();
+    await fill(user, dialog, { Host: "elsewhere.example.com" });
+    expect(within(dialog).queryByText(/case-sensitive/)).toBeNull();
   });
 
   it("shows it right away for an ssh-config prefill", async () => {

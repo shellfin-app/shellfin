@@ -21,7 +21,8 @@ import type {
 
 export const ERROR_CODES = [
   "internal", "bug", "cancelled", "promptTimeout", "storageReadOnly", "keyringUnavailable", "keyringError", "promptNotFound",
-  "invalidArgument", "notFound", "io", "storageCorrupt", "invalidHostSpec", "invalidHostname", "proxyJumpCycle",
+  "invalidArgument", "notFound", "io", "storageCorrupt", "invalidHostSpec", "invalidHostname", "invalidUser",
+  "proxyJumpCycle",
   "proxyJumpTooDeep", "proxyCommandUnsupported", "dnsFailed", "connectRefused", "connectTimeout",
   "networkUnreachable", "jumpChannelFailed", "kexFailed", "protocolError", "hostKeyUnknownStrict",
   "hostKeyRejected", "hostKeyChanged", "hostKeyRevoked", "hostKeyCaManaged", "hostKeyMismatchOnReconnect",
@@ -40,6 +41,7 @@ export const ERROR_CODES = [
 export const CONFIG_WARNING_CODES = [
   "unsupportedMatchCriteria", "proxyCommandUnsupported", "includeDepthExceeded", "includeRecursiveGlob",
   "includeTooManyFiles", "includeCycle", "untrustedFile", "fileTooLarge", "badLine", "unknownToken", "invalidHostname",
+  "invalidUser", "unavailableToken", "expansionTooLong",
 ] as const satisfies readonly ConfigWarningCode["code"][];
 
 export const ENTITY_KINDS = ["bookmark", "group", "sshConfigHost", "transfer"] as const satisfies readonly EntityKind[];

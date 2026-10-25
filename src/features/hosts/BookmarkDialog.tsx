@@ -131,10 +131,16 @@ export function BookmarkDialog({
   const groups = bookmarks?.groups ?? [];
   const jumpHosts = (sshHosts ?? []).filter((h) => h.alias !== editing?.name);
   // The host field names an SSH config alias: its `User` applies when this field stays empty (placeholder only).
-  // Trimmed and case-insensitive, like the submit and the backend's alias de-duplication.
-  const hostAlias = form.host.trim().toLowerCase();
-  const configUserRaw = (sshHosts ?? []).find((h) => h.alias.toLowerCase() === hostAlias)?.user;
+  // Trimmed and case-sensitive, like the backend's `Host` matching (OpenSSH: `Host Lab` does not apply to `lab`).
+  const hostAlias = form.host.trim();
+  const configHost = (sshHosts ?? []).find((h) => h.alias === hostAlias);
+  const configUserRaw = configHost?.user;
   const configUser = configUserRaw ? displayServerText(configUserRaw, 64) : null;
+  // A config alias that differs only in case does not apply (OpenSSH `Host` is case-sensitive): say so,
+  // or a bookmark `DB` silently loses the settings of `Host db`.
+  const lowerHost = hostAlias.toLowerCase();
+  const caseOnlyAlias =
+    hostAlias === "" || configHost !== undefined ? undefined : (sshHosts ?? []).find((h) => h.alias.toLowerCase() === lowerHost)?.alias;
   const jumpBookmarks = (bookmarks?.bookmarks ?? []).filter((b) => b.id !== editing?.id);
 
   const validate = (action: SubmitAction = SUBMIT_ACTION.connect): boolean => {
@@ -282,6 +288,11 @@ export function BookmarkDialog({
             aria-invalid={errors.host ? true : undefined}
           />
         </Field>
+        {caseOnlyAlias === undefined ? null : (
+          <p className="dialog__warn" role="status">
+            {t("connect.hostCaseMismatch", { alias: displayServerText(caseOnlyAlias, 64) })}
+          </p>
+        )}
         <div className="bookmark-form__row">
           <Field label={t("connect.user")}>
             <Input

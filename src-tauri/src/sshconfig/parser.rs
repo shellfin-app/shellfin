@@ -43,6 +43,9 @@ pub(crate) enum Key {
     KbdInteractiveAuthentication,
     AddKeysToAgent,
     CertificateFile,
+    /// Read only to know that `%h` and `%C` cannot be computed like OpenSSH (it would use the
+    /// canonicalised name); Shellfin does not canonicalise.
+    CanonicalizeHostname,
 }
 
 impl Key {
@@ -73,6 +76,7 @@ impl Key {
             }
             "addkeystoagent" => Self::AddKeysToAgent,
             "certificatefile" => Self::CertificateFile,
+            "canonicalizehostname" => Self::CanonicalizeHostname,
             _ => return None,
         })
     }
@@ -236,6 +240,10 @@ fn value_ok(key: Key, args: &[String]) -> bool {
         Key::StrictHostKeyChecking => matches!(
             first.to_ascii_lowercase().as_str(),
             "yes" | "true" | "ask" | "accept-new" | "no" | "off" | "false"
+        ),
+        Key::CanonicalizeHostname => matches!(
+            first.to_ascii_lowercase().as_str(),
+            "yes" | "true" | "no" | "false" | "always"
         ),
         Key::ServerAliveInterval | Key::ConnectTimeout => parse_time(first).is_some(),
         Key::ServerAliveCountMax => {

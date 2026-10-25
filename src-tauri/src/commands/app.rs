@@ -408,7 +408,7 @@ pub async fn app_error_report(
                 &sessions,
                 &stores.settings().connection.default_user,
                 &report::LocalIdentity {
-                    user: crate::platform::local_user_name(),
+                    user: crate::platform::local_user().name,
                     computer: crate::platform::os_info::computer_name(),
                     home,
                 },

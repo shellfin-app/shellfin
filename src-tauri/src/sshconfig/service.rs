@@ -61,12 +61,11 @@ pub fn production_env(home: PathBuf) -> ConfigEnv {
     let e2e = crate::e2e::active();
     let system = e2e.map_or_else(system_ssh_dir, |l| l.system_ssh_dir.clone());
     let system_config = system.join("ssh_config");
-    let mut env = ConfigEnv::new(
-        home,
-        crate::platform::local_user_name(),
-        system,
-        system_config,
-    );
+    let local_user = crate::platform::local_user();
+    let mut env = ConfigEnv::new(home, local_user.name, system, system_config);
+    env.local_user_exact = local_user.openssh_exact;
+    env.local_host = crate::platform::local_host_name();
+    env.uid = crate::platform::local_uid();
     if let Some(l) = e2e {
         env.env = crate::e2e::env_lookup(l);
     }

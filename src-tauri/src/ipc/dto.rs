@@ -334,6 +334,21 @@ pub enum ConfigWarningCode {
     UnknownToken { token: String },
     #[serde(rename_all = "camelCase")]
     InvalidHostname { value: String },
+    /// `User` with `%` tokens or `${ENV}` could not be expanded, or the result is not a safe
+    /// user name. `value` is the config text as written (never the expanded value: a
+    /// variable may hold a secret), shortened to 255 characters.
+    #[serde(rename_all = "camelCase")]
+    InvalidUser { value: String },
+    /// A known token whose value Shellfin cannot compute exactly like OpenSSH here (`%C`,
+    /// `%l`/`%L` without a usable local host name, `%C` with `CanonicalizeHostname`, `%h`/`%C`
+    /// of a non-canonical numeric IPv4, `%u`/`%r`/`%C` when the local account name is not
+    /// OpenSSH's, …): the option is ignored (known_hosts options fall back and the hop asks).
+    #[serde(rename_all = "camelCase")]
+    UnavailableToken { token: String },
+    /// A file option expanded to more than 4096 bytes and was ignored. `option` = the
+    /// keyword as OpenSSH spells it (`IdentityFile`, `UserKnownHostsFile`, …).
+    #[serde(rename_all = "camelCase")]
+    ExpansionTooLong { option: String },
 }
 
 // ---------------------------------------------------------------------------------------------

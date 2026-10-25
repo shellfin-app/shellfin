@@ -1,11 +1,29 @@
 //! Host pattern matching (`match.c`): `*` and `?` wildcards, `!` negation, comma lists.
-//! Matching is case-insensitive (§7.4).
+//! Case follows OpenSSH (§7.4), checked with `ssh -G` on Win32-OpenSSH 9.5p2 and MSYS 10.2p1:
+//! - `Host` patterns: case-sensitive, against the alias as typed (`Host Lab` applies to `Lab`,
+//!   not to `lab` or `LAB`; `match_pattern`);
+//! - `Match host` / `Match originalhost`: ASCII case-insensitive (`match_hostname` lowercases
+//!   both the name and the pattern);
+//! - `Match user` / `Match localuser`: case-sensitive (`match_pattern_list(…, 0)`).
 
-/// `true` if `text` matches the wildcard `pattern` (`*` any run, `?` one char), ignoring
-/// ASCII/Unicode case.
-pub(crate) fn wildcard_match(text: &str, pattern: &str) -> bool {
-    let t: Vec<char> = text.chars().flat_map(char::to_lowercase).collect();
-    let p: Vec<char> = pattern.chars().flat_map(char::to_lowercase).collect();
+/// How [`wildcard_match`] compares characters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Case {
+    /// Exact (`Host`, `Match user`, `Match localuser`).
+    Sensitive,
+    /// ASCII letters folded, like OpenSSH's `lowercase()`/`tolower` (`Match host`,
+    /// `Match originalhost`); other characters compare exactly.
+    AsciiInsensitive,
+}
+
+/// `true` if `text` matches the wildcard `pattern` (`*` any run, `?` one char).
+pub(crate) fn wildcard_match(text: &str, pattern: &str, case: Case) -> bool {
+    let fold = |c: char| match case {
+        Case::Sensitive => c,
+        Case::AsciiInsensitive => c.to_ascii_lowercase(),
+    };
+    let t: Vec<char> = text.chars().map(fold).collect();
+    let p: Vec<char> = pattern.chars().map(fold).collect();
     // Iterative glob with single-star backtracking (linear in practice, no recursion).
     let (mut ti, mut pi) = (0usize, 0usize);
     let mut star: Option<(usize, usize)> = None;
@@ -43,17 +61,17 @@ pub(crate) enum ListMatch {
     NoMatch,
 }
 
-pub(crate) fn match_list(text: &str, list: &str) -> ListMatch {
+pub(crate) fn match_list(text: &str, list: &str, case: Case) -> ListMatch {
     let mut result = ListMatch::NoMatch;
     for pat in list.split(',').map(str::trim).filter(|p| !p.is_empty()) {
         match pat.strip_prefix('!') {
             Some(neg) => {
-                if wildcard_match(text, neg) {
+                if wildcard_match(text, neg, case) {
                     return ListMatch::Negated;
                 }
             }
             None => {
-                if wildcard_match(text, pat) {
+                if wildcard_match(text, pat, case) {
                     result = ListMatch::Positive;
                 }
             }
@@ -64,17 +82,18 @@ pub(crate) fn match_list(text: &str, list: &str) -> ListMatch {
 
 /// `Host` line semantics (`readconf.c` `oHost`): the block applies if some pattern matches and
 /// no negated pattern matches. Each whitespace-separated argument is a single pattern.
+/// Case-sensitive against the alias as typed (OpenSSH).
 pub(crate) fn host_block_matches(alias: &str, patterns: &[String]) -> bool {
     let mut active = false;
     for pat in patterns {
         match pat.strip_prefix('!') {
             Some(neg) => {
-                if wildcard_match(alias, neg) {
+                if wildcard_match(alias, neg, Case::Sensitive) {
                     return false;
                 }
             }
             None => {
-                if wildcard_match(alias, pat) {
+                if wildcard_match(alias, pat, Case::Sensitive) {
                     active = true;
                 }
             }
@@ -92,35 +111,57 @@ pub(crate) fn is_concrete(pattern: &str) -> bool {
 mod tests {
     use super::*;
 
-    #[test]
-    fn wildcards() {
-        assert!(wildcard_match("web01", "web*"));
-        assert!(wildcard_match("web01", "web??"));
-        assert!(!wildcard_match("web1", "web??"));
-        assert!(wildcard_match("anything", "*"));
-        assert!(wildcard_match("", "*"));
-        assert!(!wildcard_match("", "?"));
-        assert!(wildcard_match("a.int", "*.int"));
-        assert!(!wildcard_match("a.int.x", "*.int"));
-        assert!(wildcard_match("abcabd", "*abd"));
-        assert!(wildcard_match("x.int.y", "*.int.*"));
-        assert!(wildcard_match("aXb", "a*b"));
-        assert!(!wildcard_match("aXc", "a*b"));
+    fn wm(text: &str, pattern: &str) -> bool {
+        wildcard_match(text, pattern, Case::Sensitive)
     }
 
     #[test]
-    fn case_insensitive() {
-        assert!(wildcard_match("WEB01.Example.COM", "web*.example.com"));
-        assert!(wildcard_match("nas", "NAS"));
+    fn wildcards() {
+        assert!(wm("web01", "web*"));
+        assert!(wm("web01", "web??"));
+        assert!(!wm("web1", "web??"));
+        assert!(wm("anything", "*"));
+        assert!(wm("", "*"));
+        assert!(!wm("", "?"));
+        assert!(wm("a.int", "*.int"));
+        assert!(!wm("a.int.x", "*.int"));
+        assert!(wm("abcabd", "*abd"));
+        assert!(wm("x.int.y", "*.int.*"));
+        assert!(wm("aXb", "a*b"));
+        assert!(!wm("aXc", "a*b"));
+    }
+
+    /// OpenSSH case rules (`ssh -G`, Win32 9.5p2 and MSYS 10.2p1).
+    #[test]
+    fn case_rules() {
+        // Sensitive: `Host`, `Match user`, `Match localuser`.
+        assert!(!wm("WEB01.Example.COM", "web*.example.com"));
+        assert!(!wm("nas", "NAS"));
+        assert!(wm("a.EXAMPLE.com", "*.EXAMPLE.com"));
+        assert!(!wm("a.example.com", "*.EXAMPLE.com"));
+        // ASCII-insensitive: `Match host`, `Match originalhost`.
+        let ci = |t: &str, p: &str| wildcard_match(t, p, Case::AsciiInsensitive);
+        assert!(ci("WEB01.Example.COM", "web*.example.com"));
+        assert!(ci("mixhost.example.org", "MIXHOST.EXAMPLE.ORG"));
+        assert!(ci("origcase", "OrigCase"));
+        // Only ASCII is folded (OpenSSH `tolower` on bytes).
+        assert!(!ci("ÄB", "äb"));
+        assert!(ci("Äb", "ÄB"));
     }
 
     #[test]
     fn lists_and_negation() {
-        assert_eq!(match_list("db1", "db*,web*"), ListMatch::Positive);
-        assert_eq!(match_list("db1", "web*"), ListMatch::NoMatch);
-        assert_eq!(match_list("db1", "db*,!db1"), ListMatch::Negated);
-        assert_eq!(match_list("db2", "db*,!db1"), ListMatch::Positive);
-        assert_eq!(match_list("x", "!y"), ListMatch::NoMatch);
+        let ml = |t: &str, l: &str| match_list(t, l, Case::Sensitive);
+        assert_eq!(ml("db1", "db*,web*"), ListMatch::Positive);
+        assert_eq!(ml("db1", "web*"), ListMatch::NoMatch);
+        assert_eq!(ml("db1", "db*,!db1"), ListMatch::Negated);
+        assert_eq!(ml("db2", "db*,!db1"), ListMatch::Positive);
+        assert_eq!(ml("x", "!y"), ListMatch::NoMatch);
+        assert_eq!(ml("Smith", "smith"), ListMatch::NoMatch);
+        assert_eq!(
+            match_list("DB1", "db*,!db1", Case::AsciiInsensitive),
+            ListMatch::Negated
+        );
     }
 
     #[test]
@@ -134,6 +175,13 @@ mod tests {
             host_block_matches("a,b", &p(&["a,b"])),
             "commas are literal in Host patterns"
         );
+        // Case-sensitive, also negation (`Host !LAB *` applies to `lab`, not to `LAB`).
+        assert!(host_block_matches("Lab", &p(&["Lab"])));
+        assert!(!host_block_matches("lab", &p(&["Lab"])));
+        assert!(!host_block_matches("LAB", &p(&["Lab"])));
+        assert!(!host_block_matches("LOWER", &p(&["lower"])));
+        assert!(host_block_matches("lab", &p(&["!LAB", "*"])));
+        assert!(!host_block_matches("LAB", &p(&["!LAB", "*"])));
     }
 
     #[test]

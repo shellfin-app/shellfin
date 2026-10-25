@@ -22,11 +22,13 @@ use windows_sys::Win32::Security::Authorization::{
 };
 use windows_sys::Win32::Security::{
     ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, ACL_SIZE_INFORMATION, AclSizeInformation,
-    DACL_SECURITY_INFORMATION, GetAce, GetAclInformation, GetTokenInformation,
-    OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, TOKEN_QUERY, TOKEN_USER, TokenUser,
+    DACL_SECURITY_INFORMATION, GetAce, GetAclInformation, GetTokenInformation, LookupAccountSidW,
+    OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SID_NAME_USE, SidTypeUser, TOKEN_QUERY,
+    TOKEN_USER, TokenUser,
 };
 use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW, GetFinalPathNameByHandleW};
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+use windows_sys::Win32::System::WindowsProgramming::GetComputerNameW;
 
 pub const SID_LOCAL_SYSTEM: &str = "S-1-5-18";
 pub const SID_ADMINISTRATORS: &str = "S-1-5-32-544";
@@ -343,6 +345,13 @@ pub fn security_of_path(path: &Path) -> io::Result<SecurityInfo> {
 }
 
 fn query_current_user_sid() -> io::Result<String> {
+    with_current_user_sid(|sid| {
+        sid_to_string(sid).ok_or_else(|| io::Error::other("cannot convert the user SID"))
+    })
+}
+
+/// Run `f` with the process token's user SID (valid only during the call).
+fn with_current_user_sid<R>(f: impl FnOnce(PSID) -> io::Result<R>) -> io::Result<R> {
     let mut token: HANDLE = std::ptr::null_mut();
     // SAFETY: GetCurrentProcess returns a pseudo-handle; `token` receives a real handle closed below.
     if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
@@ -379,7 +388,59 @@ fn query_current_user_sid() -> io::Result<String> {
     }
     // SAFETY: the buffer now starts with a TOKEN_USER whose SID points into `buf`.
     let user: &TOKEN_USER = unsafe { &*buf.as_ptr().cast::<TOKEN_USER>() };
-    sid_to_string(user.User.Sid).ok_or_else(|| io::Error::other("cannot convert the user SID"))
+    f(user.User.Sid)
+}
+
+/// The current process user's account as `(user name, domain name)` from
+/// `LookupAccountSidW(NULL, <token user SID>)`, and the NetBIOS computer name
+/// (`GetComputerNameW`): exactly what Win32-OpenSSH's `get_passwd` builds `pw_name` from
+/// (`platform::openssh_windows_user`). `None` on any error or if the SID is not a user account.
+pub fn current_account() -> Option<(String, String, String)> {
+    let (user, domain) = with_current_user_sid(|sid| {
+        let mut name = [0u16; 257]; // UNLEN + 1
+        let mut domain = [0u16; 256]; // DNLEN + 1 is 16; leave room for longer names
+        let mut name_len = u32::try_from(name.len()).unwrap_or(0);
+        let mut domain_len = u32::try_from(domain.len()).unwrap_or(0);
+        let mut kind: SID_NAME_USE = 0;
+        // SAFETY: `sid` is valid for the duration of this closure; both buffers hold the given
+        // number of UTF-16 units and outlive the call; on success the lengths are the units
+        // written without the terminating NUL.
+        let ok = unsafe {
+            LookupAccountSidW(
+                std::ptr::null(),
+                sid,
+                name.as_mut_ptr(),
+                &mut name_len,
+                domain.as_mut_ptr(),
+                &mut domain_len,
+                &mut kind,
+            )
+        };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if kind != SidTypeUser {
+            return Err(io::Error::other("not a user account"));
+        }
+        let take = |buf: &[u16], len: u32| -> io::Result<String> {
+            let units = usize::try_from(len)
+                .ok()
+                .and_then(|n| buf.get(..n))
+                .ok_or_else(|| io::Error::other("bad length"))?;
+            String::from_utf16(units).map_err(|_| io::Error::other("not UTF-16"))
+        };
+        Ok((take(&name, name_len)?, take(&domain, domain_len)?))
+    })
+    .ok()?;
+    let mut computer = [0u16; 64]; // MAX_COMPUTERNAME_LENGTH (15) + 1, with room
+    let mut len = u32::try_from(computer.len()).ok()?;
+    // SAFETY: `computer` holds `len` UTF-16 units and outlives the call; on success `len` is
+    // the number of units written without the terminating NUL.
+    if unsafe { GetComputerNameW(computer.as_mut_ptr(), &mut len) } == 0 {
+        return None;
+    }
+    let units = computer.get(..usize::try_from(len).ok()?)?;
+    Some((user, domain, String::from_utf16(units).ok()?))
 }
 
 /// The current process user's SID string (cached).

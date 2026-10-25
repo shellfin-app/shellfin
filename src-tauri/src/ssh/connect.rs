@@ -1034,6 +1034,37 @@ mod tests {
         assert!(kh.ignored.is_empty() && kh.learn_target.is_some());
     }
 
+    /// (hostile input) #7, Windows: a token-expanded known_hosts path to a network share
+    /// (`\\%l\c$\kh`) is refused by the §9.4 allowlist like any config path, before any file
+    /// access: it is ignored (`knownHostsIgnored`), nothing is learned there, `accept-new` asks.
+    #[cfg(windows)]
+    #[test]
+    fn expanded_known_hosts_path_to_a_share_is_refused() {
+        use crate::sshconfig::{KnownHostsFileOpt, StrictMode};
+        let mut f = crate::sshconfig::testutil::Fixture::new();
+        f.env.local_host = Some("laptop".into());
+        // `argv_split` turns `\\` into `\`, so the file spells the share with doubled backslashes.
+        f.user_config(concat!(
+            "Host h\n  StrictHostKeyChecking accept-new\n  ",
+            r"UserKnownHostsFile \\\\%l\\c$\\kh",
+            "\n"
+        ));
+        let cfg = f.load().query("h", &f.env).unwrap();
+        let share = r"\\laptop\c$\kh";
+        assert_eq!(
+            cfg.user_known_hosts,
+            Some(vec![KnownHostsFileOpt::Path(share.into())])
+        );
+        let kh = load_known_hosts_files(&[KnownHostsOpt::Path(PathBuf::from(share))], &[], None);
+        assert_eq!(kh.ignored, vec![share.to_owned()]);
+        assert!(kh.user_file_ignored);
+        assert!(kh.learn_target.is_none());
+        assert_eq!(
+            effective_strict(StrictMode::AcceptNew, kh.user_file_ignored, false),
+            StrictMode::Ask
+        );
+    }
+
     /// `rememberPasswords = false` removes the offer even with a working keychain.
     #[test]
     fn remember_password_offer_follows_the_setting() {

@@ -2639,6 +2639,12 @@ mod tests {
         assert!(text.contains("    ProxyJump bob@jump:2200\n"), "{text}");
         // A literal `%` in User is doubled (OpenSSH expands tokens there).
         assert!(text.contains("    User \"ops%%u\"\n"), "{text}");
+        // ... and reads back as the literal user now that User tokens are expanded.
+        let fx = crate::sshconfig::testutil::Fixture::new();
+        fx.user_config(&text);
+        let back = fx.load().query("spec", &fx.env).unwrap();
+        assert_eq!(back.user.as_deref(), Some("ops%u"));
+        assert!(back.warnings.is_empty(), "{:?}", back.warnings);
         let fields: Vec<&str> = skipped
             .iter()
             .filter(|x| x.name == "web server")
