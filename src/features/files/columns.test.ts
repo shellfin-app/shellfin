@@ -1,9 +1,10 @@
 // The file tree's size and date columns (§8.11): the CSS breakpoints are ordered and leave room for names, and every
-// formatted value fits its fixed `ch` width in English and Ukrainian, so a locale or ICU change cannot clip silently.
+// formatted value fits its fixed `ch` width in every shipped UI language (`SUPPORTED_LANGUAGES`, so a new language is
+// covered as soon as it is registered), and a locale or ICU change cannot clip silently.
 import { readFileSync } from "node:fs";
 import { afterAll, describe, expect, it } from "vitest";
-import { formatBytes, formatFileDateShort } from "../../i18n/format";
-import { setLanguage } from "../../i18n";
+import { COMPACT_DATE_MAX_CHARS, formatBytes, formatFileDateShort } from "../../i18n/format";
+import { SUPPORTED_LANGUAGES, setLanguage } from "../../i18n";
 
 // Read from disk: the test config switches CSS processing off, which empties `?raw` CSS imports too.
 const css = readFileSync("src/features/files/files.css", "utf8").replace(/\r\n/g, "\n");
@@ -118,7 +119,7 @@ describe("file tree columns: CSS", () => {
 
   it("rows and header share the column widths", () => {
     expect(css).toContain(".file-row__col--size { width: var(--file-col-size); }");
-    expect(css).toContain(".file-row__col--date { width: var(--file-col-date); }");
+    expect(css).toMatch(/\.file-row__col--date \{ width: var\(--file-col-date\);/);
     expect(css).toMatch(/\.file-tree-header__cell--size \{[^}]*width: var\(--file-col-size\)/);
     expect(css).toMatch(/\.file-tree-header__cell--mtime \{[^}]*width: var\(--file-col-date\)/);
   });
@@ -147,7 +148,15 @@ describe("file tree columns: every formatted value fits its width", () => {
     await setLanguage("en");
   });
 
-  for (const language of ["en", "uk"]) {
+  it("the date column is exactly as wide as the longest compact date formatFileDateShort returns", () => {
+    expect(dateCh).toBe(COMPACT_DATE_MAX_CHARS);
+  });
+
+  it("the date cell ends with an ellipsis if a future language does not fit (the shipped ones are checked below)", () => {
+    expect(css).toMatch(/\.file-row__col--date \{[^}]*overflow: hidden;[^}]*text-overflow: ellipsis;/);
+  });
+
+  for (const language of SUPPORTED_LANGUAGES) {
     it(`${language}: sizes (binary and decimal) and dates (relative and absolute)`, async () => {
       await setLanguage(language);
       for (const system of ["binary", "decimal"] as const) {

@@ -92,6 +92,14 @@ describe("resolveLocale", () => {
     expect(resolveLocale("es")).toBe("es");
   });
 
+  it("detects French, including regional variants", () => {
+    expect(resolveLocale("system", ["fr-FR", "uk"])).toBe("fr");
+    expect(resolveLocale("system", ["it", "fr-CA"])).toBe("fr");
+    expect(resolveLocale("system", ["fr-BE"])).toBe("fr");
+    expect(resolveLocale("system", ["fr-CH", "de"])).toBe("fr");
+    expect(resolveLocale("fr")).toBe("fr");
+  });
+
   it("detects Japanese from the system languages or an explicit setting", () => {
     expect(resolveLocale("system", ["ja-JP", "en"])).toBe("ja");
     expect(resolveLocale("system", ["it", "ja"])).toBe("ja");

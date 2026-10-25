@@ -162,7 +162,7 @@ describe("file tree columns", () => {
   });
 
   it("header keyboard skips a button whose column is hidden at this width (the Tab stop moves to the first shown one)", async () => {
-    // jsdom has no layout: report a box for every header button except Modified (hidden between 21em and 29em).
+    // jsdom has no layout: report a box for every header button except Modified (hidden between 21em and 30em).
     vi.spyOn(HTMLElement.prototype, "getClientRects").mockImplementation(function (this: HTMLElement) {
       const hidden = this.closest(".file-tree-header__cell--mtime") !== null;
       return (hidden ? [] : [new DOMRect(0, 0, 10, 10)]) as unknown as DOMRectList;

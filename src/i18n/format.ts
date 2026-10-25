@@ -134,9 +134,17 @@ function sameLocalDay(a: number, b: number): boolean {
 }
 
 /**
+ * The most characters (code points) a compact date may have: the width of the file tree's date column
+ * (`--file-col-date` in files.css; `columns.test.ts` keeps both equal and checks every shipped language).
+ */
+export const COMPACT_DATE_MAX_CHARS = 14;
+
+/**
  * The compact form of `formatFileDate` for the file tree's date column (fixed width, §8.11): relative ->
- * "3h ago"; absolute -> the time for today ("14:05"), else the short date ("12.10.25"). Never throws on odd
- * server values (0, negative, far future): out-of-range dates give an empty string.
+ * "3h ago" (the narrow style; the short one where narrow uses a sign, see `narrowUsesSign`); absolute -> the time
+ * for today ("14:05"), else the short date ("12.10.25"). A relative text longer than `COMPACT_DATE_MAX_CHARS`
+ * (es "dentro de 10 min", a future time from clock skew) gives the absolute form instead, so it is never clipped.
+ * Never throws on odd server values (0, negative, far future): out-of-range dates give an empty string.
  */
 export function formatFileDateShort(
   mtimeSec: number,
@@ -145,10 +153,24 @@ export function formatFileDateShort(
 ): string {
   const ms = validMs(mtimeSec);
   if (ms === null) return "";
-  if (format === "absolute") {
-    return sameLocalDay(ms, nowMs) ? formatDateTime(ms, { timeStyle: "short" }) : formatDateTime(ms, { dateStyle: "short" });
+  if (format === "relative") {
+    const relative = formatRelativeTime(ms, nowMs, narrowUsesSign() ? "short" : "narrow");
+    if ([...relative].length <= COMPACT_DATE_MAX_CHARS) return relative;
   }
-  return formatRelativeTime(ms, nowMs, "narrow");
+  return sameLocalDay(ms, nowMs) ? formatDateTime(ms, { timeStyle: "short" }) : formatDateTime(ms, { dateStyle: "short" });
+}
+
+/**
+ * Whether the narrow relative style of the UI language writes the direction as a sign instead of words (CLDR fr:
+ * "-5 min", "+3 h"), which reads like a negative duration in a date column. Such languages get the short style
+ * ("il y a 5 min") there. Probed once per language with `formatToParts`, so no language list has to be kept.
+ */
+function narrowUsesSign(): boolean {
+  return cached("narrowSign", undefined, (l) =>
+    new Intl.RelativeTimeFormat(l, { numeric: "always", style: "narrow" })
+      .formatToParts(-5, "minute")
+      .some((part) => part.type === "literal" && /[-+−]/.test(part.value)),
+  );
 }
 
 export function formatList(items: readonly string[], type: Intl.ListFormatType = "conjunction"): string {
