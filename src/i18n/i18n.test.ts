@@ -179,6 +179,15 @@ describe("English fallback for untranslated keys", () => {
     expect(t("common.close")).toBe(en.common.close); // empty: returnEmptyString false
     expect(t("common.cancel")).toBe(en.common.cancel); // missing
   });
+
+  it("shows the English plural text when a locale has none of the key's forms", async () => {
+    const i18n = await initI18n("en");
+    // `configWarningsDialog` without any `more_*` form (a shallow merge replaces the whole object).
+    i18n.addResourceBundle("uk", "translation", { configWarningsDialog: { title: "Попередження" } }, false, true);
+    const t = i18n.getFixedT("uk");
+    expect(t("configWarningsDialog.title")).toBe("Попередження");
+    expect(t("configWarningsDialog.more", { count: 5 })).toBe(en.configWarningsDialog.more_other.replace("{{count}}", "5"));
+  });
 });
 
 describe("registered languages", () => {

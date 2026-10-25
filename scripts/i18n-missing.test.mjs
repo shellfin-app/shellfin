@@ -56,6 +56,16 @@ describe("extraKeys", () => {
     expect(extraKeys(enFlat, flatten(de), "de")).toEqual(["a.gone", "a.title_one", "files_few"]);
     expect(extraKeys(enFlat, flatten({ files_one: "x" }), "ja")).toEqual(["files_one"]);
   });
+
+  it("allows `x_zero` in every language when English has it, and only then", () => {
+    const withZero = flatten({ ...EN, files_zero: "No files" });
+    expect(extraKeys(withZero, flatten({ files_zero: "x", files_other: "x" }), "ja")).toEqual([]);
+    expect(extraKeys(withZero, flatten({ files_zero: "x" }), "uk")).toEqual([]);
+    expect(extraKeys(enFlat, flatten({ files_zero: "x" }), "de")).toEqual(["files_zero"]);
+    // Optional: a locale without `_zero` uses its own form for 0, so it is not missing.
+    const de = { a: { title: "T", body: "B" }, files_one: "x", files_other: "x" };
+    expect(missingKeys(withZero, flatten(de), "de")).toEqual([]);
+  });
 });
 
 describe("pruneLocale", () => {
@@ -64,6 +74,15 @@ describe("pruneLocale", () => {
     const { json, removed } = pruneLocale(EN, de, "de");
     expect(json).toEqual({ a: { title: "Titel" }, files_one: "eine" });
     expect(removed.sort()).toEqual(["a.body", "files_few", "old.x"]);
+  });
+
+  it("keeps `x_zero` when English has it and removes non-string values", () => {
+    const enZero = { ...EN, files_zero: "No files" };
+    const ja = { files_zero: "なし", files_other: "{{count}} 件", a: { title: 1, body: null, list: ["x"] } };
+    const { json, removed } = pruneLocale(enZero, ja, "ja");
+    expect(json).toEqual({ files_zero: "なし", files_other: "{{count}} 件" });
+    expect(removed.sort()).toEqual(["a.body", "a.list", "a.title"]);
+    expect(pruneLocale(EN, { files_zero: "x" }, "de").removed).toEqual(["files_zero"]);
   });
 
   it("never adds a key", () => {
