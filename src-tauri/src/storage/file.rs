@@ -112,6 +112,46 @@ fn create_tmp(path: &Path) -> io::Result<(PathBuf, fs::File)> {
     Err(last)
 }
 
+/// Delays between attempts of the replacing rename on Windows (about 1 s in total).
+#[cfg(windows)]
+const RENAME_RETRY_DELAYS_MS: [u64; 10] = [1, 2, 5, 10, 20, 40, 80, 160, 250, 400];
+
+/// Whether a failed rename over an existing file is one Windows reports while another handle
+/// briefly holds the target (`ERROR_ACCESS_DENIED` for a target being replaced or pending
+/// delete, `ERROR_SHARING_VIOLATION` / `ERROR_LOCK_VIOLATION` for one opened without
+/// `FILE_SHARE_DELETE`: a concurrent writer, an antivirus scan, the search indexer, a sync
+/// client or an editor reading the file).
+#[cfg(windows)]
+fn is_transient_rename_error(e: &io::Error) -> bool {
+    matches!(e.raw_os_error(), Some(5 | 32 | 33))
+}
+
+/// Whether `path` has the read-only attribute: a replace then fails with `ERROR_ACCESS_DENIED`
+/// for good, so it is not retried (quit writes `recents.json` once per session plus once more,
+/// and a read-only file must not make each of those wait).
+#[cfg(windows)]
+fn is_read_only(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|m| m.permissions().readonly())
+}
+
+/// `rename(tmp, path)`, replacing `path`. On Windows the replace fails transiently while
+/// another handle holds the target, so those errors are retried with a bounded backoff, except
+/// for a read-only target (fails at once). A target that stays locked, or a DACL that denies
+/// the replace (rare for the private app directory; it cannot be told apart from a briefly
+/// held file without an extra open), still fails, after about 1 s.
+fn rename_replacing(tmp: &Path, path: &Path) -> io::Result<()> {
+    #[cfg(windows)]
+    for delay in RENAME_RETRY_DELAYS_MS {
+        match fs::rename(tmp, path) {
+            Err(e) if is_transient_rename_error(&e) && !is_read_only(path) => {
+                std::thread::sleep(std::time::Duration::from_millis(delay));
+            }
+            other => return other,
+        }
+    }
+    fs::rename(tmp, path)
+}
+
 /// Atomically replace `path` with `bytes` (unique tmp file + `sync_all` + `rename`).
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let (tmp, file) = create_tmp(path)?;
@@ -120,7 +160,7 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
         file.write_all(bytes)?;
         file.sync_all()?;
         drop(file);
-        fs::rename(&tmp, path)
+        rename_replacing(&tmp, path)
     })();
     if result.is_err() {
         let _ = fs::remove_file(&tmp);
@@ -326,6 +366,88 @@ mod tests {
         let bytes = fs::read(&p).unwrap();
         assert_eq!(bytes.len(), 64 * 1024);
         assert!(bytes.iter().all(|b| *b == bytes[0]), "mixed content");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1, "temp left");
+    }
+
+    /// Open `path` like a reader that does not allow deletion (antivirus, indexer, an editor):
+    /// Windows refuses to rename over it while the handle is open.
+    #[cfg(windows)]
+    fn open_without_share_delete(path: &Path) -> fs::File {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_SHARE_READ: u32 = 0x1;
+        OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(path)
+            .unwrap()
+    }
+
+    /// A target held open for a moment by another handle is replaced once it is released.
+    #[cfg(windows)]
+    #[test]
+    fn atomic_write_waits_for_a_briefly_held_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("settings.json");
+        atomic_write(&p, b"old").unwrap();
+        let held = open_without_share_delete(&p);
+        // Precondition: a plain rename over the held target fails with a transient error.
+        let other = dir.path().join("other");
+        fs::write(&other, b"other").unwrap();
+        let plain = fs::rename(&other, &p).unwrap_err();
+        assert!(is_transient_rename_error(&plain), "{plain:?}");
+        fs::remove_file(&other).unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            drop(held);
+        });
+        atomic_write(&p, b"new").unwrap();
+        release.join().unwrap();
+        assert_eq!(fs::read(&p).unwrap(), b"new");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1, "temp left");
+    }
+
+    /// A target that stays locked fails after the bounded retries, keeps its old content and
+    /// leaves no temp file.
+    #[cfg(windows)]
+    #[test]
+    fn atomic_write_gives_up_on_a_target_that_stays_locked() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("settings.json");
+        atomic_write(&p, b"old").unwrap();
+        let held = open_without_share_delete(&p);
+        let started = std::time::Instant::now();
+        let err = atomic_write(&p, b"new").unwrap_err();
+        assert!(is_transient_rename_error(&err), "{err:?}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        drop(held);
+        assert_eq!(fs::read(&p).unwrap(), b"old");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1, "temp left");
+    }
+
+    /// A read-only target fails at once (no retries: quit writes recents per session), keeps
+    /// its content and leaves no temp file.
+    #[cfg(windows)]
+    #[test]
+    fn atomic_write_fails_fast_on_a_read_only_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("recents.json");
+        atomic_write(&p, b"old").unwrap();
+        let mut perms = fs::metadata(&p).unwrap().permissions();
+        perms.set_readonly(true);
+        fs::set_permissions(&p, perms.clone()).unwrap();
+        let started = std::time::Instant::now();
+        let err = atomic_write(&p, b"new").unwrap_err();
+        let elapsed = started.elapsed();
+        #[allow(clippy::permissions_set_readonly_false)]
+        perms.set_readonly(false);
+        fs::set_permissions(&p, perms).unwrap();
+        assert_eq!(err.kind(), io::ErrorKind::PermissionDenied, "{err:?}");
+        // The retries alone would take ~970 ms (300 ms is reached only after 8 of them).
+        assert!(
+            elapsed < std::time::Duration::from_millis(300),
+            "{elapsed:?}"
+        );
+        assert_eq!(fs::read(&p).unwrap(), b"old");
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1, "temp left");
     }
 

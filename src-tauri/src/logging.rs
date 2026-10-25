@@ -360,6 +360,80 @@ pub(crate) fn install_test_panic_hook() {
     });
 }
 
+/// Tests: capture what is logged on the current thread.
+///
+/// Never use `tracing::subscriber::with_default` for this in the lib tests: tracing caches each
+/// callsite's interest globally, and while a scoped subscriber is the only live dispatcher a
+/// callsite first hit on *another* thread (whose default is the no-op subscriber) is cached as
+/// "never", so the scoped subscriber silently misses the event (a flaky test under parallel
+/// runs). Instead one global subscriber is installed for the whole test binary; its filter is
+/// dynamic (consulted per event), enabled only on threads inside [`capture`], so the cached
+/// interest is never "never" and nothing is formatted elsewhere. It uses the production field
+/// formatter ([`safe_fields`]).
+#[cfg(test)]
+pub(crate) mod test_capture {
+    #![allow(clippy::expect_used)]
+
+    use std::cell::RefCell;
+
+    use tracing_subscriber::Layer;
+    use tracing_subscriber::layer::SubscriberExt;
+
+    thread_local! {
+        static BUF: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
+    }
+
+    struct ThreadWriter;
+
+    impl std::io::Write for ThreadWriter {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            BUF.with_borrow_mut(|buf| {
+                if let Some(buf) = buf {
+                    buf.extend_from_slice(b);
+                }
+            });
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Ends the capture even when `f` panics.
+    struct Stop;
+
+    impl Drop for Stop {
+        fn drop(&mut self) {
+            BUF.set(None);
+        }
+    }
+
+    /// Everything logged on this thread while `f` runs (plain text, no ANSI).
+    pub(crate) fn capture(f: impl FnOnce()) -> String {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            let layer = super::fmt::layer()
+                .fmt_fields(super::safe_fields())
+                .with_ansi(false)
+                .with_writer(|| ThreadWriter)
+                .with_filter(tracing_subscriber::filter::dynamic_filter_fn(|_, _| {
+                    BUF.with_borrow(Option::is_some)
+                }));
+            tracing::subscriber::set_global_default(tracing_subscriber::registry().with(layer))
+                .expect("the lib tests install no other global subscriber");
+        });
+        // Re-derive every cached interest from the global subscriber (a callsite registered
+        // on another thread while it was being installed could have kept a stale "never").
+        tracing::callsite::rebuild_interest_cache();
+        BUF.set(Some(Vec::new()));
+        let stop = Stop;
+        f();
+        let bytes = BUF.with_borrow_mut(Option::take).unwrap_or_default();
+        drop(stop);
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+}
+
 /// Panic hook: logs file:line only — never the payload (it may contain secrets or server data).
 /// The location is also kept for the thread's catch site (`commands::guarded`).
 pub fn install_panic_hook() {
@@ -440,37 +514,63 @@ mod tests {
     /// Server text inside a logged field cannot forge a log line or carry escapes.
     #[test]
     fn log_fields_are_sanitized() {
-        use std::sync::{Arc, Mutex};
-        #[derive(Clone, Default)]
-        struct Buf(Arc<Mutex<Vec<u8>>>);
-        impl std::io::Write for Buf {
-            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
-                self.0.lock().unwrap().extend_from_slice(b);
-                Ok(b.len())
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
-        let buf = Buf::default();
-        let sink = buf.clone();
-        let subscriber = tracing_subscriber::registry().with(
-            fmt::layer()
-                .fmt_fields(safe_fields())
-                .with_ansi(false)
-                .with_writer(move || sink.clone()),
-        );
         let server_text = "denied\nFAKE ERROR injected\x1b[2J\u{202E}";
-        tracing::subscriber::with_default(subscriber, || {
+        let out = test_capture::capture(|| {
             tracing::warn!(error = %server_text, n = 3, "save failed: {}", server_text);
         });
-        let out = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
         assert_eq!(out.lines().count(), 1, "{out}");
         assert!(!out.contains('\x1b') && !out.contains('\u{202E}'), "{out}");
         assert!(out.contains("error=denied\\x0aFAKE ERROR"), "{out}");
         assert!(out.contains("save failed: denied\\x0a"), "{out}");
         assert!(out.contains(" n=3"), "{out}");
         assert!(out.contains("\\u{202e}"), "{out}");
+    }
+
+    /// Callsites first hit on another thread while a capture runs are still captured here.
+    /// With a scoped `with_default` subscriber (the old capture) every one of them was cached
+    /// as "never" by the other thread and all lines were lost. The other thread's own lines
+    /// are not captured.
+    #[test]
+    fn capture_survives_callsites_registered_on_another_thread() {
+        /// One fresh callsite per probe (each macro expansion is its own callsite).
+        macro_rules! probes {
+            ($($n:literal)*) => {
+                [$(|on_capture: bool| {
+                    tracing::error!(probe = $n, on_capture, "registration probe");
+                }),*]
+            };
+        }
+        let probes: [fn(bool); 32] = probes!(
+            0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31
+        );
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let other = {
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                for probe in probes {
+                    probe(false);
+                }
+            })
+        };
+        let logs = test_capture::capture(|| {
+            // Release the other thread only once this thread is capturing.
+            barrier.wait();
+            other.join().unwrap();
+            for probe in probes {
+                probe(true);
+            }
+        });
+        let missing: Vec<usize> = (0..probes.len())
+            .filter(|n| !logs.contains(&format!("probe={n} on_capture=true")))
+            .collect();
+        assert!(missing.is_empty(), "lost probes {missing:?}: {logs:?}");
+        assert!(!logs.contains("on_capture=false"), "{logs:?}");
+        assert_eq!(
+            test_capture::capture(|| {}),
+            "",
+            "nothing leaks into the next capture"
+        );
     }
 
     #[test]

@@ -449,11 +449,27 @@ async fn automatic_check<R: Runtime>(app: &AppHandle<R>) {
     }
     match check(app).await {
         Ok(Some((update, info))) => {
-            let skipped = state
-                .stores
-                .lock_recents()
-                .skipped_update_version()
-                .map(str::to_owned);
+            // On a blocking thread (§7.2): the recents lock can be held by a write that waits
+            // for a locked file.
+            let stores = state.stores.clone();
+            let skipped = match tauri::async_runtime::spawn_blocking(move || {
+                stores
+                    .lock_recents()
+                    .skipped_update_version()
+                    .map(str::to_owned)
+            })
+            .await
+            {
+                Ok(skipped) => skipped,
+                // Never `%e`: a `JoinError`'s text carries the panic payload.
+                Err(e) => {
+                    tracing::warn!(
+                        panicked = crate::error::tauri_task_panicked(&e),
+                        "could not read the skipped update version"
+                    );
+                    return;
+                }
+            };
             if !should_announce(&info.version, skipped.as_deref()) {
                 tracing::info!(version = %info.version, "update available but skipped by the user");
                 return;
