@@ -2,14 +2,15 @@
 // through displayServerText: C0/C1 controls and bidi controls become visible escapes, then it is truncated.
 
 // Code point ranges: C0 (0-1F), DEL + C1 (7F-9F), plus the characters that render as nothing or reorder text (the
-// same set as the Rust `is_deceptive_char`, ssh/shellquote.rs, with two differences: the frontend also escapes
-// U+FFF9-FFFB, which the Rust set leaves out of U+FFF0-FFF8, and U+FE0E/U+FE0F are context-aware, see below).
+// same set as the Rust `is_deceptive_char`, ssh/shellquote.rs, except that U+FE0E/U+FE0F are context-aware here, see
+// below). serverText.parity.test.ts checks both against src-tauri/tests/fixtures/deceptive_chars.json.
 // The variation selectors U+FE00-FE0D (VS1-14) are always escaped: they are rarely used in names (legitimate in
 // standardized variation sequences such as CJK compatibility or math symbols; such names show the marker) and they
 // make two different names look identical. The supplementary ones U+E0100-E01EF fall inside the tag range below.
 // Covered: soft hyphen, combining grapheme joiner, Hangul/Khmer/Mongolian fillers and selectors, zero-width space
 // and joiners, LRM/RLM, bidi embeddings and isolates, line/paragraph separators, word joiner and invisible
-// operators, BOM, interlinear annotation marks and Unicode tag characters.
+// operators, BOM, interlinear annotation marks, shorthand format controls (U+1BCA0-1BCA3), musical symbol format
+// controls (U+1D173-1D17A) and Unicode tag characters.
 // U+FE0E (text) and U+FE0F (emoji presentation) are kept only where they change how the previous character
 // renders (see keepPresentationSelector); anywhere else they are invisible and escaped.
 // Listed as numbers (not as literal or escaped characters in a regex) so editors/formatters cannot strip or
@@ -31,6 +32,8 @@ const CONTROL_RANGES: readonly (readonly [number, number])[] = [
   [0xfeff, 0xfeff],
   [0xffa0, 0xffa0],
   [0xfff0, 0xfffb],
+  [0x1bca0, 0x1bca3],
+  [0x1d173, 0x1d17a],
   [0xe0000, 0xe0fff],
 ];
 

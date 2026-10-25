@@ -355,10 +355,35 @@ mod tests {
         let long = sanitize_name(&"й".repeat(500));
         assert_eq!(long.chars().count(), MAX_NAME_CHARS);
         assert!(long.ends_with('…'));
+        // Interlinear annotation marks (#33) hide or reorder text: removed, neighbours kept.
+        assert_eq!(
+            sanitize_name("\u{FFEF}a\u{FFF0}b\u{FFF8}c\u{FFF9}d\u{FFFA}e\u{FFFB}f\u{FFFC}"),
+            "\u{FFEF}abcdef\u{FFFC}"
+        );
+        assert_eq!(sanitize_name("\u{FFF9}\u{FFFA}\u{FFFB}"), "");
         // A name holding a token is not expanded again.
         let (_d, stores, h, shown) = hub(Some(false));
         enable(&stores);
         h.transfers_done(1, Some("{{count}}"));
         assert_eq!(shown.lock().unwrap()[0].1, "Finished: {{count}}");
+    }
+
+    /// What reaches the OS through the hub: a server-chosen file name and a tab label that
+    /// use annotation marks (#33) and other invisibles arrive without them.
+    #[test]
+    fn shown_notifications_carry_no_annotation_marks() {
+        let (_d, stores, h, shown) = hub(Some(false));
+        enable(&stores);
+        h.transfers_done(1, Some("invoice\u{FFF9}.pdf\u{FFFA}.exe\u{FFFB}"));
+        h.connection_lost("prod\u{FFFB}\u{202E}\u{FFF0}\u{E0041}");
+        let shown = shown.lock().unwrap();
+        assert_eq!(shown[0].1, "Finished: invoice.pdf.exe");
+        assert_eq!(shown[1].1, "The connection to prod was lost.");
+        for (title, body) in shown.iter() {
+            assert!(
+                !title.chars().chain(body.chars()).any(is_deceptive_char),
+                "{body:?}"
+            );
+        }
     }
 }

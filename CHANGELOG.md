@@ -78,6 +78,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Security
 
+- Native dialogs, OS notifications and the file names of downloads now remove the same invisible characters as
+  the app's own UI (for example the annotation characters U+FFF9 to U+FFFB, soft hyphens and tag characters) from
+  server-provided names, so they cannot hide or reorder text there (#33).
 - Host keys are now checked against the same known_hosts files OpenSSH uses when `UserKnownHostsFile` contains `%C`
   or `%l` (for example `~/.ssh/known_hosts.d/%C`). Before, Shellfin read the default files for such hosts and asked
   before trusting a key. If the file name still cannot be worked out exactly as OpenSSH does (no usable local host
