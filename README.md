@@ -36,7 +36,7 @@ Website: <https://shellfin.app>
 - **Terminals:** several per connection (xterm.js with WebGL), find, "Save output...", safe paste (control
   characters stripped, multi-line confirmation), clickable links with confirmation, "Open terminal here".
 - **Files:** lazy SFTP tree for large folders, new file/folder, rename, move, delete, multi-file upload and
-  download (picker or drag and drop), 1 to 64 concurrent transfers per connection (default 3), optional bandwidth
+  download (picker or drag and drop), whole-folder download, 1 to 64 concurrent transfers per connection (default 3), optional bandwidth
   limits, hints for files you probably cannot write.
 - **Editor:** CodeMirror 6 with syntax highlighting, non-UTF-8 encodings, line-ending handling and **atomic,
   conflict-safe saves** that preserve permissions and ownership; saves requested while offline run after

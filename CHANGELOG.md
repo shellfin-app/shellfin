@@ -9,6 +9,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Download whole folders: "Download folder…" in the file tree's context menu asks where to put the folder and
+  copies it with all its subfolders as one transfer, with overall progress, cancel and retry of the files that
+  failed (#16). The folder is listed completely before anything is written: trees deeper than 64 levels or with more
+  than 200 000 entries are refused, and for more than 10 000 files, more than 10 GiB or too little free disk space
+  you are asked first. If the folder already exists you can merge into it, keep both or cancel; files that already
+  exist follow the "When the file already exists" setting, and with "Ask" they are set aside and decided together at the end
+  (Replace all, Skip all, Replace older). Symbolic links, pipes and devices on the server are never followed or
+  opened; they and names that cannot be used locally are skipped and listed. Names are made safe for the local
+  disk. Cancel keeps the files already copied and removes only the empty folders it created.
 - The file tree can show size and modification date columns and sort by name, size or date. The columns appear when
   the sidebar is wide enough (size first, then the date), with a header to sort by clicking; the View menu and the
   command palette sort too. Folders stay first, and the choice is remembered. The date follows the date format setting
@@ -108,6 +117,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Security
 
+- Folder downloads write only inside the folder you chose: every subfolder and file is created relative to an
+  already checked folder handle, never through a path another local user could redirect. A symbolic link, junction
+  or other link that appears in the destination (for example in a shared folder) is not followed, the affected
+  files fail and are listed, and nothing is written outside. Server names such as `..`, `CON` or names with `\`,
+  `:` or control characters cannot step out of the folder or open a device, and a file is never replaced by a
+  later one of the same download.
 - Native dialogs, OS notifications and the file names of downloads now remove the same invisible characters as
   the app's own UI (for example the annotation characters U+FFF9 to U+FFFB, soft hyphens and tag characters) from
   server-provided names, so they cannot hide or reorder text there (#33).

@@ -28,7 +28,7 @@ describe("transfer event `skipped`", () => {
   it("is a finished row (not failed, not retryable) shown as skipped", async () => {
     const { sessionId } = await setupConnected();
     act(() => {
-      applyTransferEvent(sessionId, "/srv/app", { type: "started", transferId: "t1", name: "a.txt", direction: "upload", total: 10 });
+      applyTransferEvent(sessionId, "/srv/app", { type: "started", transferId: "t1", name: "a.txt", direction: "upload", total: 10, kind: "file" });
       applyTransferEvent(sessionId, "/srv/app", { type: "skipped", transferId: "t1" });
     });
     expect(rows()[0]).toMatchObject({ transferId: "t1", status: "skipped", retryable: false });
@@ -78,7 +78,7 @@ describe("onConflict policy", () => {
     const { sessionId, backend } = await setupConnected();
     await setPolicy(backend, "skip");
     act(() => {
-      applyTransferEvent(sessionId, "/srv/app", { type: "started", transferId: "t2", name: "x.txt", direction: "upload", total: 1 });
+      applyTransferEvent(sessionId, "/srv/app", { type: "started", transferId: "t2", name: "x.txt", direction: "upload", total: 1, kind: "file" });
       applyTransferEvent(sessionId, "/srv/app", {
         type: "failed",
         transferId: "t2",

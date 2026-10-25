@@ -13,10 +13,15 @@ import { guard } from "../../lib/reportError";
 import { displayName, displayPath } from "../../lib/serverText";
 import type { TransferRow } from "../../state/slices/transfers";
 import { useStore } from "../../state/store";
-import { cancelTransfer, isReplaceable, retryTransfer, showInTree } from "./transferActions";
+import { FolderTransferItem } from "./FolderTransferItem";
+import { cancelTransfer, isReplaceable, needsFolderDecision, retryTransfer, showInTree } from "./transferActions";
 import "./transfers.css";
 
 function TransferItem({ row }: { row: TransferRow }) {
+  return row.folder ? <FolderTransferItem row={row} folder={row.folder} /> : <FileTransferItem row={row} />;
+}
+
+function FileTransferItem({ row }: { row: TransferRow }) {
   const { t } = useTranslation();
   const name = row.name === "" ? t("transfers.unknownFile") : displayName(row.name);
   const removeTransfer = useStore((s) => s.removeTransfer);
@@ -91,9 +96,10 @@ export function TransfersButton({ sessionId }: { sessionId: string }) {
   const limits = effectiveLimits(settings, overrides);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const popRef = useRef<HTMLDivElement>(null);
-  const running = rows.filter((r) => r.status === "running").length;
+  // A folder job that waits for a decision (or for its conflicts) counts as waiting, not as running.
+  const running = rows.filter((r) => r.status === "running" && !needsFolderDecision(r)).length;
   // An upload waiting for the Replace decision is not a failure.
-  const waiting = rows.filter((r) => isReplaceable(r)).length;
+  const waiting = rows.filter((r) => isReplaceable(r) || needsFolderDecision(r)).length;
   const failed = rows.filter((r) => r.status === "failed" && !isReplaceable(r)).length;
   const visible = rows.length > 0;
 

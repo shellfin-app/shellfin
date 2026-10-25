@@ -908,7 +908,8 @@ pub struct TransferSettings {
     #[serde(default = "default_max_concurrent")]
     pub max_concurrent: u32,
     /// What to do when an upload's destination exists (`overwrite: true` always
-    /// wins). Not applied to downloads through the Save dialog.
+    /// wins), and when a folder download's destination folder or one of its files exists
+    /// locally. Not applied to single downloads through the Save dialog.
     #[serde(default)]
     pub on_conflict: ConflictPolicy,
     /// Upload sets remote mtime/atime, download sets local mtime/atime.
@@ -924,7 +925,8 @@ pub struct TransferSettings {
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub enum ConflictPolicy {
-    /// The UI asks (upload: `remoteExists`; download: the native Save dialog).
+    /// The UI asks (upload: `remoteExists`; download: the native Save dialog; folder
+    /// download: `awaitingDecision{rootExists}` and `conflicts`).
     #[default]
     Ask,
     Overwrite,
@@ -1629,6 +1631,177 @@ pub enum TransferDirection {
     Download,
 }
 
+/// A single file or a whole folder (one job, §6.6 "Folders").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum TransferKind {
+    File,
+    Folder,
+}
+
+/// Why an entry of a folder transfer was not copied (reported, never followed or opened).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum SkipReason {
+    /// A symbolic link (never followed below the chosen folder).
+    Symlink,
+    /// A FIFO, socket or device.
+    Special,
+    /// Empty, or contains `/` or NUL.
+    InvalidName,
+    /// The server name could not be decoded (U+FFFD): the real name differs from what is shown.
+    LossyName,
+    /// Another entry of the same folder already uses this local name (after sanitizing, or by case).
+    NameCollision,
+    /// The server sent no file type, also not for `lstat`.
+    UnknownType,
+    /// The target exists and `transfers.onConflict` (or the conflict decision) is "skip".
+    Exists,
+}
+
+/// Skipped entries of a folder transfer, per reason.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SkipCounts {
+    pub symlink: u32,
+    pub special: u32,
+    pub invalid_name: u32,
+    pub lossy_name: u32,
+    pub name_collision: u32,
+    pub unknown_type: u32,
+    pub exists: u32,
+}
+
+impl SkipCounts {
+    pub fn add(&mut self, reason: SkipReason) {
+        let n = match reason {
+            SkipReason::Symlink => &mut self.symlink,
+            SkipReason::Special => &mut self.special,
+            SkipReason::InvalidName => &mut self.invalid_name,
+            SkipReason::LossyName => &mut self.lossy_name,
+            SkipReason::NameCollision => &mut self.name_collision,
+            SkipReason::UnknownType => &mut self.unknown_type,
+            SkipReason::Exists => &mut self.exists,
+        };
+        *n = n.saturating_add(1);
+    }
+
+    /// Add `other`'s counts.
+    pub fn merge(&mut self, other: &Self) {
+        for (a, b) in [
+            (&mut self.symlink, other.symlink),
+            (&mut self.special, other.special),
+            (&mut self.invalid_name, other.invalid_name),
+            (&mut self.lossy_name, other.lossy_name),
+            (&mut self.name_collision, other.name_collision),
+            (&mut self.unknown_type, other.unknown_type),
+            (&mut self.exists, other.exists),
+        ] {
+            *a = a.saturating_add(b);
+        }
+    }
+
+    pub fn total(&self) -> u32 {
+        [
+            self.symlink,
+            self.special,
+            self.invalid_name,
+            self.lossy_name,
+            self.name_collision,
+            self.unknown_type,
+            self.exists,
+        ]
+        .into_iter()
+        .fold(0u32, u32::saturating_add)
+    }
+}
+
+/// What a folder job waits for (`transfer_decide`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+#[ts(export)]
+pub enum DecisionRequest {
+    /// The destination folder exists. `isDir`: as a real folder (Merge / Keep both / Cancel);
+    /// otherwise a file or link is in the way (Keep both / Cancel). `name` is the local name.
+    #[serde(rename_all = "camelCase")]
+    RootExists { name: String, is_dir: bool },
+    /// Above the soft threshold (> 10 000 files or > 10 GiB): Proceed / Cancel.
+    #[serde(rename_all = "camelCase")]
+    LargeTree { files: u64, bytes: u64 },
+    /// The files do not fit into the free space of the target volume: Proceed / Cancel.
+    #[serde(rename_all = "camelCase")]
+    LowSpace { needed: u64, available: u64 },
+}
+
+/// The user's answer to a folder job (`transfer_decide`). Root exists: `merge`, `keepBoth`,
+/// `cancel`; large tree / low space: `proceed`, `cancel`; deferred conflicts: `replaceAll`,
+/// `skipAll`, `replaceOlder` (apply to every conflicting file of the job, also later ones).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum TransferDecision {
+    Merge,
+    KeepBoth,
+    Proceed,
+    Cancel,
+    ReplaceAll,
+    SkipAll,
+    ReplaceOlder,
+}
+
+/// One entry of a folder transfer that was skipped or failed.
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+#[ts(export)]
+pub enum ItemIssue {
+    #[serde(rename_all = "camelCase")]
+    Skipped { reason: SkipReason },
+    #[serde(rename_all = "camelCase")]
+    Failed { error: AppError, retryable: bool },
+}
+
+/// Size and mtime (Unix seconds) of one side of a conflict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ConflictSide {
+    pub size: Option<u64>,
+    pub mtime: Option<i64>,
+}
+
+/// A file of a folder job whose target exists (`onConflict = ask`; set aside until decided).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ConflictSample {
+    pub item_id: u32,
+    /// Server text (remote names joined with `/`): render with `displayPath`.
+    pub rel_path: String,
+    pub source: ConflictSide,
+    pub target: ConflictSide,
+}
+
+/// How a folder job ended (`done.summary`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct FolderSummary {
+    /// The local folder's name in the chosen parent folder (differs from the requested name
+    /// after "keep both": `name (2)`). Derived from server text: render with `displayName`.
+    pub local_name: String,
+    pub files_done: u64,
+    pub skipped: SkipCounts,
+    pub failed: u64,
+    /// Names that were changed to be valid local names.
+    pub renamed: u64,
+    /// The failed files can be copied again with `transfer_retry` (10 minutes, until the
+    /// session closes).
+    pub retryable: bool,
+}
+
 #[derive(Debug, Clone, Serialize, TS)]
 #[serde(tag = "type", rename_all = "camelCase")]
 #[ts(export)]
@@ -1638,19 +1811,87 @@ pub enum TransferEvent {
         transfer_id: String,
         name: String,
         direction: TransferDirection,
+        /// Folder: `null` until the scan finished.
         total: Option<u64>,
+        kind: TransferKind,
     },
+    /// Folder scan running (at most 10/s).
+    #[serde(rename_all = "camelCase")]
+    ScanProgress {
+        transfer_id: String,
+        files: u64,
+        dirs: u64,
+        bytes: u64,
+    },
+    /// Folder scan finished; nothing was written yet.
+    #[serde(rename_all = "camelCase")]
+    Scanned {
+        transfer_id: String,
+        files: u64,
+        dirs: u64,
+        bytes: u64,
+        skipped: SkipCounts,
+        renamed: u64,
+    },
+    /// The folder job waits for `transfer_decide`.
+    #[serde(rename_all = "camelCase")]
+    AwaitingDecision {
+        transfer_id: String,
+        request: DecisionRequest,
+    },
+    /// Aggregate bytes (at most 10/s per transfer). Folder jobs also send the file counts and
+    /// `current` (one active file's name: server text, render with `displayName`).
     #[serde(rename_all = "camelCase")]
     Progress {
         transfer_id: String,
         bytes: u64,
         total: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        files_done: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        files_total: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        current: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        failed: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        skipped: Option<SkipCounts>,
+    },
+    /// One skipped or failed entry of a folder job (the first 1 000 per job; afterwards only
+    /// the counters in `progress`). `itemId` is `null` for entries skipped during the scan.
+    /// `relPath` is server text (remote names joined with `/`).
+    #[serde(rename_all = "camelCase")]
+    ItemIssue {
+        transfer_id: String,
+        item_id: Option<u32>,
+        rel_path: String,
+        issue: ItemIssue,
+    },
+    /// Files whose target exists were set aside (`onConflict = ask`): `count` so far, at most
+    /// 50 samples. Answer with `transfer_decide` (`replaceAll` / `skipAll` / `replaceOlder`).
+    /// `round` starts at 0 and grows with each decision the job applies: an event whose round
+    /// was already answered is stale (it was sent before the job saw the answer) and is dropped.
+    #[serde(rename_all = "camelCase")]
+    Conflicts {
+        transfer_id: String,
+        count: u64,
+        sample: Vec<ConflictSample>,
+        round: u32,
     },
     #[serde(rename_all = "camelCase")]
     Done {
         transfer_id: String,
         bytes: u64,
         entry: Option<FileEntry>,
+        /// Folder jobs only.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        summary: Option<FolderSummary>,
     },
     #[serde(rename_all = "camelCase")]
     Failed {

@@ -4,6 +4,7 @@
 use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::io::AsyncReadExt;
@@ -11,6 +12,7 @@ use tokio::io::AsyncReadExt;
 use crate::error::{AppError, ErrorCode, IoOp};
 use crate::platform::file_trust::FileKind as LocalKind;
 use crate::platform::local_path::{LocalPathError, open_local};
+use crate::platform::local_tree::{LocalTree, TreeError, TreePart};
 
 use super::super::path;
 use super::super::save::DataSource;
@@ -51,6 +53,11 @@ pub(super) fn local_error(e: &io::Error, path: &Path, op: IoOp) -> AppError {
         io::ErrorKind::NotFound => ErrorCode::LocalNotFound { path: shown },
         io::ErrorKind::PermissionDenied => ErrorCode::LocalPermissionDenied { path: shown },
         io::ErrorKind::IsADirectory => ErrorCode::LocalIsADirectory { path: shown },
+        io::ErrorKind::StorageFull | io::ErrorKind::QuotaExceeded => ErrorCode::LocalDiskFull {
+            needed: None,
+            available: None,
+        },
+        io::ErrorKind::InvalidFilename => ErrorCode::LocalNameTooLong { path: shown },
         _ => ErrorCode::Io {
             op,
             path: Some(shown),
@@ -197,6 +204,142 @@ pub(super) fn finish_part_with(
 /// `true` if something (file, directory, link, even a dangling one) is at `path`.
 pub(super) fn local_target_exists(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok()
+}
+
+/// Where one downloaded file goes.
+pub(super) enum Dest {
+    /// A path the user chose in the Save dialog (`.part` next to it, rename over it).
+    Chosen(PathBuf),
+    /// A file below a folder download's verified root (`platform::local_tree`): `dir` are the
+    /// local components below the root, `name` the local file name; `replace` = the conflict
+    /// decision allows replacing an existing entry (otherwise the rename never replaces).
+    Tree {
+        tree: Arc<LocalTree>,
+        dir: Vec<String>,
+        name: String,
+        replace: bool,
+    },
+}
+
+/// A `.part` file in progress.
+pub(super) enum Part {
+    Chosen(PathBuf),
+    Tree(TreePart),
+}
+
+impl Dest {
+    /// The final path, for messages.
+    pub(super) fn shown(&self) -> PathBuf {
+        match self {
+            Self::Chosen(p) => p.clone(),
+            Self::Tree {
+                tree, dir, name, ..
+            } => {
+                let mut p = tree.shown(dir);
+                p.push(name);
+                p
+            }
+        }
+    }
+
+    /// Anything at the target (for `Conflict::Skip`).
+    pub(super) fn exists(&self) -> bool {
+        match self {
+            Self::Chosen(p) => local_target_exists(p),
+            Self::Tree {
+                tree, dir, name, ..
+            } => !matches!(
+                tree.probe(dir, name),
+                Ok(crate::platform::local_tree::Probe::Missing)
+            ),
+        }
+    }
+
+    pub(super) fn create(&self) -> Result<(Part, std::fs::File), AppError> {
+        match self {
+            Self::Chosen(p) => create_part(p).map(|(part, f)| (Part::Chosen(part), f)),
+            Self::Tree {
+                tree, dir, name, ..
+            } => tree
+                .create_part(dir, name)
+                .map(|(part, f)| (Part::Tree(part), f))
+                .map_err(|e| tree_error(e, &self.shown())),
+        }
+    }
+
+    /// The `.part` as shown in messages.
+    pub(super) fn part_shown(part: &Part) -> PathBuf {
+        match part {
+            Part::Chosen(p) => p.clone(),
+            Part::Tree(t) => t.path.clone(),
+        }
+    }
+
+    /// Mark, times, rename (see [`finish_part_with`] and `LocalTree::commit`).
+    pub(super) fn finish(
+        &self,
+        part: &Part,
+        file: std::fs::File,
+        times: Option<std::fs::FileTimes>,
+    ) -> Result<(), AppError> {
+        match (self, part) {
+            (Self::Chosen(chosen), Part::Chosen(p)) => {
+                finish_part_with(p, chosen, times.map(|t| (file, t)))
+            }
+            (
+                Self::Tree {
+                    tree,
+                    name,
+                    replace,
+                    ..
+                },
+                Part::Tree(p),
+            ) => tree
+                .commit(p, &file, name, *replace, times)
+                .map_err(|e| tree_error(e, &self.shown())),
+            _ => Err(AppError::internal(
+                "download part does not match its target",
+            )),
+        }
+    }
+
+    /// Remove an unfinished `.part` (best effort).
+    pub(super) fn discard(&self, part: &Part, file: Option<std::fs::File>) {
+        match (self, part) {
+            (Self::Tree { tree, .. }, Part::Tree(p)) => tree.discard(p, file.as_ref()),
+            (_, Part::Chosen(p)) => {
+                drop(file);
+                let _ = std::fs::remove_file(p);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The error for a refused local tree operation at `shown`.
+pub(super) fn tree_error(e: TreeError, shown: &Path) -> AppError {
+    let path = shown.display().to_string();
+    let kind = match e {
+        TreeError::Untrusted => ErrorCode::LocalUntrustedPath { path },
+        TreeError::Exists => ErrorCode::LocalExists { path },
+        TreeError::NameTooLong => ErrorCode::LocalNameTooLong { path },
+        TreeError::DiskFull => ErrorCode::LocalDiskFull {
+            needed: None,
+            available: None,
+        },
+        TreeError::PermissionDenied => ErrorCode::LocalPermissionDenied { path },
+        TreeError::NotFound => ErrorCode::LocalNotFound { path },
+        TreeError::IsADirectory => ErrorCode::LocalIsADirectory { path },
+        TreeError::InvalidName => return AppError::invalid_argument("name"),
+        TreeError::Io(io) => {
+            return AppError::new(ErrorCode::Io {
+                op: IoOp::WriteLocalFile,
+                path: Some(path),
+            })
+            .with_detail(io.to_string());
+        }
+    };
+    AppError::new(kind)
 }
 
 // ---------------------------------------------------------------------------------------------

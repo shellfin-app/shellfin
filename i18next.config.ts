@@ -22,6 +22,8 @@ export default defineConfig({
       "entity.*",
       "ioOp.*",
       "timeoutOp.*",
+      "treeLimit.*", // `treeLimit.${limit}`: errors.treeTooLarge (i18n/errorMessage.ts)
+      "transfers.skipReason.*", // `transfers.skipReason.${reason}`: folder transfer issues
       "keyLoadReason.*",
       "importInvalidReason.*",
       "importInvalidCode.*",

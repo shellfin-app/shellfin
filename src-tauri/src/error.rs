@@ -304,6 +304,36 @@ pub enum ErrorCode {
     DropExpired {
         drop_id: String,
     },
+    /// A folder transfer was refused before anything was written: `limit` was reached
+    /// (`value` = the limit: levels, entries, bytes of memory, or entries of one directory).
+    #[serde(rename_all = "camelCase")]
+    TreeTooLarge {
+        limit: TreeLimit,
+        value: u64,
+    },
+    /// The local disk is full (`needed`/`available` in bytes when known).
+    #[serde(rename_all = "camelCase")]
+    LocalDiskFull {
+        needed: Option<u64>,
+        available: Option<u64>,
+    },
+    /// A local file or folder name, or the whole path, is too long for the local file system.
+    #[serde(rename_all = "camelCase")]
+    LocalNameTooLong {
+        path: String,
+    },
+    /// Something exists at a local path that is never replaced (a folder download's
+    /// destination when no free `name (N)` was left, or a file target that appeared).
+    #[serde(rename_all = "camelCase")]
+    LocalExists {
+        path: String,
+    },
+    /// A local folder on the way is a symbolic link, junction or other reparse point, or
+    /// not a folder: nothing is written through it.
+    #[serde(rename_all = "camelCase")]
+    LocalUntrustedPath {
+        path: String,
+    },
     /// `bookmarks_import_open`: the chosen file cannot be imported at all (nothing was changed).
     #[serde(rename_all = "camelCase")]
     ImportInvalidFile {
@@ -401,6 +431,23 @@ pub enum TimeoutOp {
     SftpRequest,
     Listing,
     Prompt,
+    /// Scanning a folder for a transfer (10 minutes).
+    TreeScan,
+}
+
+/// Which hard limit refused a folder transfer (`treeTooLarge`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum TreeLimit {
+    /// Levels below the chosen folder (64).
+    Depth,
+    /// Files, folders and skipped entries (200 000).
+    Entries,
+    /// Memory for the file list (64 MiB).
+    Memory,
+    /// One folder's listing was cut off (§6.2 caps or its 60 s deadline).
+    Directory,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]

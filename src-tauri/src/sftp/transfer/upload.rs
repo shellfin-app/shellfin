@@ -4,7 +4,7 @@
 use std::path::Path;
 
 use crate::error::{AppError, ErrorCode};
-use crate::ipc::dto::{FileKind, TransferDirection, TransferEvent};
+use crate::ipc::dto::{FileKind, TransferDirection, TransferEvent, TransferKind};
 
 use super::super::client::{Sftp, kind_of};
 use super::super::path;
@@ -35,6 +35,7 @@ pub(super) async fn upload(
         name: shown_name,
         direction: TransferDirection::Upload,
         total,
+        kind: TransferKind::File,
     });
     // Wait for a slot after `started`, before the local file or a remote handle is
     // opened (a burst of 1 000 files holds no handles while queued).

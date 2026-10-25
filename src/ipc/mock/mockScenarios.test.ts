@@ -34,7 +34,7 @@ describe("MockBackend editor and file scenarios", () => {
     for (const name of [
       "happy", "hostKeyUnknown", "hostKeyChanged", "hostKeyCaManaged", "passphraseRetry", "passwordRetry", "kbdInteractive2fa",
       "dropAfter10s", "reconnectHostKeyMismatch", "saveConflict", "binaryFile", "nonUtf8File", "largeFile", "sftpUnavailable",
-      "uploadConflict", "terminalFlood", "agentUntrusted", "autoReconnect",
+      "uploadConflict", "terminalFlood", "agentUntrusted", "autoReconnect", "folderTransfers",
     ]) {
       expect(SCENARIO_NAMES).toContain(name);
     }

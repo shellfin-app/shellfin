@@ -12,6 +12,7 @@ import { ConflictDialog } from "../editor/ConflictDialog";
 import { EncodingPicker } from "../editor/EncodingPicker";
 import { DeleteEntryDialog, GoToFolderDialog, MoveEntryDialog } from "../files/EntryDialogs";
 import { ReplaceDialog } from "../transfers/ReplaceDialog";
+import { TransferConflictsDialog, TransferDecisionDialog } from "../transfers/FolderDialogs";
 import { BookmarkDialog } from "../hosts/BookmarkDialog";
 import { deleteBookmark } from "../hosts/hostActions";
 import { DeleteGroupDialog } from "../hosts/DeleteGroupDialog";
@@ -142,6 +143,8 @@ export function DialogHost() {
       {dialog?.kind === "moveEntry" ? <MoveEntryDialog key={dialog.path} sessionId={dialog.sessionId} path={dialog.path} /> : null}
       {dialog?.kind === "goToFolder" ? <GoToFolderDialog key={dialog.sessionId} sessionId={dialog.sessionId} /> : null}
       {dialog?.kind === "replaceTransfers" ? <ReplaceDialog sessionId={dialog.sessionId} /> : null}
+      {dialog?.kind === "transferDecision" ? <TransferDecisionDialog key={dialog.transferId} transferId={dialog.transferId} /> : null}
+      {dialog?.kind === "transferConflicts" ? <TransferConflictsDialog key={dialog.transferId} transferId={dialog.transferId} /> : null}
       {dialog?.kind === "update" ? <UpdateDialog /> : null}
       {dialog?.kind === "configWarnings" ? <ConfigWarningsDialog /> : null}
       <LazyDialogBoundary key={`palette:${palette ?? ""}`} onError={closePalette}>

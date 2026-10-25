@@ -16,7 +16,9 @@ import type {
   KeyLoadReason,
   PromptLastError,
   SaveStrategy,
+  SkipReason,
   TimeoutOp,
+  TreeLimit,
 } from "../ipc/types";
 
 export const ERROR_CODES = [
@@ -33,6 +35,7 @@ export const ERROR_CODES = [
   "notADirectory", "isADirectory", "notARegularFile", "directoryNotEmpty", "fileIsBinary", "remoteChanged", "fileTooLarge",
   "decodeFailed", "encodingUnmappable", "unsupportedEncoding", "sftpFailure", "timeout", "localNotFound",
   "localPermissionDenied", "localIsADirectory", "dropExpired",
+  "treeTooLarge", "localDiskFull", "localNameTooLong", "localExists", "localUntrustedPath",
   "importInvalidFile", "secretStorageDisabled",
   "updatesDisabled", "updateCheckFailed", "updateNotFound", "updateInProgress", "updateManualOnly",
   "updateDownloadFailed", "updateVerifyFailed", "updateInstallFailed",
@@ -51,7 +54,13 @@ export const IO_OPS = [
   "writeLocalFile", "revealPath",
 ] as const satisfies readonly IoOp[];
 
-export const TIMEOUT_OPS = ["connect", "sftpRequest", "listing", "prompt"] as const satisfies readonly TimeoutOp[];
+export const TIMEOUT_OPS = ["connect", "sftpRequest", "listing", "prompt", "treeScan"] as const satisfies readonly TimeoutOp[];
+
+// Folder transfers (ARCHITECTURE §6.6 "Folders").
+export const TREE_LIMITS = ["depth", "entries", "memory", "directory"] as const satisfies readonly TreeLimit[];
+export const SKIP_REASONS = [
+  "symlink", "special", "invalidName", "lossyName", "nameCollision", "unknownType", "exists",
+] as const satisfies readonly SkipReason[];
 
 export const KEY_LOAD_REASONS = [
   "notFound", "permissionDenied", "unsupported", "corrupt", "insecurePermissions", "notAFile", "tooLarge",
@@ -92,6 +101,8 @@ export const KEY_FAMILIES = {
   entity: ENTITY_KINDS,
   ioOp: IO_OPS,
   timeoutOp: TIMEOUT_OPS,
+  treeLimit: TREE_LIMITS,
+  "transfers.skipReason": SKIP_REASONS,
   keyLoadReason: KEY_LOAD_REASONS,
   disconnectKind: DISCONNECT_KINDS,
   authMethod: AUTH_METHODS,
@@ -112,6 +123,8 @@ export type _ConfigWarnings = Assert<NoneMissing<ConfigWarningCode["code"], type
 export type _EntityKinds = Assert<NoneMissing<EntityKind, typeof ENTITY_KINDS>>;
 export type _IoOps = Assert<NoneMissing<IoOp, typeof IO_OPS>>;
 export type _TimeoutOps = Assert<NoneMissing<TimeoutOp, typeof TIMEOUT_OPS>>;
+export type _TreeLimits = Assert<NoneMissing<TreeLimit, typeof TREE_LIMITS>>;
+export type _SkipReasons = Assert<NoneMissing<SkipReason, typeof SKIP_REASONS>>;
 export type _KeyLoadReasons = Assert<NoneMissing<KeyLoadReason, typeof KEY_LOAD_REASONS>>;
 export type _DisconnectKinds = Assert<NoneMissing<DisconnectKind, typeof DISCONNECT_KINDS>>;
 export type _AuthMethods = Assert<NoneMissing<AuthMethodKind, typeof AUTH_METHODS>>;

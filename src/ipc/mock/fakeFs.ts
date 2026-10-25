@@ -99,6 +99,31 @@ export function fakeSha(text: string): string {
 
 const byteLength = (text: string) => new TextEncoder().encode(text).length;
 
+/** A symlink or a special file in a `TreeSpec`. */
+export type TreeLeaf = { readonly leaf: "link"; readonly target: string } | { readonly leaf: "special" };
+/** `FakeFs.addTree`: a number is a file size, an object a folder. */
+export interface TreeSpec {
+  readonly [name: string]: number | TreeSpec | TreeLeaf;
+}
+export const treeLink = (target: string): TreeLeaf => ({ leaf: "link", target });
+export const TREE_SPECIAL: TreeLeaf = { leaf: "special" };
+
+function isTreeLeaf(value: TreeSpec | TreeLeaf): value is TreeLeaf {
+  return typeof (value as { leaf?: unknown }).leaf === "string";
+}
+
+/** One entry of `FakeFs.walk`. */
+export interface WalkEntry {
+  path: string;
+  /** Relative to the walk root, joined with `/`. */
+  relPath: string;
+  name: string;
+  depth: number;
+  kind: FileKind;
+  size: number;
+  mtime: number;
+}
+
 export class FakeFs {
   private nodes = new Map<string, Node>();
   /** Directories whose listing is cut off (`truncated: true`). */
@@ -177,6 +202,62 @@ export class FakeFs {
   /** A symlink to a directory or file. */
   addLink(path: string, target: string): void {
     this.nodes.set(path, { kind: "symlink", linkTo: target, mtime: this.nowSec() - 60, permissions: 0o777 });
+  }
+
+  /** A FIFO, socket or device (`other`): never opened by a transfer. */
+  addSpecial(path: string): void {
+    this.nodes.set(path, { kind: "other", mtime: this.nowSec() - 60, permissions: 0o644 });
+  }
+
+  /**
+   * Adds a whole tree below `root` (created as a folder). A number is a file of that size, an object a folder,
+   * `treeLink(target)` a symlink and `TREE_SPECIAL` a FIFO/device. Names are used as given (hostile ones too).
+   */
+  addTree(root: string, spec: TreeSpec, mtimeSec = this.nowSec() - 3600): void {
+    this.nodes.set(root, { kind: "dir", mtime: mtimeSec, permissions: 0o755 });
+    for (const [name, value] of Object.entries(spec)) {
+      const path = joinPath(root, name);
+      if (typeof value === "number") this.nodes.set(path, { kind: "file", content: "", size: value, mtime: mtimeSec, permissions: 0o644 });
+      else if (isTreeLeaf(value)) {
+        if (value.leaf === "link") this.addLink(path, value.target);
+        else this.addSpecial(path);
+      } else this.addTree(path, value, mtimeSec);
+    }
+  }
+
+  /** The directory's listing is cut off (`truncated`). */
+  isTruncated(path: string): boolean {
+    return this.truncated.has(path);
+  }
+
+  /**
+   * Every entry below `root`, breadth first, without following symlinks (what a READDIR walk sees: `lstat`
+   * kinds). `depth` is 1 for the root's children.
+   */
+  walk(root: string): WalkEntry[] {
+    const children = new Map<string, string[]>();
+    for (const p of this.nodes.keys()) {
+      if (p === "/") continue;
+      const parent = dirname(p);
+      const list = children.get(parent);
+      if (list) list.push(p);
+      else children.set(parent, [p]);
+    }
+    const out: WalkEntry[] = [];
+    const queue: { path: string; rel: string; depth: number }[] = [{ path: root, rel: "", depth: 0 }];
+    for (let i = 0; i < queue.length; i += 1) {
+      const dir = queue[i];
+      if (!dir) break;
+      for (const p of (children.get(dir.path) ?? []).sort()) {
+        const node = this.nodes.get(p);
+        if (!node) continue;
+        const name = basename(p);
+        const rel = dir.rel === "" ? name : `${dir.rel}/${name}`;
+        out.push({ path: p, relPath: rel, name, depth: dir.depth + 1, kind: node.kind, size: this.sizeOf(node), mtime: node.mtime });
+        if (node.kind === "dir") queue.push({ path: p, rel, depth: dir.depth + 1 });
+      }
+    }
+    return out;
   }
 
   /** Re-points a symlink to another file (someone else changed the link). */

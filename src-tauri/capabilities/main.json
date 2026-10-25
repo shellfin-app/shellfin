@@ -63,6 +63,8 @@
     "allow-sftp-rename",
     "allow-sftp-delete",
     "allow-transfer-download",
+    "allow-transfer-download-folder",
+    "allow-transfer-decide",
     "allow-transfer-upload-pick",
     "allow-transfer-upload-dropped",
     "allow-transfer-retry",

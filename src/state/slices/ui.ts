@@ -76,6 +76,10 @@ export type DialogState =
   | { kind: "goToFolder"; sessionId: string }
   /** Uploads that hit an existing remote file: Replace? -> `transfer_retry(overwrite: true)`. */
   | { kind: "replaceTransfers"; sessionId: string }
+  /** A folder job waits for a decision (`awaitingDecision`: root exists, large tree, low space). */
+  | { kind: "transferDecision"; sessionId: string; transferId: string }
+  /** "Files already exist": the deferred conflicts of a folder job (Replace all / Skip all / Replace older). */
+  | { kind: "transferConflicts"; sessionId: string; transferId: string }
   /** Help > Keyboard shortcuts (cheat sheet) and Help > About. */
   | { kind: "shortcuts" }
   | { kind: "about" }
