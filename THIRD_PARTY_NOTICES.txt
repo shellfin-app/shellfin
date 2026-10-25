@@ -7084,7 +7084,7 @@ SOFTWARE.
 MIT License (MIT)
 
 Used by:
-  - shellfin 0.1.1 (https://github.com/shellfin-app/shellfin)
+  - shellfin 0.2.0 (https://github.com/shellfin-app/shellfin)
   - block2 0.6.2 (https://github.com/madsmtm/objc2)
   - brotli-decompressor 6.0.1 (https://github.com/dropbox/rust-brotli-decompressor)
   - chrono 0.4.45 (https://github.com/chronotope/chrono)

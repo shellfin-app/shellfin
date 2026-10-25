@@ -7,6 +7,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-26
+
 ### Added
 
 - Download whole folders: "Download folder…" in the file tree's context menu asks where to put the folder and
@@ -64,6 +66,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Changed
 
 - The Windows installer is now also in Ukrainian; it follows the Windows display language.
+- Updated the Tauri notification (2.7.0), updater (2.14.0) and single-instance (2.5.4) plugins. On Windows, starting
+  Shellfin while it is already running now waits only a limited time for the running window to respond, instead of
+  possibly hanging.
 - The menu bar switches to the single Menu button as soon as the menu names do not fit in the title bar (longer
   translations, a larger UI font size), not only below 960 px.
 - Bookmarks with the same position are sorted by name in the UI language instead of the system's.
@@ -309,6 +314,7 @@ rpm) and macOS 11+ on Apple Silicon (DMG). 32-bit Windows and Intel Macs are not
 - Dual licensing under MIT OR Apache-2.0, contribution guide, security policy, code of conduct and `AGENTS.md`
   onboarding for AI coding agents.
 
-[Unreleased]: https://github.com/shellfin-app/shellfin/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/shellfin-app/shellfin/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/shellfin-app/shellfin/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/shellfin-app/shellfin/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/shellfin-app/shellfin/releases/tag/v0.1.0
