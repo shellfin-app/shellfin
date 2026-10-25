@@ -175,6 +175,10 @@ jobs:
       - name: npm run i18n:check
         run: npm run i18n:check
 
+      # Information only: other locales may leave keys untranslated (English fallback, §8.2.2); the script exits 0.
+      - name: Untranslated keys per language (npm run i18n:missing)
+        run: npm run i18n:missing -- --github
+
       - name: Build frontend
         run: npm run build
 

@@ -18,10 +18,14 @@ Applies on top of the root [AGENTS.md](../AGENTS.md). Deep reference: `docs/ARCH
 
 1. Write `t("feature.key", { params })`; never a literal string. Technical data (hosts, paths, key types) goes in as
    interpolation params or `<code>`.
-2. Add the English text to `i18n/locales/en/translation.json` (`npm run i18n:extract` updates it; keep plural
-   suffixes `_one`/`_other`) and the Ukrainian text to `i18n/locales/uk/translation.json` (plural suffixes
-   `_one/_few/_many/_other`; terms in `../docs/i18n-glossary-uk.md`; `i18n/parity.test.ts` enforces parity). A key
-   cannot be both a string and a parent.
+2. Add the English text to `i18n/locales/en/translation.json` (`npm run i18n:extract` adds new keys there, with the
+   key as a placeholder value to replace, and only there; keep plural suffixes `_one`/`_other`). English is the only
+   complete, CI-enforced locale. Other locales are optional: a key they leave out shows the English text, and
+   `npm run i18n:missing` lists what each one lacks. If you translate a key (for example into Ukrainian,
+   `i18n/locales/uk/translation.json`, plural suffixes `_one/_few/_many/_other`, terms in
+   `../docs/i18n-glossary-uk.md`), `i18n/parity.test.ts` requires all plural forms of that language, the English
+   `{{tokens}}` and a non-empty value; keys English no longer has fail it too (`npm run i18n:extract` prunes them,
+   `scripts/i18n-missing.mjs --prune`). A key cannot be both a string and a parent.
 3. Dynamic key families (`errors.<code>`, `action.<id>`, `menubar.<id>`, enum families) are listed in
    `preservePatterns` of `../i18next.config.ts`; extend it when you add a family.
 4. `npm run i18n:check` (also fails when two menu bar titles of one locale share an Alt+letter mnemonic or one

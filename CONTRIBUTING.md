@@ -44,6 +44,7 @@ npm run lint          # ESLint, zero warnings allowed
 npm run typecheck
 npm run test          # Vitest
 npm run i18n:check    # translation keys match the code, menu bar mnemonics are unique
+npm run i18n:missing  # report only: untranslated keys per language (they fall back to English)
 npm run build         # type check + production bundle + "no mock backend in the bundle" check
 npm run test:freeze   # bundle still works with Object.prototype frozen (as Tauri does at runtime)
 ```
@@ -80,7 +81,10 @@ described in section 10.2 of [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 ## Rules
 
 - **No hard-coded user-facing text.** Every string the user can see goes through i18n (`t("...")` with a key in
-  `src/i18n/locales/en/translation.json`). ESLint (`i18next/no-literal-string`) enforces this. Backend errors are
+  `src/i18n/locales/en/translation.json`). ESLint (`i18next/no-literal-string`) enforces this. A new feature
+  only needs the English text: other languages are optional and show English for keys they have not translated
+  yet (translators pick them up with `npm run i18n:missing`, see [Adding a translation](#adding-a-translation)).
+  Backend errors are
   codes plus parameters, never prose. Technical data (hosts, paths, `known_hosts`) is passed as interpolation
   parameters.
 - **IPC types are generated from Rust.** The TypeScript files in `src/ipc/bindings/` come from the Rust DTOs in
@@ -261,13 +265,21 @@ The UI ships in English (default and fallback), Ukrainian (`uk`), German (`de`, 
 please open an issue first. `src/i18n/locales/uk/translation.json` is the reference for how a second language
 looks, and `docs/i18n-glossary-uk.md` shows how a glossary is kept (add one for your language).
 
+Only English is complete and enforced by CI. Every other language, Ukrainian included, may lag behind: a key that
+is missing (or empty) in a locale shows the English text at run time, and new features land with English text
+only. `npm run i18n:missing` prints, per language, how many keys are untranslated and which (a plural key counts
+until every form the language needs is there); CI prints the same report as a warning, and it is worth running
+before a release. `npm run i18n:missing -- --strict` exits 1 when anything is missing.
+
 1. Copy `src/i18n/locales/en/translation.json` to `src/i18n/locales/<lng>/translation.json` (a BCP-47 language
    code such as `de`) and translate the values. Keep the keys, the `{{placeholders}}` and the plural
-   suffixes (`_one`, `_few`, `_many`, `_other` as required by the language's CLDR plural rules) intact.
+   suffixes (`_one`, `_few`, `_many`, `_other` as required by the language's CLDR plural rules) intact. You may
+   delete keys you do not translate yet instead of leaving them in English; never leave a value empty. To update an
+   existing translation, run `npm run i18n:missing` and add the keys it lists.
 2. Do not translate technical terms such as `known_hosts`, `ssh-agent`, `SHA256` or the product name. Keep
    terminology consistent with the glossary of your language (Ukrainian: `docs/i18n-glossary-uk.md`).
 3. Mark the menu bar mnemonics (see below).
-4. Register the language: add it to `locales` in `i18next.config.ts`; to `SUPPORTED_LANGUAGES`,
+4. Register the language: add it to `SUPPORTED_LANGUAGES`,
    `LANGUAGE_ENDONYMS` and `LANGUAGE_STATUS` (`"beta"` for a new translation) in `src/i18n/index.ts`; to
    `bundle.windows.nsis.languages` in `src-tauri/tauri.conf.json` (the NSIS name, for example `German`,
    `PortugueseBR`, `SimpChinese`; Tauri ships the installer strings) and to `CFBundleLocalizations` in
@@ -275,10 +287,13 @@ looks, and `docs/i18n-glossary-uk.md` shows how a glossary is kept (add one for 
    them agree. If the language needs a region or script rule (like `pt-*` -> `pt-BR`, `zh-Hant` -> none), extend
    `LOCALE_RULES` in `src/i18n/index.ts` with a test row. The language then appears in Settings > General > Language,
    "System" picks it when it is the OS language, and the macOS menu follows it.
-5. Run `npm run i18n:check`, `npm run test` and `npm run lint`. The parity test `src/i18n/parity.test.ts` checks
-   that your file has the same keys as English (plural-aware), the plural forms of the language, the same
-   `{{tokens}}` and no empty strings. In dev builds the pseudo-locale `en-XA` (`?xa=1`, or `?xa=40` for 40 %
-   longer text, about German) shows text that does not go through i18n or does not fit its layout.
+   (`i18next.config.ts` stays `locales: ["en"]`: the extractor only manages English, so it never writes empty
+   placeholders into your file.)
+5. Run `npm run i18n:check`, `npm run test`, `npm run lint` and `npm run i18n:missing`. The parity test
+   `src/i18n/parity.test.ts` reports keys you have not translated (allowed) and fails on a key English does not
+   have, a plural key with only some of your language's forms or with a form it does not use, changed `{{tokens}}`
+   and empty strings. When English drops a key, `npm run i18n:extract` removes it from every locale. In dev
+   builds the pseudo-locale `en-XA` (`?xa=1`, or `?xa=40` for 40 % longer text, about German) shows text that does not go through i18n or does not fit its layout.
 6. Open a pull request describing the language and your confidence level; a second reviewer who speaks the
    language is appreciated. Attach screenshots at 580 px and 1280 px window width (Home, connect dialog, host key
    dialog, file tree context menu, settings, conflict dialog).
@@ -297,8 +312,10 @@ and VS Code Remote-SSH in your language.
 
 ### Plural categories
 
-i18next uses the CLDR categories of `Intl.PluralRules` (Node 24): every key that English pluralizes needs exactly
-the suffixes of your language, and the parity test fails on a missing or an extra one.
+i18next uses the CLDR categories of `Intl.PluralRules` (Node 24): every key that English pluralizes and that you
+translate needs exactly the suffixes of your language, and the parity test fails on a missing or an extra one. A
+plural key is all or nothing: leave it out entirely (English is shown) or give every form, because with a partial
+set some numbers would read in your language and others in English.
 
 | Language | Suffixes |
 |---|---|
@@ -324,6 +341,8 @@ collide). The items inside the menus have no mnemonics.
 
 A new language ships with `LANGUAGE_STATUS` `"beta"`: the picker shows "(beta)" and a link to the translation
 issues (label `i18n`). It becomes `"complete"` once a native speaker has reviewed it in a merged pull request.
+`"complete"` means maintained and reviewed, not that every key is translated: such a language may still show
+English for keys added since (`npm run i18n:missing`).
 Review checklist (for the translator, the review agent and human reviewers):
 
 - Terms match the glossary; one term per concept across the whole file.

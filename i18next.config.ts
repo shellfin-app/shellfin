@@ -2,8 +2,12 @@ import { defineConfig } from "i18next-cli";
 
 // Key extraction / drift check (docs/ARCHITECTURE.md §8.2.4).
 // `{{namespace}}` in `output` is REQUIRED: without it i18next-cli switches to merged-namespace files.
+// Only English is managed here: it is the one complete, CI-enforced locale. Listing other locales would make
+// `extract` write "" for every key they have not translated yet (i18next-cli has no option to skip them) and make
+// `i18n:check` fail on an untranslated key. Other locales may leave keys out (English fallback); `npm run i18n:extract`
+// prunes their stale keys afterwards and `npm run i18n:missing` lists what is untranslated (scripts/i18n-missing.mjs).
 export default defineConfig({
-  locales: ["en", "de", "es", "fr", "ja", "pt-BR", "uk"],
+  locales: ["en"],
   extract: {
     input: ["src/**/*.{ts,tsx}"],
     ignore: ["src/**/*.test.{ts,tsx}", "src/ipc/bindings/**"],
