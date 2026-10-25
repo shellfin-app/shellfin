@@ -1,5 +1,6 @@
 import i18next from "i18next";
 import { resolveLocale, setLanguage, setPseudoLocale } from "./i18n";
+import { pseudoPadding } from "./i18n/pseudo";
 import { syncNativeMenuLabels } from "./features/shell/nativeMenuLabels";
 import { syncNotificationTexts } from "./features/shell/notificationTexts";
 import { installGlobalErrorHandlers } from "./features/errorReport/errorReport";
@@ -103,11 +104,15 @@ export async function startApp(): Promise<void> {
   }
 }
 
-/** Dev-only URL switches: `?open=prod-web-01,staging-db` opens mock sessions, `?xa=1` enables en-XA. */
+/**
+ * Dev-only URL switches: `?open=prod-web-01,staging-db` opens mock sessions, `?xa=1` enables en-XA (30 % padding),
+ * `?xa=40` with 40 % padding (simulates German-length text; any whole percentage 0..200).
+ */
 export async function applyDevSwitches(search: string): Promise<void> {
   if (!import.meta.env.DEV) return;
   const params = new URLSearchParams(search);
-  if (params.get("xa") === "1") await setPseudoLocale(true);
+  const padding = pseudoPadding(params.get("xa"));
+  if (padding !== null) await setPseudoLocale(true, padding);
   const open = params.get("open");
   if (open) {
     const hosts = useStore.getState().sshConfig?.hosts ?? [];

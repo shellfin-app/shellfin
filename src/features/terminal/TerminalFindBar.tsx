@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { IconButton } from "../../components/IconButton";
+import { isImeKeyEvent } from "../../lib/ime";
 import { useStore } from "../../state/store";
 import { loadedTerminalRegistry } from "./terminalLoader";
 
@@ -37,6 +38,7 @@ export function TerminalFindBar({ termId }: { termId: string }) {
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (isImeKeyEvent(e)) return; // Enter / Escape belong to the IME conversion
     if (e.key === "Escape") {
       e.preventDefault();
       close();

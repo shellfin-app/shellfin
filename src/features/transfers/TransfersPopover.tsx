@@ -8,6 +8,7 @@ import { errorMessage } from "../../i18n/errorMessage";
 import { openErrorDetails, sourceFromAppError } from "../errorReport/errorReport";
 import { formatBytes, formatRate } from "../../i18n/format";
 import { effectiveLimits } from "../../lib/bandwidth";
+import { isImeKeyEvent } from "../../lib/ime";
 import { guard } from "../../lib/reportError";
 import { displayName, displayPath } from "../../lib/serverText";
 import type { TransferRow } from "../../state/slices/transfers";
@@ -108,7 +109,7 @@ export function TransfersButton({ sessionId }: { sessionId: string }) {
       setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape" || !popRef.current?.contains(document.activeElement)) return;
+      if (e.key !== "Escape" || isImeKeyEvent(e) || !popRef.current?.contains(document.activeElement)) return;
       e.preventDefault();
       e.stopPropagation();
       setOpen(false);

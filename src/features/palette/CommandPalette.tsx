@@ -13,7 +13,9 @@ import { actionEnabled, actionLabel, runAction } from "../actions/registry";
 import { openFile } from "../editor/editorActions";
 import { goToFolder } from "../files/fileActions";
 import { requestOpenSession } from "../session/sessionActions";
-import { useCompactTitleBar } from "../shell/useCompactTitleBar";
+import { SHORT_PALETTE_PLACEHOLDER_BELOW } from "../shell/layoutLimits";
+import { useNarrowWindow } from "../shell/useCompactTitleBar";
+import { isImeKeyEvent } from "../../lib/ime";
 import "./palette.css";
 
 /** Actions the palette lists: all of them except the ones that act on whatever has the focus (Edit menu) and itself. */
@@ -71,7 +73,7 @@ export function CommandPalette({ mode }: { mode: "all" | "files" }) {
   const { t } = useTranslation();
   // A narrow window gets the short placeholder: an input does not show an ellipsis while it has the focus, so the long
   // one would be cut mid-letter.
-  const compact = useCompactTitleBar();
+  const compact = useNarrowWindow(SHORT_PALETTE_PLACEHOLDER_BELOW);
   const close = useStore((s) => s.closePalette);
   const sshConfig = useStore((s) => s.sshConfig);
   const bookmarks = useStore((s) => s.bookmarks);
@@ -148,7 +150,8 @@ export function CommandPalette({ mode }: { mode: "all" | "files" }) {
   };
 
   const onKeyDown = (e: KeyboardEvent) => {
-    if (e.key === "Escape") {
+    // Escape while an IME composes only cancels the composition (cmdk ignores composing keys for Enter itself).
+    if (e.key === "Escape" && !isImeKeyEvent(e)) {
       e.preventDefault();
       close();
     }

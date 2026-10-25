@@ -23,6 +23,11 @@ export const SEL_REMOTE_DIR = "[data-remote-dir]";
 export const SEL_TREE_SESSION = "[data-tree-session]";
 export const SEL_SELECTED_TAB = '[role="tab"][aria-selected="true"]';
 
+// Title bar measurement (useCompactTitleBar.ts): the row, its flexible parts and the six menu titles.
+export const SEL_TITLEBAR_CONTENT = ".title-bar__content";
+export const SEL_TITLEBAR_FLEXIBLE = ".conn-tabs-wrap, .title-bar__drag";
+export const SEL_MENUBAR_TITLES = ":scope > .menubar__item";
+
 export const MENU_COPY_PATH = "copyPath";
 export const ID_NEW_FILE = "newFile";
 export const ID_GO_INTO = "goInto";

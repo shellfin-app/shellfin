@@ -1,4 +1,5 @@
 import { useEffect, useRef, type KeyboardEvent } from "react";
+import { isImeKeyEvent } from "../lib/ime";
 
 /**
  * Inline name editor for tabs. Enter commits (empty = `null`, i.e. back to the default name), Escape and blur
@@ -24,6 +25,7 @@ export function InlineRename({
     ref.current?.select();
   }, []);
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (isImeKeyEvent(e)) return; // Enter / Escape confirm or cancel the IME conversion, not the rename
     if (e.key === "Enter") {
       e.preventDefault();
       const value = e.currentTarget.value.trim();

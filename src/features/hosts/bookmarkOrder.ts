@@ -1,5 +1,6 @@
 // Pure helpers for moving bookmarks and groups (drag and drop, "Move up/down", "Move to group…").
 // Positions follow the backend contract (ARCHITECTURE §4.2): `index` is the FINAL position in the target list.
+import { compareNames } from "../../i18n/collate";
 import type { Bookmark, BookmarksDto, Group } from "../../ipc/types";
 
 /** Bookmarks of one list (`null` = ungrouped; a group that no longer exists counts as ungrouped), in order. */
@@ -7,7 +8,7 @@ export function bookmarksOfGroup(dto: BookmarksDto, groupId: string | null): Boo
   const known = new Set(dto.groups.map((g) => g.id));
   return dto.bookmarks
     .filter((b) => (b.groupId !== null && known.has(b.groupId) ? b.groupId : null) === groupId)
-    .sort((a, b) => a.order - b.order || a.name.localeCompare(b.name));
+    .sort((a, b) => a.order - b.order || compareNames(a.name, b.name));
 }
 
 export function sortedGroups(dto: BookmarksDto): Group[] {

@@ -1,7 +1,7 @@
 import i18next from "i18next";
 import { initReactI18next } from "react-i18next";
 import en from "./locales/en/translation.json";
-import { PSEUDO_LOCALE, pseudoLocalizeBundle } from "./pseudo";
+import { PSEUDO_LOCALE, PSEUDO_PADDING, pseudoLocalizeBundle } from "./pseudo";
 
 /** Languages shipped in this build. Each non-English one is a lazily loaded JSON chunk (§8.2). */
 export const SUPPORTED_LANGUAGES = ["en", "uk"] as const;
@@ -13,12 +13,66 @@ export const LANGUAGE_ENDONYMS: Record<SupportedLanguage, string> = {
   uk: "Українська",
 };
 
-/** Maps `Settings.locale` ("system" | BCP-47) to a supported language. */
-export function resolveLocale(setting: string, systemLanguages: readonly string[] = navigator.languages): string {
+/**
+ * `beta`: a new translation without a native-speaker review yet. The picker shows "(beta)" and a feedback link; the
+ * "System" option still resolves to it. Set to `complete` once a native review is merged (CONTRIBUTING, Translations).
+ */
+export const LANGUAGE_STATUS: Record<SupportedLanguage, "complete" | "beta"> = {
+  en: "complete",
+  uk: "complete",
+};
+
+/**
+ * Region and script rules for `resolveLocale` (decision 4 of #17): a tag (lower-case, a prefix of the requested tag
+ * at subtag boundaries) mapped to the language it selects, or `null` for "none of ours, try the next preference".
+ * Longest prefix wins. Traditional Chinese has no translation and must not fall back to Simplified; every
+ * Portuguese gets Brazilian Portuguese; bare `zh` means Simplified (what browsers report for zh-CN systems).
+ */
+const LOCALE_RULES: Readonly<Record<string, string | null>> = {
+  zh: "zh-CN",
+  "zh-cn": "zh-CN",
+  "zh-sg": "zh-CN",
+  "zh-my": "zh-CN",
+  "zh-hans": "zh-CN",
+  "zh-tw": null,
+  "zh-hk": null,
+  "zh-mo": null,
+  "zh-hant": null,
+  pt: "pt-BR",
+};
+
+/**
+ * The supported language for one BCP-47 tag, or undefined: an exact (case-insensitive) match, then the rule table
+ * above, then the base language ("de-AT" -> "de", "uk-UA" -> "uk"). Only languages in `supported` are returned.
+ */
+export function matchLanguage(tag: string, supported: readonly string[] = SUPPORTED_LANGUAGES): string | undefined {
+  const lower = tag.trim().toLowerCase().replaceAll("_", "-");
+  if (!/^[a-z]{2,3}(-[a-z0-9]{1,8})*$/.test(lower)) return undefined; // "", "x-foo", "*", garbage
+  const exact = supported.find((s) => s.toLowerCase() === lower);
+  if (exact) return exact;
+  const subtags = lower.split("-");
+  for (let n = subtags.length; n >= 1; n -= 1) {
+    const prefix = subtags.slice(0, n).join("-");
+    if (!Object.hasOwn(LOCALE_RULES, prefix)) continue;
+    const target = LOCALE_RULES[prefix];
+    return target === null || target === undefined ? undefined : supported.find((s) => s === target);
+  }
+  const base = subtags[0];
+  return supported.find((s) => s === base);
+}
+
+/**
+ * Maps `Settings.locale` ("system" | BCP-47) to a supported language: each preferred tag in order (`matchLanguage`),
+ * finally "en". `supported` is for tests (fixture languages); the app always uses `SUPPORTED_LANGUAGES`.
+ */
+export function resolveLocale(
+  setting: string,
+  systemLanguages: readonly string[] = navigator.languages,
+  supported: readonly string[] = SUPPORTED_LANGUAGES,
+): string {
   const wanted = setting === "system" ? systemLanguages : [setting];
   for (const lang of wanted) {
-    const base = lang.split("-")[0]?.toLowerCase();
-    const hit = SUPPORTED_LANGUAGES.find((s) => s === base);
+    const hit = matchLanguage(lang, supported);
     if (hit) return hit;
   }
   return "en";
@@ -69,11 +123,11 @@ export async function initI18n(locale = "en") {
   return i18next;
 }
 
-/** Dev-only: toggles the en-XA pseudo-locale (accents + padding). */
-export async function setPseudoLocale(enabled: boolean) {
+/** Dev-only: toggles the en-XA pseudo-locale (accents + `padding`, a share of the letters; `?xa=40` = 0.4). */
+export async function setPseudoLocale(enabled: boolean, padding = PSEUDO_PADDING) {
   if (!import.meta.env.DEV) return;
-  if (enabled && !i18next.hasResourceBundle(PSEUDO_LOCALE, "translation")) {
-    i18next.addResourceBundle(PSEUDO_LOCALE, "translation", pseudoLocalizeBundle(en as Record<string, unknown>), true, true);
+  if (enabled) {
+    i18next.addResourceBundle(PSEUDO_LOCALE, "translation", pseudoLocalizeBundle(en as Record<string, unknown>, padding), true, true);
   }
   await i18next.changeLanguage(enabled ? PSEUDO_LOCALE : "en");
 }

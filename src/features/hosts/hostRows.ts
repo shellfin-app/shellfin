@@ -1,3 +1,4 @@
+import { compareNames } from "../../i18n/collate";
 import type { Bookmark, BookmarkColor, RecentTarget, SshConfigHost } from "../../ipc/types";
 import { bookmarkTarget, sshConfigTarget } from "../../lib/targets";
 
@@ -27,7 +28,7 @@ export function sshConfigRows(hosts: readonly SshConfigHost[]): HostRow[] {
 /** Bookmarks of ONE list (a group or the ungrouped list) in their persistent order. */
 export function bookmarkRows(bookmarks: readonly Bookmark[]): HostRow[] {
   return [...bookmarks]
-    .sort((a, b) => a.order - b.order || a.name.localeCompare(b.name))
+    .sort((a, b) => a.order - b.order || compareNames(a.name, b.name))
     .map((b) => ({
       key: `bm:${b.id}`,
       label: b.name,

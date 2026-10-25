@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { IconButton } from "./IconButton";
 import { AUTOFOCUS_SELECTOR, FOCUSABLE_SELECTOR } from "../lib/dom";
-import { compositionCount, isCompositionEvent } from "../lib/ime";
+import { compositionCount, isCompositionEvent, isImeKeyEvent } from "../lib/ime";
 import "./dialog.css";
 
 /** Open dialogs, topmost last: only the topmost one traps Tab and handles Escape. */
@@ -98,6 +98,7 @@ export function Dialog({
     // menus, selects, comboboxes) get it first and call preventDefault(). Only an unhandled Escape closes the dialog.
     const onEscape = (e: KeyboardEvent) => {
       if (e.key !== "Escape" || e.defaultPrevented || stack[stack.length - 1] !== token || !root || !closeRef.current) return;
+      if (isImeKeyEvent(e)) return; // Escape cancels the IME conversion in a field, not the dialog
       const target = e.target;
       if (target instanceof Node && target !== document.body && target !== document.documentElement && !root.contains(target)) return;
       e.preventDefault();

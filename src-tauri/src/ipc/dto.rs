@@ -577,7 +577,8 @@ pub struct RecentEntry {
 pub struct Settings {
     /// Schema version (1).
     pub version: u32,
-    /// `"system"` or a BCP-47 tag; the app ships `"en"` and `"uk"`.
+    /// `"system"` or a BCP-47 tag (`"uk"`, `"pt-BR"`); the frontend maps it to a shipped UI language
+    /// (`SUPPORTED_LANGUAGES`, `resolveLocale`).
     pub locale: String,
     pub terminal: TerminalSettings,
     pub editor: EditorSettings,

@@ -5,6 +5,7 @@ import { useShallow } from "zustand/react/shallow";
 import { Icon } from "../../components/Icon";
 import { goToFolderDialog } from "../../lib/dialogs";
 import { SEL_TREE_ITEM } from "../../lib/domIds";
+import { isImeKeyEvent } from "../../lib/ime";
 import { normKey } from "../../lib/keybindings";
 import { enterable, identityOf, writability } from "../../lib/permissions";
 import { dirname } from "../../lib/remotePath";
@@ -123,6 +124,7 @@ function TreeNameInput({
         }}
         onKeyDown={(e) => {
           e.stopPropagation(); // the tree's own keys (arrows, Delete, F2) must not act while typing
+          if (isImeKeyEvent(e)) return; // Enter / Escape belong to the IME conversion
           if (e.key === "Enter") {
             e.preventDefault();
             commit();
