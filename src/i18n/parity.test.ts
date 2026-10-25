@@ -3,7 +3,8 @@
 // keys are only reported here and by `npm run i18n:missing`), but it fails on: a key English does not have (including
 // a plural form the language does not use, or a plural/non-plural mismatch), a plural key with only some of the
 // language's forms (a partial set would show English for some numbers and the translation for others), a changed set
-// of `{{tokens}}`, and an empty string. Every pluralized key must be called with `count` so the forms can be selected.
+// of `{{tokens}}`, and an empty string. `x_zero` is allowed in every locale when English has it. Every locale, English
+// included, has only string values. Every pluralized key must be called with `count` so the forms can be selected.
 import { describe, expect, it } from "vitest";
 import en from "./locales/en/translation.json";
 
@@ -58,13 +59,56 @@ function callsWithCount(code: string, key: string): boolean {
   return new RegExp(String.raw`["'` + "`" + String.raw`]${quoted}["'` + "`" + String.raw`]\s*,\s*\{[^}]*\bcount\b`).test(code);
 }
 
+/**
+ * The leaf keys a translation into `lng` may have: a plain English key as is, a plural one with the language's
+ * suffixes, plus `x_zero` where English has `x_zero` (i18next looks it up for `count: 0` in any language; optional).
+ */
+function allowedLeaves(englishForms: Map<string, Set<string>>, lng: string): Set<string> {
+  const needed = new Intl.PluralRules(lng).resolvedOptions().pluralCategories;
+  return new Set(
+    [...englishForms].flatMap(([k, f]) => {
+      if (f.size === 0) return [k];
+      const leaves = needed.map((c) => `${k}_${c}`);
+      return f.has("zero") ? [...leaves, `${k}_zero`] : leaves;
+    }),
+  );
+}
+
+/** Paths of leaves that are not strings (numbers, booleans, null, arrays); i18next would return them as is. */
+function nonStringLeaves(node: unknown, prefix = ""): string[] {
+  if (typeof node === "string") return [];
+  if (node && typeof node === "object" && !Array.isArray(node)) {
+    return Object.entries(node).flatMap(([k, v]) => nonStringLeaves(v, prefix ? `${prefix}.${k}` : k));
+  }
+  return [prefix];
+}
+
 const enFlat = flatten(en);
 const enForms = forms(enFlat);
 const locales = Object.entries(bundles)
   .map(([path, bundle]) => ({ lng: /locales\/([^/]+)\//.exec(path)?.[1] ?? "", flat: flatten(bundle) }))
   .filter((l) => l.lng !== "en");
 
+describe("parity helpers", () => {
+  it("allow `x_zero` in every language exactly when English has it", () => {
+    const withZero = forms({ files_zero: "No files", files_one: "1 file", files_other: "{{count}} files", title: "T" });
+    expect([...allowedLeaves(withZero, "ja")].sort()).toEqual(["files_other", "files_zero", "title"]);
+    expect(allowedLeaves(withZero, "uk").has("files_zero")).toBe(true);
+    expect(allowedLeaves(forms({ files_one: "1", files_other: "n" }), "de").has("files_zero")).toBe(false);
+  });
+
+  it("find non-string leaves", () => {
+    expect(nonStringLeaves({ a: "x", b: { c: 1, d: null, e: true, f: ["x"], g: "y" } })).toEqual(["b.c", "b.d", "b.e", "b.f"]);
+  });
+});
+
 describe("locale files", () => {
+  for (const [path, bundle] of Object.entries(bundles)) {
+    it(`${/locales\/([^/]+)\//.exec(path)?.[1] ?? path} has only string values`, () => {
+      expect(nonStringLeaves(bundle)).toEqual([]);
+    });
+  }
+
   it("English has plural forms `one` and `other` for every pluralized key", () => {
     const bad = [...enForms].filter(([, f]) => f.size > 0 && !(f.has("one") && f.has("other"))).map(([k]) => k);
     expect(bad).toEqual([]);
@@ -88,10 +132,7 @@ describe("locale files", () => {
     describe(lng, () => {
       const lngForms = forms(flat);
       const needed = new Intl.PluralRules(lng).resolvedOptions().pluralCategories;
-      // The leaf keys a translation may have: a plain English key as is, a plural one with the language's suffixes.
-      const allowed = new Set(
-        [...enForms].flatMap(([k, f]) => (f.size > 0 ? needed.map((c) => `${k}_${c}`) : [k])),
-      );
+      const allowed = allowedLeaves(enForms, lng);
 
       it("has no key that English does not have (plural-aware)", () => {
         expect(Object.keys(flat).filter((k) => !allowed.has(k))).toEqual([]);
@@ -106,10 +147,11 @@ describe("locale files", () => {
         expect(bad).toEqual([]);
       });
 
-      it("reports the English keys it does not translate yet (allowed: they fall back to English)", () => {
+      // A report, not a check: untranslated keys are allowed (they show English), so this never fails. The full list
+      // is `npm run i18n:missing`.
+      it("reports the English keys it does not translate yet", () => {
         const missing = [...enForms.keys()].filter((k) => !lngForms.has(k));
         if (missing.length > 0) console.info(`${lng}: ${missing.length} keys not translated yet (npm run i18n:missing)`);
-        expect(missing.length).toBeLessThanOrEqual(enForms.size);
       });
 
       it("keeps the interpolation tokens of every key", () => {

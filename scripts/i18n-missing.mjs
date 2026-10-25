@@ -7,7 +7,8 @@
 //
 // `--prune` (run by `npm run i18n:extract`, after the extractor has updated English) removes from every other locale
 // what `src/i18n/parity.test.ts` rejects and cannot be translated into place: keys English no longer has, plural forms
-// the language does not use, a plural/non-plural mismatch with English, and empty strings. It never adds a key:
+// the language does not use (`x_zero` is kept when English has it), a plural/non-plural mismatch with English, empty
+// strings and non-string values. It never adds a key:
 // i18next-cli only manages the English file (`locales: ["en"]` in i18next.config.ts), so contributors do not get ""
 // placeholders in other locales.
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
@@ -71,15 +72,29 @@ export function missingKeys(enFlat, lngFlat, lng) {
   return out.sort();
 }
 
+/**
+ * Every leaf key a translation of `enFlat` into `lng` may have: the expected keys plus `x_zero` where English has
+ * `x_zero`. i18next looks up `_zero` for `count: 0` in any language, before the CLDR form of the same language, so
+ * it is optional: a locale without it uses its own form for 0.
+ */
+export function allowedKeys(enFlat, lng) {
+  const allowed = new Set([...expectedKeys(enFlat, lng).values()].flat());
+  for (const key of Object.keys(enFlat)) if (key.endsWith("_zero")) allowed.add(key);
+  return allowed;
+}
+
 /** Leaf keys of `lngFlat` that a translation of `enFlat` into `lng` cannot have, sorted. */
 export function extraKeys(enFlat, lngFlat, lng) {
-  const allowed = new Set([...expectedKeys(enFlat, lng).values()].flat());
+  const allowed = allowedKeys(enFlat, lng);
   return Object.keys(lngFlat).filter((k) => !allowed.has(k)).sort();
 }
 
-/** Deep copy of `lngJson` without extra keys, empty strings and objects left empty; `removed` lists the leaf keys. */
+/**
+ * Deep copy of `lngJson` without extra keys, empty strings, non-string leaves and objects left empty; `removed` lists
+ * the leaf keys.
+ */
 export function pruneLocale(enJson, lngJson, lng) {
-  const allowed = new Set([...expectedKeys(flatten(enJson), lng).values()].flat());
+  const allowed = allowedKeys(flatten(enJson), lng);
   const removed = [];
   const walk = (node, prefix) => {
     const out = {};
