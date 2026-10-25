@@ -64,6 +64,8 @@ for 21 (e.g. «Незбережені зміни в {{count}} файлі»). A U
 | editor | редактор | |
 | encoding | кодування | |
 | line endings | кінці рядків | LF, CRLF stay as is |
+| active line (editor) | поточний рядок | the line with the cursor |
+| whitespace (spaces and tabs) | пробіли | «Показувати пробіли»; tabs are covered by the same word |
 | terminal | термінал | gen. «термінала» (device sense) |
 | shell | оболонка | |
 | output (terminal) | вивід | |

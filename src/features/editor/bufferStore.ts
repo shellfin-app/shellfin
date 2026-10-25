@@ -6,7 +6,8 @@
 // runtime (building states, extensions, compartments) is in `bufferRegistry.ts`, which is loaded on demand with the
 // editor (`bufferLoader.ts`), so the entry chunk does not carry CodeMirror.
 import type { EditorState, Text } from "@codemirror/state";
-import type { EditorSettings } from "../../ipc/types";
+import type { EditorSettings, ShowWhitespace } from "../../ipc/types";
+import { showWhitespaceMode } from "../../lib/showWhitespace";
 
 interface Entry {
   state: EditorState;
@@ -31,8 +32,8 @@ export interface BufferStateOptions {
   autoCloseBrackets?: boolean;
   /** Highlight the bracket that matches the one at the cursor (default true). */
   bracketMatching?: boolean;
-  /** Mark spaces and tabs (default false). */
-  showWhitespace?: boolean;
+  /** Mark spaces and tabs: everywhere, only on the lines with a cursor, or not at all (default none). */
+  showWhitespace?: ShowWhitespace;
   /** Fold gutter and fold commands (default true). */
   codeFolding?: boolean;
 }
@@ -60,7 +61,7 @@ export function bufferOptionsFromSettings(editor: Partial<Pick<EditorSettings, O
     detectIndentation: editor?.detectIndentation ?? true,
     autoCloseBrackets: editor?.autoCloseBrackets ?? false,
     bracketMatching: editor?.bracketMatching ?? true,
-    showWhitespace: editor?.showWhitespace ?? false,
+    showWhitespace: showWhitespaceMode(editor?.showWhitespace),
     codeFolding: editor?.codeFolding ?? true,
   };
 }

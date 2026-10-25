@@ -182,7 +182,7 @@ export function makeSettings(): Settings {
       newFileEol: "lf",
       autoCloseBrackets: false,
       bracketMatching: true,
-      showWhitespace: false,
+      showWhitespace: "none",
       codeFolding: true,
       fontLigatures: false,
     },

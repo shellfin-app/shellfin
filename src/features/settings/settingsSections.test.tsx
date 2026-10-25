@@ -213,7 +213,14 @@ describe("settings: sections and saving", () => {
     await user.click(within(dialog).getByRole("checkbox", { name: "Detect indentation" }));
     await user.click(within(dialog).getByRole("checkbox", { name: "Close brackets and quotes automatically" }));
     await user.click(within(dialog).getByRole("checkbox", { name: "Highlight matching brackets" }));
-    await user.click(within(dialog).getByRole("checkbox", { name: "Show whitespace" }));
+    const whitespace = within(dialog).getByRole("combobox", { name: "Show whitespace" }) as HTMLSelectElement;
+    expect(whitespace.value).toBe("none");
+    expect([...whitespace.options].map((o) => [o.value, o.textContent])).toEqual([
+      ["all", "All"],
+      ["activeLine", "Active line only"],
+      ["none", "None"],
+    ]);
+    await user.selectOptions(whitespace, "Active line only");
     await user.click(within(dialog).getByRole("checkbox", { name: "Code folding" }));
     expect((within(dialog).getByRole("checkbox", { name: "Font ligatures" }) as HTMLInputElement).checked).toBe(false);
     expect((within(dialog).getByLabelText("Editor font preview") as HTMLElement).style.fontVariantLigatures).toBe("none");
@@ -227,7 +234,7 @@ describe("settings: sections and saving", () => {
       detectIndentation: false,
       autoCloseBrackets: true,
       bracketMatching: false,
-      showWhitespace: true,
+      showWhitespace: "activeLine",
       codeFolding: false,
       fontLigatures: true,
       newFileEol: "crlf",

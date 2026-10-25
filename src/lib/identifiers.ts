@@ -1,6 +1,6 @@
 // Protocol identifiers used by the settings code under src/features (ESLint keeps literal strings out of features;
 // these are data values of the contract, not UI copy).
-import type { ConfirmQuit, NewTerminalCwd, TerminalExitAction } from "../ipc/types";
+import type { ConfirmQuit, NewTerminalCwd, ShowWhitespace, TerminalExitAction } from "../ipc/types";
 
 export const CONFIRM_QUIT = {
   always: "always",
@@ -18,6 +18,15 @@ export const NEW_TERMINAL_CWD = {
   home: "home",
   currentFolder: "currentFolder",
 } as const satisfies Record<NewTerminalCwd, NewTerminalCwd>;
+
+export const SHOW_WHITESPACE = {
+  all: "all",
+  activeLine: "activeLine",
+  none: "none",
+} as const satisfies Record<ShowWhitespace, ShowWhitespace>;
+
+/** CodeMirror's whitespace marker classes (`highlightWhitespace`); the active-line-only mode reuses them. */
+export const CM_WHITESPACE_CLASS = { space: "cm-highlightSpace", tab: "cm-highlightTab" } as const;
 
 /** The placeholders the backend fills into notification texts (ARCHITECTURE §8.11). They must reach it unchanged. */
 export const NOTIFICATION_PLACEHOLDERS = { name: "{{name}}", count: "{{count}}" } as const;

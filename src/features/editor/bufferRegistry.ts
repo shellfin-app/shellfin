@@ -11,7 +11,6 @@ import {
   drawSelection,
   highlightActiveLine,
   highlightActiveLineGutter,
-  highlightWhitespace,
   keymap,
   lineNumbers,
 } from "@codemirror/view";
@@ -24,6 +23,7 @@ import { displayName } from "../../lib/serverText";
 import { cmTheme } from "../../styles/cmTheme";
 import { updateStoredStates, type BufferStateOptions } from "./bufferStore";
 import { languageExtension } from "./languageExtension";
+import { whitespaceMarkers } from "./whitespace";
 
 // The light store API stays importable from here (tests and the editor use one import path).
 export * from "./bufferStore";
@@ -56,7 +56,7 @@ function indentExtension(options: BufferStateOptions, sample: string | null): Ex
 const bracketMatchExtension = (options: BufferStateOptions): Extension => ((options.bracketMatching ?? true) ? bracketMatching() : []);
 const closeBracketsExtension = (options: BufferStateOptions): Extension =>
   (options.autoCloseBrackets ?? false) ? [closeBrackets(), keymap.of(closeBracketsKeymap)] : [];
-const whitespaceExtension = (options: BufferStateOptions): Extension => ((options.showWhitespace ?? false) ? highlightWhitespace() : []);
+const whitespaceExtension = (options: BufferStateOptions): Extension => whitespaceMarkers(options.showWhitespace ?? "none");
 const foldExtension = (options: BufferStateOptions): Extension => ((options.codeFolding ?? true) ? [foldGutter(), keymap.of(foldKeymap)] : []);
 
 const gutterExtension = (options: BufferStateOptions): Extension => ((options.lineNumbers ?? true) ? lineNumbers() : []);

@@ -3,7 +3,10 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { EditorState } from "@codemirror/state";
+import { EditorView } from "@codemirror/view";
 import { ACCENTS, ACCENT_VALUES, contrastRatio } from "../lib/theme";
+import { cmTheme } from "./cmTheme";
 
 // Read from disk: the test config switches CSS processing off, which empties `?raw` CSS imports too.
 const tokensCss = readFileSync("src/styles/tokens.css", "utf8").replace(/\r\n/g, "\n");
@@ -73,7 +76,6 @@ describe("light theme tokens: text pairs reach 4.5:1", () => {
     expect(contrastRatio(L("--link-hover"), L("--bg"))).toBeGreaterThanOrEqual(4.5);
     expect(contrastRatio(L("--text"), L("--active-line"))).toBeGreaterThanOrEqual(4.5);
     expect(contrastRatio(L("--text-muted"), L("--hover"))).toBeGreaterThanOrEqual(4.5);
-    expect(contrastRatio(L("--text"), L("--selection-bg"))).toBeGreaterThanOrEqual(4.5);
   });
 
   it("bookmark row text over the state layers", () => {
@@ -201,16 +203,151 @@ describe("dark theme tokens: text pairs reach 4.5:1", () => {
   });
 });
 
+type Accent = (typeof ACCENTS)[number];
+type Theme = "dark" | "light";
+
+/** The rule that carries an accent's tokens in a theme (teal is the default rule of each theme). */
+function accentRule(theme: Theme, a: Accent): Record<string, string> {
+  if (theme === "dark") return a === "teal" ? block(":root {") : block(`:root[data-accent="${a}"]`);
+  return a === "teal" ? block(':root[data-theme="light"] {') : block(`:root[data-theme="light"][data-accent="${a}"]`);
+}
+
+const RGBA = /^rgba\(\s*(\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\)$/;
+
+/** Alpha of an accent's own translucent token; fails unless it is `rgba(<that accent's rgb>, alpha)`. */
+function accentAlpha(theme: Theme, a: Accent, name: string): number {
+  const value = accentRule(theme, a)[name];
+  if (value === undefined) throw new Error(`${theme} ${a}: ${name} is missing`);
+  const m = RGBA.exec(value);
+  if (!m) throw new Error(`${theme} ${a}: ${name} is not rgba(): ${value}`);
+  const hex = ACCENT_VALUES[a][theme];
+  const channels = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+  expect([m[1], m[2], m[3]].map(Number), `${theme} ${a} ${name} is the accent colour`).toEqual(channels);
+  return Number(m[4]);
+}
+
+/** An accent's `--selection-bg` as the solid colour it gives over `bg`. */
+function selectionOver(theme: Theme, a: Accent, bg: string): string {
+  accentAlpha(theme, a, "--selection-bg");
+  return solid(accentRule(theme, a)["--selection-bg"] ?? "", bg);
+}
+
+const EDITOR_SETS: Record<Theme, { tokens: Record<string, string>; color: (name: string, over?: string) => string }> = {
+  dark: { tokens: rootDark, color: D },
+  light: { tokens: light, color: L },
+};
+
+/** Declarations of the editor theme rule whose selector (one of a comma list) ends with `selector`. */
+function cmRule(selector: string): Record<string, string> {
+  const rules = EditorState.create({ extensions: cmTheme })
+    .facet(EditorView.styleModule)
+    .flatMap((m) => m.getRules().split("\n"));
+  const found = rules.find((line) => (line.split("{")[0] ?? "").split(",").some((s) => s.trim().endsWith(selector)));
+  if (!found) throw new Error(`no editor theme rule for ${selector}`);
+  const out: Record<string, string> = {};
+  for (const m of found.slice(found.indexOf("{") + 1).matchAll(/([a-z-]+)\s*:\s*([^;]+);/g)) out[m[1] ?? ""] = (m[2] ?? "").trim();
+  return out;
+}
+
+/** `under` with a match decoration's background (a token, or none) painted on top. */
+function withFill(fill: string | undefined, tokens: Record<string, string>, under: string): string {
+  if (fill === undefined || fill === "transparent") return under;
+  const token = /^var\((--[a-z0-9-]+)\)$/.exec(fill)?.[1];
+  const value = token === undefined ? undefined : tokens[token];
+  if (value === undefined) throw new Error(`unsupported fill ${fill}`);
+  return solid(value, under);
+}
+
 describe("syntax colours: every --syn-* token reaches 4.5:1 on the background, the selection and the active line", () => {
-  const sets = { dark: { tokens: rootDark, color: D }, light: { tokens: light, color: L } };
-  for (const [theme, { tokens, color }] of Object.entries(sets)) {
+  for (const [theme, { tokens, color }] of Object.entries(EDITOR_SETS) as [Theme, (typeof EDITOR_SETS)[Theme]][]) {
     it(`${theme} theme`, () => {
-      const names = Object.keys(tokens).filter((name) => name.startsWith("--syn-"));
-      expect(names.length).toBeGreaterThanOrEqual(5);
+      const names = [...Object.keys(tokens).filter((name) => name.startsWith("--syn-")), "--text"];
+      expect(names.length).toBeGreaterThanOrEqual(6);
+      const bg = color("--bg");
       for (const name of names) {
-        for (const surface of ["--bg", "--selection-bg", "--active-line"]) {
+        for (const surface of ["--bg", "--active-line"]) {
           expect(contrastRatio(color(name), color(surface)), `${theme} ${name} on ${surface}`).toBeGreaterThanOrEqual(4.5);
         }
+        // The selection is drawn behind the lines; on the cursor line the translucent active line lies on top of it.
+        for (const a of ACCENTS) {
+          const selection = selectionOver(theme, a, bg);
+          const selectionOnActiveLine = solid(tokens["--active-line"] ?? "", selection);
+          expect(contrastRatio(color(name), selection), `${theme} ${name} on the ${a} selection`).toBeGreaterThanOrEqual(4.5);
+          expect(contrastRatio(color(name), selectionOnActiveLine), `${theme} ${name} on the ${a} selection under the active line`).toBeGreaterThanOrEqual(
+            4.5,
+          );
+        }
+      }
+    });
+  }
+});
+
+/** Strength of the selection tint: the share of the accent in `--selection-bg` (the maintainer's call for #40). */
+const SELECTION_ALPHA: Record<Theme, number> = { dark: 0.22, light: 0.2 };
+
+describe("editor selection and active line (#40)", () => {
+  it("tokens.css uses no color-mix() (macOS 11 WebKit lacks it; a failed token would hide the selection)", () => {
+    expect(tokensCss.replace(/\/\*[\s\S]*?\*\//g, "")).not.toMatch(/color-mix\(/);
+  });
+
+  for (const [theme, { tokens, color }] of Object.entries(EDITOR_SETS) as [Theme, (typeof EDITOR_SETS)[Theme]][]) {
+    it(`${theme}: every accent has its own selection (${SELECTION_ALPHA[theme] * 100} %) and match outline (45 %) as rgba()`, () => {
+      for (const a of ACCENTS) {
+        expect(accentAlpha(theme, a, "--selection-bg"), `${theme} ${a} selection`).toBe(SELECTION_ALPHA[theme]);
+        expect(accentAlpha(theme, a, "--selection-match-outline"), `${theme} ${a} match outline`).toBe(0.45);
+      }
+    });
+
+    it(`${theme}: match highlights add no fill on the selection (search match on the cursor line keeps 4.5:1)`, () => {
+      // The current search match is selected, so it sits on the selection under the active line; other occurrences of
+      // the selected text can sit on the active line. Whatever fill these rules paint is stacked on top.
+      const names = [...Object.keys(tokens).filter((name) => name.startsWith("--syn-")), "--text"];
+      const bg = color("--bg");
+      for (const selector of [".cm-searchMatch-selected", ".cm-selectionMatch"]) {
+        const fill = cmRule(selector)["background-color"];
+        for (const a of ACCENTS) {
+          const under = solid(tokens["--active-line"] ?? "", selectionOver(theme, a, bg));
+          const top = withFill(fill, { ...tokens, ...accentRule(theme, a) }, under);
+          for (const name of names) {
+            expect(contrastRatio(color(name), top), `${theme} ${name} in ${selector} on the ${a} selection`).toBeGreaterThanOrEqual(4.5);
+          }
+        }
+      }
+    });
+
+    it(`${theme}: the active line is translucent, so the selection layer behind the lines shows through`, () => {
+      const alpha = /^rgba\(\s*\d+,\s*\d+,\s*\d+,\s*([\d.]+)\)$/.exec(tokens["--active-line"] ?? "")?.[1];
+      expect(alpha, `${theme} --active-line must be rgba()`).toBeDefined();
+      expect(Number(alpha)).toBeGreaterThan(0);
+      expect(Number(alpha)).toBeLessThanOrEqual(0.15);
+    });
+
+    it(`${theme}: the selection of every accent clearly stands out from the background and from the active line`, () => {
+      // 20-25 % of the accent (the maintainer's call for #40); the weakest accent still differs by 1.3:1 in luminance
+      // alone, on top of its hue (the former grey selection was 1.35:1 but hidden on the cursor line).
+      const bg = color("--bg");
+      const activeLine = color("--active-line");
+      for (const a of ACCENTS) {
+        const selection = selectionOver(theme, a, bg);
+        const selectionOnActiveLine = solid(tokens["--active-line"] ?? "", selection);
+        expect(contrastRatio(selection, bg), `${theme} ${a} selection on the background`).toBeGreaterThanOrEqual(1.3);
+        expect(contrastRatio(selectionOnActiveLine, activeLine), `${theme} ${a} selection on the active line`).toBeGreaterThanOrEqual(1.3);
+      }
+    });
+
+    it(`${theme}: comments stay muted next to normal text`, () => {
+      // Lightened (dark) or darkened (light) for the selection, but still clearly apart from --text.
+      expect(contrastRatio(color("--syn-comment"), color("--text")), `${theme} comment vs text`).toBeGreaterThanOrEqual(1.5);
+    });
+
+    it(`${theme}: whitespace markers are faint (visible, but far below text contrast)`, () => {
+      const marker = /^rgba\(\s*\d+,\s*\d+,\s*\d+,\s*([\d.]+)\)$/.exec(tokens["--whitespace-marker"] ?? "")?.[1];
+      expect(Number(marker), `${theme} --whitespace-marker is semi-transparent`).toBeLessThan(1);
+      for (const surface of ["--bg", "--active-line"]) {
+        const under = color(surface);
+        const ratio = contrastRatio(color("--whitespace-marker", under), under);
+        expect(ratio, `${theme} marker on ${surface}`).toBeGreaterThanOrEqual(1.3);
+        expect(ratio, `${theme} marker on ${surface}`).toBeLessThan(2.5);
       }
     });
   }

@@ -15,8 +15,8 @@ use crate::ipc::dto::{
     AdvancedSettings, AppearanceSettings, ConflictPolicy, ConnectionSettings, CursorStyle,
     DEFAULT_WORD_SEPARATORS, DateFormat, DoubleClickAction, EditorSettings, FilesSettings,
     GeneralSettings, NewFileEol, NewTerminalCwd, ReconnectSettings, RightClickAction, Settings,
-    SizeUnits, TermType, TerminalBell, TerminalExitAction, TerminalSettings, TransferSettings,
-    UiSettings,
+    ShowWhitespace, SizeUnits, TermType, TerminalBell, TerminalExitAction, TerminalSettings,
+    TransferSettings, UiSettings,
 };
 use crate::storage::file::{corrupt_warning, io_error, quarantine_copy, write_json};
 use crate::storage::migrations::StoreFile;
@@ -96,7 +96,7 @@ pub fn default_settings() -> Settings {
             new_file_eol: NewFileEol::Lf,
             auto_close_brackets: false,
             bracket_matching: true,
-            show_whitespace: false,
+            show_whitespace: ShowWhitespace::None,
             code_folding: true,
             font_ligatures: false,
         },
@@ -1146,7 +1146,8 @@ mod tests {
             "screen reader mode defaults to off"
         );
         assert!(s.editor.detect_indentation && s.editor.bracket_matching && s.editor.code_folding);
-        assert!(!s.editor.auto_close_brackets && !s.editor.show_whitespace);
+        assert!(!s.editor.auto_close_brackets);
+        assert_eq!(s.editor.show_whitespace, ShowWhitespace::None);
         assert!(!s.editor.font_ligatures, "ligatures default to off");
         assert_eq!(s.editor.new_file_eol, NewFileEol::Lf);
         assert_eq!(s.files.double_click, DoubleClickAction::Open);
@@ -1451,6 +1452,96 @@ mod tests {
             let (again, w) = load(dir.path());
             assert!(w.is_empty(), "{channel}: {w:?}");
             assert_eq!(again, expected, "{channel}");
+        }
+    }
+
+    /// `editor.showWhitespace` was a boolean before it had three modes: a stored `true`/`false`
+    /// loads as `all`/`none` without a warning, quarantine or version bump, every other stored
+    /// value is kept, and the next save writes the string.
+    #[test]
+    fn legacy_boolean_show_whitespace_loads_as_a_mode() {
+        for (stored, mode, written) in [
+            ("true", ShowWhitespace::All, "all"),
+            ("false", ShowWhitespace::None, "none"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let text = format!(
+                r#"{{"version":1,"locale":"uk","editor":{{"fontSize":15,"showWhitespace":{stored},"codeFolding":false}}}}"#
+            );
+            std::fs::write(dir.path().join("settings.json"), text).unwrap();
+            let (s, w) = load(dir.path());
+            assert!(w.is_empty(), "{stored}: {w:?}");
+            let mut expected = default_settings();
+            expected.locale = "uk".into();
+            expected.editor.font_size = 15;
+            expected.editor.code_folding = false;
+            expected.editor.show_whitespace = mode;
+            assert_eq!(s, expected, "{stored}");
+            let names: Vec<_> = std::fs::read_dir(dir.path())
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(names, ["settings.json"], "{stored}: no quarantine copy");
+
+            update(dir.path(), false, &s).unwrap();
+            let raw: Value =
+                serde_json::from_slice(&std::fs::read(dir.path().join("settings.json")).unwrap())
+                    .unwrap();
+            assert_eq!(raw["version"], 1);
+            assert_eq!(raw["editor"]["showWhitespace"], written);
+            assert_eq!(load(dir.path()).0, expected, "{stored}");
+        }
+    }
+
+    #[test]
+    fn show_whitespace_modes_roundtrip() {
+        for (mode, json) in [
+            (ShowWhitespace::None, "none"),
+            (ShowWhitespace::ActiveLine, "activeLine"),
+            (ShowWhitespace::All, "all"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut s = default_settings();
+            s.editor.show_whitespace = mode;
+            update(dir.path(), false, &s).unwrap();
+            let raw: Value =
+                serde_json::from_slice(&std::fs::read(dir.path().join("settings.json")).unwrap())
+                    .unwrap();
+            assert_eq!(raw["editor"]["showWhitespace"], json);
+            let (loaded, w) = load(dir.path());
+            assert!(w.is_empty(), "{json}: {w:?}");
+            assert_eq!(loaded, s);
+        }
+    }
+
+    /// Anything else in `editor.showWhitespace` is a wrong type: only that field falls back to
+    /// `none`, the other stored values are kept, and the file is quarantined with a warning.
+    #[test]
+    fn invalid_show_whitespace_resets_only_that_field() {
+        for bad in [
+            r#""ActiveLine""#,
+            r#""active-line""#,
+            r#""""#,
+            "1",
+            "0",
+            "null",
+            "[true]",
+            r#"{"all":true}"#,
+            r#""all ""#,
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let text =
+                format!(r#"{{"version":1,"editor":{{"tabSize":2,"showWhitespace":{bad}}}}}"#);
+            std::fs::write(dir.path().join("settings.json"), text).unwrap();
+            let (s, w) = load(dir.path());
+            let mut expected = default_settings();
+            expected.editor.tab_size = 2;
+            assert_eq!(s, expected, "{bad}");
+            assert_eq!(
+                serde_json::to_value(&w[0]).unwrap()["code"],
+                "storageCorrupt",
+                "{bad}"
+            );
         }
     }
 

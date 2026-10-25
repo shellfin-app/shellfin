@@ -16,12 +16,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   are any, and opens a list with the file, the line and what is wrong. Unreadable lines beyond the first 50 in a file
   are counted as "and N more" instead of being dropped silently.
 
+### Changed
+
+- Editor whitespace markers (space dots and tab arrows) are now drawn faintly in both themes instead of in a colour
+  close to the text, and "Show whitespace" has three choices: All, Active line only and None (the default stays
+  None). A saved on/off choice carries over as All or None.
+- In the editor, other occurrences of the selected text and the current search match are outlined instead of
+  filled, so they no longer look stronger than the selection or make the text on it hard to read.
+
 ### Removed
 
 - The experimental update channel and its "Update channel" setting: there is one update channel, with stable
   releases only. A saved channel choice is ignored. Experimental builds (0.2.0-experimental.1) and 0.1.x installs set
   to "Experimental" move to the stable channel with the next release, 0.2.0, without any action. The Homebrew cask `shellfin@experimental` is no longer updated; switch
   with `brew uninstall --cask shellfin@experimental && brew install --cask shellfin-app/tap/shellfin`.
+
+### Fixed
+
+- Selected text in the editor is clearly visible again: the current-line highlight no longer covers the selection.
+  The selection is a tint of the accent colour, in both themes, with or without focus. To keep syntax colours readable
+  on it, comments are a little lighter in the dark theme (and purple slightly lighter), and the light theme's syntax
+  colours are slightly darker.
 
 ### Security
 

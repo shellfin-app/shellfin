@@ -16,7 +16,7 @@
   --hover: #1E222A;       --selected: #222731;     --tab-active: #1B1E25;   --seg-active: #262B35;
   --ok: #4ADE80;          --warn: #E5C07B;         --danger: #F87171;       --link: #8AB4F8;
   --warn-bg: #2E2717;     --danger-bg: #3A1F22;    --danger-border: #3A2A2E;
-  --syn-keyword: #8AB4F8; --syn-string: #C3E88D;   --syn-number: #F7A072;   --syn-comment: #9299A8; --syn-purple: #C792EA;
+  --syn-keyword: #8AB4F8; --syn-string: #C3E88D;   --syn-number: #F7A072;   --syn-comment: #ACB1BC; --syn-purple: #CD9FEC;
 
   /* Bookmark color palette (8 names + none) */
   --bm-red: #F87171;    --bm-orange: #F7A072; --bm-yellow: #E5C07B; --bm-green: #4ADE80;
@@ -26,7 +26,6 @@
   --border-strong: #3A4150;   /* quick-connect field border */
   --link-hover: #B3CDFB;
   --code-fg: #C9CED8;         /* terminal text */
-  --selection-bg: #2A2F3A;
   --selection-outline: #3A4150;
   --focus-ring: 0 0 0 2px var(--chrome), 0 0 0 4px var(--accent);
 
@@ -41,7 +40,10 @@
   --act-active: rgba(255, 255, 255, .10);
 
   /* Theme-dependent bits that used to be hard-coded in component CSS */
-  --active-line: #1E222A;                  /* editor current line and its gutter */
+  /* Editor current line and its gutter. Translucent on purpose: CodeMirror draws the selection in a layer *behind*
+     the lines, so an opaque line background would hide the selection on the cursor line (#40). Over --bg = #1E222A. */
+  --active-line: rgba(145, 172, 215, .08);
+  --whitespace-marker: rgba(154, 162, 177, .35); /* editor space dots and tab arrows: faint, well below text contrast */
   --folder: #E5C07B;                       /* folder icons in the file tree */
   --status-ring: #9AA2B1;                  /* hollow "idle" status dot */
   --scrim: rgba(11, 12, 15, .72);          /* modal backdrop */
@@ -60,6 +62,11 @@
 /* ---- root-only tokens: accent (teal), terminal background, sizes ---- */
 :root {
   --accent: #4FD1C5;      --accent-fg: #0F1115;    --accent-ring: rgba(79, 209, 197, .15);   --accent-bg: #16302E;
+  /* Editor selection and the outline of other occurrences: the accent at 22% and 45% (light theme: 20% and 45%), one
+     rgba() per accent and theme like --accent-ring (no color-mix(): macOS 11 WebKit lacks it and the selection would
+     vanish). --syn-* colours are tuned so they all keep 4.5:1 on the selection, also under the active line, for every
+     accent (contrast.test.ts). */
+  --selection-bg: rgba(79, 209, 197, .22); --selection-match-outline: rgba(79, 209, 197, .45);
   --term-bg: #0F1115;     /* terminal background; src/lib/theme.ts overrides it for a custom colour */
   --ui-scale: 1;          /* appearance.uiFontSize / 13, applied to UI text only (not terminal or editor) */
   --font-ui: "Inter", system-ui, sans-serif;  --font-mono: "JetBrains Mono", ui-monospace, monospace;
@@ -69,11 +76,16 @@
 }
 
 /* ---- accents, dark theme (existing palette; teal is the default above) ---- */
-:root[data-accent="blue"]   { --accent: #8AB4F8; --accent-ring: rgba(138, 180, 248, .15); --accent-bg: #1A2740; }
-:root[data-accent="purple"] { --accent: #C792EA; --accent-ring: rgba(199, 146, 234, .15); --accent-bg: #2A2038; }
-:root[data-accent="orange"] { --accent: #F7A072; --accent-ring: rgba(247, 160, 114, .15); --accent-bg: #33231A; }
-:root[data-accent="green"]  { --accent: #4ADE80; --accent-ring: rgba(74, 222, 128, .15);  --accent-bg: #16301F; }
-:root[data-accent="pink"]   { --accent: #F29BC4; --accent-ring: rgba(242, 155, 196, .15); --accent-bg: #36202B; }
+:root[data-accent="blue"]   { --accent: #8AB4F8; --accent-ring: rgba(138, 180, 248, .15); --accent-bg: #1A2740;
+                              --selection-bg: rgba(138, 180, 248, .22); --selection-match-outline: rgba(138, 180, 248, .45); }
+:root[data-accent="purple"] { --accent: #C792EA; --accent-ring: rgba(199, 146, 234, .15); --accent-bg: #2A2038;
+                              --selection-bg: rgba(199, 146, 234, .22); --selection-match-outline: rgba(199, 146, 234, .45); }
+:root[data-accent="orange"] { --accent: #F7A072; --accent-ring: rgba(247, 160, 114, .15); --accent-bg: #33231A;
+                              --selection-bg: rgba(247, 160, 114, .22); --selection-match-outline: rgba(247, 160, 114, .45); }
+:root[data-accent="green"]  { --accent: #4ADE80; --accent-ring: rgba(74, 222, 128, .15);  --accent-bg: #16301F;
+                              --selection-bg: rgba(74, 222, 128, .22);  --selection-match-outline: rgba(74, 222, 128, .45); }
+:root[data-accent="pink"]   { --accent: #F29BC4; --accent-ring: rgba(242, 155, 196, .15); --accent-bg: #36202B;
+                              --selection-bg: rgba(242, 155, 196, .22); --selection-match-outline: rgba(242, 155, 196, .45); }
 
 /* ---- light set, variant A "Neutral" (also the tone set for a light terminal background) ---- */
 :root[data-theme="light"],
@@ -85,7 +97,7 @@
   --hover: #ECEEF1;       --selected: #DDDEE0;     --tab-active: #FFFFFF;   --seg-active: #FFFFFF;
   --ok: #14753A;          --warn: #A15C00;        --danger: #C62828;       --link: #1F5FBF;
   --warn-bg: #FFF4DC;     --danger-bg: #FDECEC;    --danger-border: #F0C4C4;
-  --syn-keyword: #1E5CB9; --syn-string: #366B1B;   --syn-number: #9B470D;   --syn-comment: #5A606B; --syn-purple: #843CB1;
+  --syn-keyword: #1C56AE; --syn-string: #33651A;   --syn-number: #91420C;   --syn-comment: #545A64; --syn-purple: #7D39A8;
 
   --bm-red: #DC2626;    --bm-orange: #EA580C; --bm-yellow: #BF8003; --bm-green: #16A34A;
   --bm-teal: #0D9488;   --bm-blue: #2563EB;   --bm-purple: #9333EA; --bm-gray: #6B7280;
@@ -93,7 +105,6 @@
   --border-strong: #B8BFC9;
   --link-hover: #174A94;
   --code-fg: #2B3038;
-  --selection-bg: #CFDDF3;
   --selection-outline: #A9BEE3;
   --focus-ring: 0 0 0 2px var(--chrome), 0 0 0 4px var(--accent);
 
@@ -106,7 +117,8 @@
   --act-hover: rgba(0, 0, 0, .05);
   --act-active: rgba(0, 0, 0, .09);
 
-  --active-line: #F3F5F8;
+  --active-line: rgba(15, 55, 115, .05);   /* over --bg = #F3F5F8 */
+  --whitespace-marker: rgba(92, 99, 112, .30);
   --folder: #B7791F;
   --status-ring: #848B96;
   --scrim: rgba(24, 28, 36, .45);
@@ -124,15 +136,21 @@
 
 :root[data-theme="light"] {
   --accent: #0B7A70;      --accent-fg: #FFFFFF;    --accent-ring: rgba(11, 122, 112, .18);   --accent-bg: #E6F4F2;
+  --selection-bg: rgba(11, 122, 112, .20); --selection-match-outline: rgba(11, 122, 112, .45);
   --term-bg: #FFFFFF;
 }
 
 /* ---- accents, light theme (each >= 4.5:1 on #FFFFFF, panel and chrome; white text on them also >= 4.5:1) ---- */
-:root[data-theme="light"][data-accent="blue"]   { --accent: #1F5FBF; --accent-ring: rgba(31, 95, 191, .18);  --accent-bg: #E4ECF9; }
-:root[data-theme="light"][data-accent="purple"] { --accent: #7E3FB5; --accent-ring: rgba(126, 63, 181, .18); --accent-bg: #EFE6F7; }
-:root[data-theme="light"][data-accent="orange"] { --accent: #A94A0B; --accent-ring: rgba(169, 74, 11, .18);  --accent-bg: #F8E9DD; }
-:root[data-theme="light"][data-accent="green"]  { --accent: #13763A; --accent-ring: rgba(19, 118, 58, .18);  --accent-bg: #E0F1E6; }
-:root[data-theme="light"][data-accent="pink"]   { --accent: #BE185D; --accent-ring: rgba(190, 24, 93, .18);  --accent-bg: #FAE4EE; }
+:root[data-theme="light"][data-accent="blue"]   { --accent: #1F5FBF; --accent-ring: rgba(31, 95, 191, .18);  --accent-bg: #E4ECF9;
+                                                  --selection-bg: rgba(31, 95, 191, .20);  --selection-match-outline: rgba(31, 95, 191, .45); }
+:root[data-theme="light"][data-accent="purple"] { --accent: #7E3FB5; --accent-ring: rgba(126, 63, 181, .18); --accent-bg: #EFE6F7;
+                                                  --selection-bg: rgba(126, 63, 181, .20); --selection-match-outline: rgba(126, 63, 181, .45); }
+:root[data-theme="light"][data-accent="orange"] { --accent: #A94A0B; --accent-ring: rgba(169, 74, 11, .18);  --accent-bg: #F8E9DD;
+                                                  --selection-bg: rgba(169, 74, 11, .20);  --selection-match-outline: rgba(169, 74, 11, .45); }
+:root[data-theme="light"][data-accent="green"]  { --accent: #13763A; --accent-ring: rgba(19, 118, 58, .18);  --accent-bg: #E0F1E6;
+                                                  --selection-bg: rgba(19, 118, 58, .20);  --selection-match-outline: rgba(19, 118, 58, .45); }
+:root[data-theme="light"][data-accent="pink"]   { --accent: #BE185D; --accent-ring: rgba(190, 24, 93, .18);  --accent-bg: #FAE4EE;
+                                                  --selection-bg: rgba(190, 24, 93, .20);  --selection-match-outline: rgba(190, 24, 93, .45); }
 
 /* ---- accent inside a terminal panel whose background tone differs from the theme (custom terminal background) ----
    The tone sets above swap the surface and text colours of `.terminal-panel`; the accent must follow the tone too,

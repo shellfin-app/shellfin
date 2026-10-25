@@ -3,6 +3,10 @@ import type { Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { tags as t } from "@lezer/highlight";
 
+/** CodeMirror's tab arrow (`.cm-highlightTab`) as a mask image: only its shape counts, the colour is a token. */
+const TAB_ARROW_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="20"><path stroke="black" stroke-width="1" fill="none" d="M1 10H196L190 5M190 15L196 10M197 4L197 16"/></svg>`;
+const TAB_ARROW_MASK = `url('data:image/svg+xml,${TAB_ARROW_SVG}') right 90% / auto 100% no-repeat`;
+
 /**
  * CodeMirror 6 theme for both app themes. Colors come from CSS variables (styles/tokens.css), so the same extension
  * serves dark and light; `dark: true` only selects CodeMirror's own defaults, and every one of those that shows a
@@ -26,6 +30,8 @@ const editorTheme = EditorView.theme(
     },
     ".cm-cursor, .cm-dropCursor": { borderLeftColor: "var(--accent)" },
     "&.cm-focused": { outline: "none" },
+    // The selection (focused or not) is a translucent accent tint drawn in a layer *behind* the text, so everything
+    // painted on the lines above it (the active line) must stay translucent (tokens.css, --active-line; #40).
     "&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground, ::selection": {
       backgroundColor: "var(--selection-bg)",
     },
@@ -40,9 +46,12 @@ const editorTheme = EditorView.theme(
     ".cm-activeLineGutter": { backgroundColor: "var(--active-line)", color: "var(--text)" },
     ".cm-foldGutter span": { color: "var(--text-muted)", padding: "0 3px", cursor: "pointer" },
     ".cm-matchingBracket, .cm-nonmatchingBracket": { backgroundColor: "var(--accent-ring)", outline: "1px solid var(--accent)" },
-    ".cm-selectionMatch": { backgroundColor: "var(--accent-ring)" },
+    // Other occurrences of the selected text: an outline only, so they never look stronger than the selection itself.
+    ".cm-selectionMatch": { backgroundColor: "transparent", outline: "1px solid var(--selection-match-outline)" },
     ".cm-searchMatch": { backgroundColor: "var(--warn-bg)", outline: "1px solid var(--warn)" },
-    ".cm-searchMatch-selected": { backgroundColor: "var(--accent-ring)", outline: "1px solid var(--accent)" },
+    // The current search match is also the selection (and on the active line): a fill would stack on both and cost the
+    // syntax colours their 4.5:1, so it is an outline only, over the plain `.cm-searchMatch` fill too.
+    ".cm-searchMatch-selected": { backgroundColor: "transparent", outline: "1px solid var(--accent)" },
     ".cm-foldPlaceholder": {
       backgroundColor: "var(--hover)",
       color: "var(--text-muted)",
@@ -69,6 +78,19 @@ const editorTheme = EditorView.theme(
     },
     ".cm-dialog": { fontFamily: "var(--font-ui)", fontSize: "calc(12px * var(--ui-scale, 1))" },
     ".cm-specialChar": { color: "var(--danger)" },
+    // `editor.showWhitespace`: CodeMirror draws the markers in grey close to the text colour; ours are faint. The space
+    // dot keeps CodeMirror's size and position; the tab arrow is CodeMirror's shape used as a mask, so it takes a token.
+    ".cm-highlightSpace": { backgroundImage: "radial-gradient(circle at 50% 55%, var(--whitespace-marker) 20%, transparent 0)" },
+    ".cm-highlightTab": { backgroundImage: "none", position: "relative" },
+    ".cm-highlightTab::before": {
+      content: "''",
+      position: "absolute",
+      inset: "0",
+      pointerEvents: "none",
+      backgroundColor: "var(--whitespace-marker)",
+      WebkitMask: TAB_ARROW_MASK,
+      mask: TAB_ARROW_MASK,
+    },
     ".cm-tooltip": { backgroundColor: "var(--panel)", color: "var(--text)", border: "1px solid var(--border)" },
     ".cm-tooltip .cm-tooltip-arrow:before": { borderTopColor: "var(--border)", borderBottomColor: "var(--border)" },
     ".cm-tooltip .cm-tooltip-arrow:after": { borderTopColor: "var(--panel)", borderBottomColor: "var(--panel)" },

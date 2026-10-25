@@ -110,7 +110,7 @@ describe("settings form", () => {
       fontSize: 13, tabSize: 4, wordWrap: false, maxFileSizeMiB: 5, fontFamily: null, lineNumbers: true,
       highlightActiveLine: true, indentWithTabs: false, trimTrailingWhitespace: false, insertFinalNewline: false,
       detectIndentation: true, newFileEol: "lf", autoCloseBrackets: false, bracketMatching: true,
-      showWhitespace: false, codeFolding: true, fontLigatures: false,
+      showWhitespace: "none", codeFolding: true, fontLigatures: false,
     },
     connection: {
       keepaliveIntervalSecs: 15, keepaliveCountMax: 3, connectTimeoutSecs: 15, promptTimeoutSecs: 110,

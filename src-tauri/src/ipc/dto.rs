@@ -655,6 +655,48 @@ pub enum NewFileEol {
     Crlf,
 }
 
+/// `editor.showWhitespace`: which spaces and tabs the editor marks. Earlier builds stored a
+/// boolean; it still loads (`true` = all, `false` = none) and is written back as a string, so the
+/// file version stays 1 (§7.2). Any other value is a wrong type (load repair resets the field).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum ShowWhitespace {
+    #[default]
+    None,
+    /// Only the lines with a cursor.
+    ActiveLine,
+    All,
+}
+
+impl<'de> Deserialize<'de> for ShowWhitespace {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct ModeVisitor;
+        impl serde::de::Visitor<'_> for ModeVisitor {
+            type Value = ShowWhitespace;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("\"none\", \"activeLine\", \"all\" or a boolean")
+            }
+            fn visit_bool<E: serde::de::Error>(self, v: bool) -> Result<ShowWhitespace, E> {
+                Ok(if v {
+                    ShowWhitespace::All
+                } else {
+                    ShowWhitespace::None
+                })
+            }
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<ShowWhitespace, E> {
+                match v {
+                    "none" => Ok(ShowWhitespace::None),
+                    "activeLine" => Ok(ShowWhitespace::ActiveLine),
+                    "all" => Ok(ShowWhitespace::All),
+                    other => Err(E::unknown_variant(other, &["none", "activeLine", "all"])),
+                }
+            }
+        }
+        deserializer.deserialize_any(ModeVisitor)
+    }
+}
+
 /// `files.doubleClick`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -903,8 +945,9 @@ pub struct EditorSettings {
     pub auto_close_brackets: bool,
     #[serde(default = "default_true")]
     pub bracket_matching: bool,
+    /// `none | activeLine | all`; a stored boolean of earlier builds loads as `all` / `none`.
     #[serde(default)]
-    pub show_whitespace: bool,
+    pub show_whitespace: ShowWhitespace,
     #[serde(default = "default_true")]
     pub code_folding: bool,
     /// Programming ligatures in the editor font (CSS only). Default off. There is no terminal counterpart.
