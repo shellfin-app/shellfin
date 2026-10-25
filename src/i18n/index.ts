@@ -21,6 +21,8 @@ export const LANGUAGE_ENDONYMS: Record<SupportedLanguage, string> = {
 /**
  * `beta`: a new translation without a native-speaker review yet. The picker shows "(beta)" and a feedback link; the
  * "System" option still resolves to it. Set to `complete` once a native review is merged (CONTRIBUTING, Translations).
+ * `complete` means maintained and reviewed, not "has every key": only English is complete in that sense (CI-enforced);
+ * any other language may lag behind and shows the English text for keys it has not translated yet.
  */
 export const LANGUAGE_STATUS: Record<SupportedLanguage, "complete" | "beta"> = {
   en: "complete",
@@ -128,6 +130,8 @@ export async function initI18n(locale = "en") {
     supportedLngs: import.meta.env.DEV ? [...SUPPORTED_LANGUAGES, PSEUDO_LOCALE] : [...SUPPORTED_LANGUAGES],
     interpolation: { escapeValue: false }, // React escapes text nodes. Never pass server text into <Trans>.
     returnNull: false,
+    // A key that a locale leaves out or leaves empty shows the English text (only English is complete, §8.2.2).
+    returnEmptyString: false,
   });
   if (locale !== "en") await setLanguage(locale);
   return i18next;

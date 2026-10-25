@@ -1,6 +1,9 @@
 // Locale key parity and plural readiness (docs/ARCHITECTURE.md §8.2.4). Runs with `npm run test`.
-// Every non-English locale must have exactly the English keys (plural-aware: uk adds `_few` and `_many`), the same
-// interpolation tokens, and every pluralized key must be called with `count` so those forms can be selected.
+// English is the one complete locale. Any other locale may leave keys out (i18next shows the English text; the missing
+// keys are only reported here and by `npm run i18n:missing`), but it fails on: a key English does not have (including
+// a plural form the language does not use, or a plural/non-plural mismatch), a plural key with only some of the
+// language's forms (a partial set would show English for some numbers and the translation for others), a changed set
+// of `{{tokens}}`, and an empty string. Every pluralized key must be called with `count` so the forms can be selected.
 import { describe, expect, it } from "vitest";
 import en from "./locales/en/translation.json";
 
@@ -77,30 +80,36 @@ describe("locale files", () => {
     expect(missing).toEqual([]);
   });
 
-  it("has at least the English locale (uk is checked once its file exists)", () => {
-    // The key-parity checks below only run for locale files that exist. They are skipped, not failed, while a
-    // translation is still being written; a registered language without a file simply falls back to English.
+  it("has the English locale (the others are checked below for every file that exists)", () => {
     expect(Object.keys(bundles).some((p) => p.includes("/en/"))).toBe(true);
   });
 
   for (const { lng, flat } of locales) {
     describe(lng, () => {
       const lngForms = forms(flat);
-      const needed = new Set(new Intl.PluralRules(lng).resolvedOptions().pluralCategories);
+      const needed = new Intl.PluralRules(lng).resolvedOptions().pluralCategories;
+      // The leaf keys a translation may have: a plain English key as is, a plural one with the language's suffixes.
+      const allowed = new Set(
+        [...enForms].flatMap(([k, f]) => (f.size > 0 ? needed.map((c) => `${k}_${c}`) : [k])),
+      );
 
-      it("has every English key and no extra keys (plural-aware)", () => {
-        const missing = [...enForms.keys()].filter((k) => !lngForms.has(k));
-        const extra = [...lngForms.keys()].filter((k) => !enForms.has(k));
-        expect({ missing, extra }).toEqual({ missing: [], extra: [] });
+      it("has no key that English does not have (plural-aware)", () => {
+        expect(Object.keys(flat).filter((k) => !allowed.has(k))).toEqual([]);
       });
 
-      it("has the plural forms of the language for every pluralized key", () => {
+      it("has all plural forms of the language for every plural key it translates", () => {
         const bad = [...enForms]
-          .filter(([, f]) => f.size > 0)
+          .filter(([k, f]) => f.size > 0 && (lngForms.get(k)?.size ?? 0) > 0)
           .map(([k]) => ({ k, have: lngForms.get(k) ?? new Set<string>() }))
-          .filter(({ have }) => [...needed].some((c) => !have.has(c)) || [...have].some((c) => !needed.has(c as never)))
-          .map(({ k, have }) => `${k}: ${[...have].join(",")}`);
+          .filter(({ have }) => needed.some((c) => !have.has(c)))
+          .map(({ k, have }) => `${k}: has ${[...have].join(",")}, needs ${needed.join(",")}`);
         expect(bad).toEqual([]);
+      });
+
+      it("reports the English keys it does not translate yet (allowed: they fall back to English)", () => {
+        const missing = [...enForms.keys()].filter((k) => !lngForms.has(k));
+        if (missing.length > 0) console.info(`${lng}: ${missing.length} keys not translated yet (npm run i18n:missing)`);
+        expect(missing.length).toBeLessThanOrEqual(enForms.size);
       });
 
       it("keeps the interpolation tokens of every key", () => {

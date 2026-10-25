@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import en from "./locales/en/translation.json";
 import { KEY_FAMILIES, PROMPT_ERRORS } from "./keys";
 import { pseudoLocalize, pseudoPadding } from "./pseudo";
-import { LANGUAGE_ENDONYMS, LANGUAGE_STATUS, SUPPORTED_LANGUAGES, matchLanguage, resolveLocale } from "./index";
+import { LANGUAGE_ENDONYMS, LANGUAGE_STATUS, SUPPORTED_LANGUAGES, initI18n, matchLanguage, resolveLocale } from "./index";
 
 function lookup(path: string): unknown {
   let node: unknown = en;
@@ -169,6 +169,18 @@ describe("resolveLocale", () => {
   });
 });
 
+describe("English fallback for untranslated keys", () => {
+  it("shows the English text for a key a locale leaves out or leaves empty", async () => {
+    const i18n = await initI18n("en");
+    // A shallow merge: the `de` bundle's `common` is exactly this object, `common.cancel` is absent.
+    i18n.addResourceBundle("de", "translation", { common: { close: "", copy: "Kopieren" } }, false, true);
+    const t = i18n.getFixedT("de");
+    expect(t("common.copy")).toBe("Kopieren");
+    expect(t("common.close")).toBe(en.common.close); // empty: returnEmptyString false
+    expect(t("common.cancel")).toBe(en.common.cancel); // missing
+  });
+});
+
 describe("registered languages", () => {
   const read = (path: string) => readFileSync(path, "utf8");
   /** NSIS language names (tauri-bundler's bundled translations) of every UI language we may ship. */
@@ -195,7 +207,8 @@ describe("registered languages", () => {
       .map((p) => p.replaceAll("\\", "/"))
       .filter((p) => p.endsWith("/translation.json"));
     expect(files.map((p) => p.split("/")[0]).sort()).toEqual([...SUPPORTED_LANGUAGES].sort());
-    expect(read("i18next.config.ts")).toContain(`locales: [${SUPPORTED_LANGUAGES.map((l) => `"${l}"`).join(", ")}]`);
+    // i18next-cli manages only English: listed, another locale would get "" for every untranslated key (§8.2.4).
+    expect(read("i18next.config.ts")).toContain(`locales: ["en"]`);
   });
 
   it("the Windows installer offers every UI language (NSIS), English first", () => {
