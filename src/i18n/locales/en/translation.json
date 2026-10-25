@@ -752,6 +752,7 @@
     "selectAll": "Select all"
   },
   "menubar": {
+    "compact": "Menu",
     "connection": "Connection",
     "edit": "Edit",
     "file": "File",
@@ -802,6 +803,7 @@
     "path": "Go to path",
     "pathNeedsSession": "Connect to a server first to go to a path.",
     "placeholder": "Hosts, files and commands. Type > for commands, @ for hosts or / for a path.",
+    "placeholderShort": "Hosts, files, commands (> @ /)",
     "reloadConfig": "Reload SSH config",
     "title": "Command palette"
   },

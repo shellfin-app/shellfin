@@ -18,6 +18,7 @@ import type {
   EnvInfo,
   ErrorReport,
   ErrorReportInput,
+  MaxButtonHover,
   MenuActionPayload,
   NotificationTexts,
   WindowState,
@@ -68,6 +69,11 @@ export interface BackendEvents {
   "menu:action": MenuActionPayload;
   /** Emitted when `maximized`, `fullscreen` or `focused` of the window changes. */
   "window:state": WindowState;
+  /**
+   * Windows only: the pointer entered or left the native Snap Layouts overlay over the maximize button. The overlay
+   * receives the mouse there, so the HTML button shows its hover state from this event.
+   */
+  "window:max-hover": MaxButtonHover;
   /** Updater: an automatic check found an update (never a skipped version). */
   "update:available": UpdateInfo;
   /** Updater: the staged update could not be installed at the end of the quit flow; the app stays open. */

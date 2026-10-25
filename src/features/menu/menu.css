@@ -8,6 +8,9 @@
   background: var(--panel);
   box-shadow: var(--shadow-pop);
   font-size: calc(13px * var(--ui-scale, 1));
+  /* A menu taller than the window scrolls instead of running off it (placeMenu keeps MENU_EDGE = 6 px on each side). */
+  max-height: calc(100vh - 12px);
+  overflow: auto;
 }
 .context-menu__item {
   display: flex;

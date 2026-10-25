@@ -1,3 +1,4 @@
+/* Windows: dialogs start below the Snap Layouts overlay (`--caption-clearance`, global.css). */
 .dialog-backdrop {
   position: fixed;
   inset: 0;
@@ -6,6 +7,7 @@
   align-items: center;
   justify-content: center;
   padding: 20px;
+  padding-top: max(20px, var(--caption-clearance, 0px));
   background: var(--scrim);
 }
 

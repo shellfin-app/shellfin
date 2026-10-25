@@ -16,7 +16,12 @@
 }
 .settings-nav__item:hover { background: var(--hover); color: var(--text); }
 .settings-nav__item--active { background: var(--selected); color: var(--text); }
-.settings-sections { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 16px; padding-right: 4px; }
+.settings-sections { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 16px; padding-right: 4px; container-type: inline-size; }
+/* Narrow dialog (small window): the control goes below its label at full width, so select values are not cut off. */
+@container (width < 480px) {
+  .settings-sections .setting__row { flex-wrap: wrap; row-gap: 4px; }
+  .settings-sections .setting__control { flex: 1 1 100%; }
+}
 .settings-preview {
   margin: 0; padding: 10px 12px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
   border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg); color: var(--text);

@@ -55,7 +55,11 @@ url = "=2.5.8"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization",
   "Win32_Storage_FileSystem", "Win32_System_SystemInformation", "Win32_System_Threading",
-  "Win32_System_Registry", "Win32_System_WindowsProgramming"] }  # Threading: OpenProcessToken (current user SID); Registry: OS version for error reports; SystemInformation: GetComputerNameExW (ssh_config %l); WindowsProgramming: GetComputerNameW (Win32-OpenSSH local user name)
+  "Win32_System_Registry", "Win32_System_WindowsProgramming",  # Threading: OpenProcessToken (current user SID); Registry: OS version for error reports; SystemInformation: GetComputerNameExW (ssh_config %l); WindowsProgramming: GetComputerNameW (Win32-OpenSSH local user name)
+  # Caption overlay (caption_overlay.rs, Snap Layouts): child window, mouse tracking, runtime DPI metrics lookup.
+  # Already compiled for tao/wry: no new crate.
+  "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_LibraryLoader",
+  "Win32_Graphics_Gdi"] }
 # WebView2 settings Tauri does not expose (default context menus, browser accelerator
 # keys). Same versions tauri/wry already use (no new crates in the tree).
 webview2-com = "=0.39.1"

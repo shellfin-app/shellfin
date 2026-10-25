@@ -18,8 +18,8 @@
         "title": "Shellfin",
         "width": 1440,
         "height": 900,
-        "minWidth": 960,
-        "minHeight": 600,
+        "minWidth": 580,
+        "minHeight": 500,
         "center": true,
         "dragDropEnabled": true
       }

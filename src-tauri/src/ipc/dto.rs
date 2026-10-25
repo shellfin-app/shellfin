@@ -77,6 +77,16 @@ pub struct WindowState {
     pub focused: bool,
 }
 
+/// Payload of the `window:max-hover` event (Windows): the pointer entered (`true`) or left (`false`)
+/// the native Snap Layouts overlay over the title bar's maximize button (`caption_overlay`, §8.4). The
+/// overlay takes the mouse there, so the page shows the button's hover state from this event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct MaxButtonHover {
+    pub hovered: bool,
+}
+
 /// Payload of the `menu:action` event (macOS native menu). `id` is one of the ids
 /// listed in `app_menu::MENUS` (and mapped in the frontend's `shellEvents.ts`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
@@ -1815,6 +1825,8 @@ pub mod events {
     pub const DROP_FILES: &str = "drop:files";
     /// `WindowState` after a maximize/fullscreen/focus change.
     pub const WINDOW_STATE: &str = "window:state";
+    /// `MaxButtonHover` (Windows): hover over the maximize button's Snap Layouts overlay.
+    pub const WINDOW_MAX_HOVER: &str = "window:max-hover";
     /// `MenuActionPayload`.
     pub const MENU_ACTION: &str = "menu:action";
     /// Updater: `UpdateInfo` found by an automatic check (never for a skipped version).

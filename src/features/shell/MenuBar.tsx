@@ -8,12 +8,16 @@ import { mnemonicChar, mnemonicOf } from "../../lib/menuMnemonic";
 import { useStore } from "../../state/store";
 import { isModalOpen } from "../session/promptVisibility";
 import { ACTIONS, actionEnabled, actionLabel, runAction } from "../actions/registry";
+import { useCompactTitleBar } from "./useCompactTitleBar";
 import "../menu/menu.css";
 
 interface Open {
-  menu: MenuId;
+  /** `root` is the list of menus behind the compact title bar's single menu button. */
+  menu: MenuId | "root";
   /** Opened with the keyboard: the first item gets the focus. */
   viaKeyboard: boolean;
+  /** Compact list reached with Back: the menu it came from (its entry gets the focus). */
+  returnTo?: MenuId;
 }
 
 function inTerminal(el: Element | null): boolean {
@@ -31,20 +35,33 @@ function MenuLabel({ text }: { text: string }) {
   );
 }
 
+/** In the compact title bar: the "Menu" entry that goes from a menu back to the list of menus. */
+const SEL_BACK = "[data-menu-back]";
+
 function Dropdown({
   menu,
+  compact,
   left,
   top,
   viaKeyboard,
+  returnTo,
   onClose,
   onSwitch,
+  onPick,
+  onBack,
 }: {
-  menu: MenuId;
+  /** A menu, or `root`: the list of the menus (compact title bar only). */
+  menu: MenuId | "root";
+  compact: boolean;
   left: number;
   top: number;
   viaKeyboard: boolean;
+  /** `root` reached with Back from this menu: its entry gets the focus (not the first one). */
+  returnTo: MenuId | undefined;
   onClose: (restore: boolean) => void;
   onSwitch: (delta: 1 | -1) => void;
+  onPick: (menu: MenuId, viaKeyboard: boolean) => void;
+  onBack: () => void;
 }) {
   const { t } = useTranslation();
   const rootRef = useRef<HTMLDivElement>(null);
@@ -54,9 +71,15 @@ function Dropdown({
   useLayoutEffect(() => {
     const root = rootRef.current;
     if (!root) return;
-    if (viaKeyboard) root.querySelector<HTMLElement>(SEL_MENU_ITEM)?.focus();
+    const list = [...root.querySelectorAll<HTMLElement>(SEL_MENU_ITEM)];
+    const origin = menu === "root" && returnTo !== undefined ? list.find((el) => el.dataset["menuId"] === returnTo) : undefined;
+    // A menu whose items are all disabled (Terminal on the Home tab) never drops the focus to the body, which would
+    // leave Escape / Left / Right / Backspace with nothing to act on: the "‹ Menu" entry (compact) or the menu keeps it.
+    const first = list.find((el) => !el.matches(SEL_BACK)) ?? list[0];
+    if (origin) origin.focus();
+    else if (viaKeyboard && first) first.focus();
     else root.focus();
-  }, [menu, viaKeyboard]);
+  }, [menu, viaKeyboard, returnTo]);
 
   const items = () => [...(rootRef.current?.querySelectorAll<HTMLElement>(SEL_MENU_ITEM) ?? [])];
   const move = (to: number | "first" | "last") => {
@@ -87,11 +110,23 @@ function Dropdown({
         return;
       case "ArrowLeft":
         e.preventDefault();
-        onSwitch(-1);
+        if (menu !== "root") onSwitch(-1);
         return;
-      case "ArrowRight":
+      case "ArrowRight": {
         e.preventDefault();
-        onSwitch(1);
+        if (menu !== "root") {
+          onSwitch(1);
+          return;
+        }
+        const id = (document.activeElement as HTMLElement | null)?.dataset["menuId"];
+        if (id !== undefined && (MENU_IDS as readonly string[]).includes(id)) onPick(id as MenuId, true);
+        return;
+      }
+      case "Backspace":
+        if (compact && menu !== "root") {
+          e.preventDefault();
+          onBack();
+        }
         return;
       case "Escape":
         e.preventDefault();
@@ -124,12 +159,53 @@ function Dropdown({
       ref={rootRef}
       className="context-menu menubar__dropdown"
       role="menu"
-      aria-label={t(`menubar.${menu}`)}
+      aria-label={menu === "root" ? t("menubar.compact") : t(`menubar.${menu}`)}
       tabIndex={-1}
       style={{ left, top }}
       onKeyDown={onKeyDown}
     >
-      {MENUS[menu].map((entry, i) => {
+      {menu === "root"
+        ? MENU_IDS.map((id) => (
+            <button
+              key={id}
+              type="button"
+              role="menuitem"
+              aria-haspopup="menu"
+              data-menu-id={id}
+              tabIndex={-1}
+              className="context-menu__item"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={(e) => onPick(id, e.detail === 0)}
+            >
+              <span className="context-menu__label">
+                <span>
+                  <MenuLabel text={t(`menubar.${id}`)} />
+                </span>
+              </span>
+              <Icon name="chevronRight" size={12} />
+            </button>
+          ))
+        : null}
+      {menu !== "root" && compact ? (
+        <>
+          <button
+            type="button"
+            role="menuitem"
+            data-menu-back=""
+            tabIndex={-1}
+            className="context-menu__item"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={onBack}
+          >
+            <span className="context-menu__label">
+              <Icon name="chevronLeft" size={12} />
+              {t("menubar.compact")}
+            </span>
+          </button>
+          <div className="context-menu__separator" role="separator" />
+        </>
+      ) : null}
+      {menu === "root" ? null : MENUS[menu].map((entry, i) => {
         if (entry === "-") return <div key={`sep-${i}`} className="context-menu__separator" role="separator" />;
         const def = ACTIONS[entry];
         const checked = def.checked?.(state);
@@ -178,7 +254,9 @@ export function MenuBar() {
   const [current, setCurrent] = useState<MenuId>("file");
   const [active, setActive] = useState(false);
   const [anchor, setAnchor] = useState({ left: 0, top: 0 });
+  const compact = useCompactTitleBar();
   const buttons = useRef<Partial<Record<MenuId, HTMLButtonElement | null>>>({});
+  const compactButton = useRef<HTMLButtonElement>(null);
   const barRef = useRef<HTMLDivElement>(null);
   const previousFocus = useRef<HTMLElement | null>(null);
 
@@ -203,16 +281,19 @@ export function MenuBar() {
     [restore],
   );
 
-  const show = useCallback((menu: MenuId, viaKeyboard: boolean) => {
-    const button = buttons.current[menu];
-    if (button) {
-      const rect = button.getBoundingClientRect();
-      setAnchor({ left: rect.left, top: rect.bottom });
-    }
-    setCurrent(menu);
-    setActive(true);
-    setOpen({ menu, viaKeyboard });
-  }, []);
+  const show = useCallback(
+    (menu: MenuId | "root", viaKeyboard: boolean, returnTo?: MenuId) => {
+      const button = compact ? compactButton.current : menu === "root" ? null : buttons.current[menu];
+      if (button) {
+        const rect = button.getBoundingClientRect();
+        setAnchor({ left: rect.left, top: rect.bottom });
+      }
+      if (menu !== "root") setCurrent(menu);
+      setActive(true);
+      setOpen(returnTo === undefined ? { menu, viaKeyboard } : { menu, viaKeyboard, returnTo });
+    },
+    [compact],
+  );
 
   const step = useCallback(
     (from: MenuId, delta: 1 | -1) => MENU_IDS[(MENU_IDS.indexOf(from) + delta + MENU_IDS.length) % MENU_IDS.length] ?? from,
@@ -264,7 +345,7 @@ export function MenuBar() {
       remember();
       setActive(true);
       setCurrent("file");
-      buttons.current["file"]?.focus();
+      (compact ? compactButton.current : buttons.current["file"])?.focus();
     };
     window.addEventListener("keydown", onKeyDown, true);
     window.addEventListener("keyup", onKeyUp, true);
@@ -272,7 +353,7 @@ export function MenuBar() {
       window.removeEventListener("keydown", onKeyDown, true);
       window.removeEventListener("keyup", onKeyUp, true);
     };
-  }, [remember, show, t]);
+  }, [remember, show, t, compact]);
 
   // Clicking anywhere else closes the menu without moving focus.
   useEffect(() => {
@@ -328,7 +409,41 @@ export function MenuBar() {
         if (open === null && !(next instanceof Node && barRef.current?.contains(next))) setActive(false);
       }}
     >
-      {MENU_IDS.map((id) => (
+      {compact ? (
+        <button
+          ref={compactButton}
+          type="button"
+          role="menuitem"
+          className={`menubar__item menubar__item--compact${open ? " menubar__item--open" : ""}`}
+          aria-label={t("menubar.compact")}
+          title={t("menubar.compact")}
+          aria-haspopup="menu"
+          aria-expanded={open !== null}
+          onMouseDown={(e) => {
+            e.preventDefault();
+            remember();
+          }}
+          onClick={(e) => (open ? close(true) : show("root", e.detail === 0))}
+          onKeyDown={(e) => {
+            switch (e.key) {
+              case "ArrowDown":
+              case "ArrowUp":
+              case "Enter":
+              case " ":
+                e.preventDefault();
+                show("root", true);
+                return;
+              case "Escape":
+                e.preventDefault();
+                close(true);
+                return;
+            }
+          }}
+        >
+          <Icon name="menu" size={16} />
+        </button>
+      ) : (
+        MENU_IDS.map((id) => (
         <button
           key={id}
           ref={(el) => {
@@ -354,15 +469,22 @@ export function MenuBar() {
         >
           <MenuLabel text={t(`menubar.${id}`)} />
         </button>
-      ))}
+        ))
+      )}
       {open ? (
         <Dropdown
           menu={open.menu}
+          compact={compact}
           left={anchor.left}
           top={anchor.top}
           viaKeyboard={open.viaKeyboard}
+          returnTo={open.returnTo}
           onClose={close}
-          onSwitch={(delta) => show(step(open.menu, delta), true)}
+          onSwitch={(delta) => {
+            if (open.menu !== "root") show(step(open.menu, delta), true);
+          }}
+          onPick={(menu, viaKeyboard) => show(menu, viaKeyboard)}
+          onBack={() => show("root", true, open.menu === "root" ? undefined : open.menu)}
         />
       ) : null}
     </div>
