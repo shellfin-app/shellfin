@@ -141,7 +141,12 @@ only accepts a commit with a successful CI run of a push to `main`, that is the 
    The tag must equal `v<package.json version>` and have exactly the form `vX.Y.Z` (decimal numbers without leading
    zeros, no pre-release suffix); the workflow fails otherwise.
 2. `.github/workflows/release.yml` first checks the tag's form, that the tagged commit is on `main` and that a CI run
-   of a push to `main` succeeded for that commit (`verify`). The build jobs then run in the `release` environment,
+   of a push to `main` succeeded for that commit (`verify`). The `frontend` job then builds `dist/` once, without
+   any secret (the only job that runs `npm ci` and npm devDependencies), and uploads it with a SHA-256 manifest. The
+   build jobs, which run no npm package, verify every file of it and run `tauri build` with the prebuilt CLI of
+   `@tauri-apps/cli` (the platform package's tarball, checked against the sha512 in `package-lock.json`). The
+   manifest protects only the hand-over: what the devDependencies put into `dist/` ships. Then the four installer
+   artifacts must have exactly the expected file names. The build jobs run in the `release` environment,
    which holds the signing secrets and accepts only `v*` tags. With a single maintainer there is no reviewer gate:
    `verify` and the tag ruleset are the automated gates, and the draft is reviewed and published by hand (steps 3
    and 4). For each platform (Windows x64 and Windows ARM64 with an NSIS installer only, no MSI; Linux x64; macOS

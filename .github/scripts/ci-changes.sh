@@ -44,10 +44,13 @@ classify() {
         rust=true packaging=true cask=true ;;
       # What the bundles are built from besides the crate: the bundled notices, the frontend build configuration
       # (Vite config and plugins, the HTML entry, TypeScript config, npm and Node settings) and the no-mock check of
-      # `npm run build` (tauri.conf.json `beforeBuildCommand`). scripts/freeze-check.mjs is not here: only `checks`
-      # runs it (`npm run test:freeze`).
+      # `npm run build` (tauri.conf.json `beforeBuildCommand`), the manifest check that hands dist/ to `build`
+      # (scripts/dist-manifest.mjs), the prebuilt Tauri CLI fetcher and the npm/crate version check
+      # (scripts/tauri-cli.mjs, scripts/tauri-versions.mjs). scripts/freeze-check.mjs is not here: only `checks` runs it
+      # (`npm run test:freeze`).
       THIRD_PARTY_NOTICES.txt | vite.config.* | vite-plugins/* | index.html | tsconfig*.json | \
-        scripts/assert-no-mock.mjs | .npmrc | .nvmrc)
+        scripts/assert-no-mock.mjs | scripts/dist-manifest.mjs | scripts/tauri-cli.mjs | scripts/tauri-versions.mjs | \
+        .npmrc | .nvmrc)
         packaging=true cask=true ;;
       scripts/homebrew-cask*)
         cask=true ;;

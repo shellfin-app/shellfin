@@ -10,8 +10,15 @@
 # maintainer, so `verify` and the tag ruleset are the automated gates); every signing step is
 # skipped when its secrets are absent, so unsigned builds still work.
 #
-# Updater (§9.8, §11.3): the frontend is built in its own step WITHOUT any secret; the Tauri
-# build then runs with `beforeBuildCommand` emptied and is the only step that sees
+# Frontend (§11.3, #9): `dist/` is built once by the `frontend` job (no environment, no secret), the only job that
+# installs or runs npm devDependencies. It uploads `dist/` with a SHA-256 manifest; the `build` jobs, which hold the
+# signing secrets, run no npm package at all: they verify every file against the manifest (whose own hash comes from
+# a `frontend` job output) and run the prebuilt Tauri CLI addon of `@tauri-apps/cli-<triple>`, checked against the
+# sha512 of package-lock.json (scripts/tauri-cli.mjs, nothing compiled, no npm install), with `beforeBuildCommand`
+# emptied. The manifest protects the hand-over only: whatever the devDependencies put into dist/ in `frontend` ships.
+# `draft-release` accepts exactly the four expected installer artifacts and their expected file names.
+#
+# Updater (§9.8, §11.3): the Tauri build is the only step that sees
 # TAURI_SIGNING_PRIVATE_KEY / _PASSWORD. With the key, the build also produces signed updater
 # artifacts (NSIS .exe, .app.tar.gz, AppImage) and `updater-manifest` (no
 # secrets, contents: read) assembles `latest.json` for the draft. Users only see an update after a
@@ -98,9 +105,89 @@ jobs:
           fi
           echo "successful CI run of the push to main for $GITHUB_SHA"
 
+  # The frontend, built once for every platform (the bundle is platform independent). `npm ci` and `npm run build`
+  # execute devDependency code (Vite, TypeScript, plugins), so this job has no environment, no secret, a read-only
+  # token and no persisted credentials; it never shares a runner with a signing key. The artifact holds `dist/` and
+  # its manifest; the manifest's own SHA-256 leaves the job as an output, so a swapped artifact fails in `build`.
+  frontend:
+    needs: verify
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      manifest-sha256: ${{ steps.manifest.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The command below is the `beforeBuildCommand` the build jobs empty; if it ever changes, this job must follow.
+      - name: Release artifacts never select MockBackend, same command as beforeBuildCommand
+        shell: bash
+        run: |
+          if [ -n "${VITE_BACKEND:-}" ]; then
+            echo "::error::VITE_BACKEND must not be set when building release artifacts"; exit 1
+          fi
+          cmd="$(node -p "require('./src-tauri/tauri.conf.json').build.beforeBuildCommand")"
+          if [ "$cmd" != "npm run build" ]; then
+            echo "::error::beforeBuildCommand is '$cmd', the frontend job runs 'npm run build': update release.yml"; exit 1
+          fi
+
+      - name: Reproducibility settings
+        run: echo "SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)" >> "$GITHUB_ENV"
+
+      # No `cache:` (§11.3).
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.22.1
+          package-manager-cache: false # never cache in a release job, even if packageManager is added
+
+      # Install scripts of dev dependencies (@swc/core postinstall, optional fsevents) are not needed (§11.4).
+      - name: npm ci (no lifecycle scripts)
+        run: npm ci --ignore-scripts
+
+      # What the Tauri CLI's own npm/crate check would catch if node_modules existed in the build jobs.
+      - name: Tauri npm packages match the crates (major.minor)
+        run: node scripts/tauri-versions.mjs --lock package-lock.json --cargo-lock src-tauri/Cargo.lock
+
+      # tsc + vite build + scripts/assert-no-mock.mjs, exactly the `beforeBuildCommand` of tauri.conf.json.
+      - name: Build the frontend
+        run: npm run build
+
+      # Self-contained (does not trust scripts/assert-no-mock.mjs); repeated on the embedded copy in `build`.
+      - name: Frontend contains no MockBackend marker
+        run: |
+          test -f dist/index.html
+          if grep -rIl '__shellfin_mock_backend__' dist; then
+            echo "::error::MockBackend marker found in the release frontend"; exit 1
+          fi
+
+      - name: SHA-256 manifest of dist/
+        id: manifest
+        run: |
+          sha="$(node scripts/dist-manifest.mjs write --dir dist --out dist.sha256)"
+          if ! printf '%s' "$sha" | grep -Eqx '[0-9a-f]{64}'; then
+            echo "::error::no manifest hash"; exit 1
+          fi
+          echo "sha256=$sha" >> "$GITHUB_OUTPUT"
+          echo "dist.sha256 ($(wc -l < dist.sha256) files): $sha"
+
+      # Hidden files are included, so the artifact is exactly what the manifest lists.
+      - name: Upload the frontend
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: frontend-dist
+          path: |
+            dist
+            dist.sha256
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
   build:
     name: build (${{ matrix.name }})
-    needs: verify
+    needs: [verify, frontend]
     timeout-minutes: 90
     strategy:
       fail-fast: true
@@ -163,6 +250,33 @@ jobs:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: ${{ matrix.rust-targets }}
 
+      # Node runs only inline scripts and scripts/*.mjs without dependencies here: this job installs no npm package
+      # (no `npm ci`, no node_modules), so no devDependency code runs on a runner that gets the signing secrets.
+      # No `cache:` and no rust-cache here (§11.3).
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.22.1
+          package-manager-cache: false # never cache in a release job, even if packageManager is added
+
+      # The Tauri CLI, prebuilt: scripts/tauri-cli.mjs downloads the npm platform package
+      # @tauri-apps/cli-<triple> at the exact version of package.json / package-lock.json, checks the tarball
+      # against the lockfile's sha512 `integrity` and extracts only the native addon. No npm install, no package
+      # JavaScript and no compile of third-party crates on this runner. The addon must report that version.
+      - name: Fetch the Tauri CLI (no secrets in this step)
+        shell: bash
+        run: |
+          dir="$RUNNER_TEMP/tauri-cli"
+          if [ "$RUNNER_OS" = "Windows" ]; then dir="$(cygpath -m "$dir")"; fi
+          mkdir -p "$dir"
+          node scripts/tauri-cli.mjs fetch --lock package-lock.json --package package.json --out "$dir/cli.node"
+          v="$(node -p "require('./package.json').devDependencies['@tauri-apps/cli']")"
+          got="$(node scripts/tauri-cli.mjs run --cli "$dir/cli.node" -- --version)"
+          echo "$got"
+          if [ "$got" != "tauri-cli $v" ]; then
+            echo "::error::the Tauri CLI reports '$got', expected tauri-cli $v"; exit 1
+          fi
+          echo "TAURI_CLI=$dir/cli.node" >> "$GITHUB_ENV"
+
       # no runner, home or registry paths in panic locations of the shipped binaries, and a
       # fixed timestamp for tools that embed one. Build scripts see the same flags, which is harmless.
       - name: Reproducibility settings
@@ -174,24 +288,35 @@ jobs:
           echo "RUSTFLAGS=$flags" >> "$GITHUB_ENV"
           echo "SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)" >> "$GITHUB_ENV"
 
-      # No `cache:` and no rust-cache here (§11.3).
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24.22.1
-          package-manager-cache: false # never cache in a release job, even if packageManager is added
-
-      # Install scripts of dev dependencies (@swc/core postinstall, optional fsevents) are not
-      # needed to build the app, so none of them runs in the signing environment (§11.4).
-      - name: npm ci (no lifecycle scripts)
-        run: npm ci --ignore-scripts
-
       - name: Cargo.lock is up to date
         run: cargo fetch --locked --manifest-path src-tauri/Cargo.toml
 
-      # the frontend (and every devDependency it runs) is built here, before any secret is in
-      # the environment of a step or in GITHUB_ENV. The Tauri build below does not rebuild it.
-      - name: Build the frontend (no secrets in this step)
-        run: npm run build
+      # The frontend of the `frontend` job (built without secrets). The Tauri build below does not rebuild it.
+      - name: Download the frontend
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: frontend-dist
+          path: ${{ runner.temp }}/frontend-dist
+
+      # The manifest must have the hash the `frontend` job reported, the artifact must hold nothing but dist/ and
+      # the manifest, and dist/ exactly the listed files with their hashes (changed, missing or extra files fail).
+      # Then dist/ moves to where tauri.conf.json `frontendDist` expects it, and is checked again there.
+      - name: Verify the frontend against its manifest
+        shell: bash
+        env:
+          MANIFEST_SHA256: ${{ needs.frontend.outputs.manifest-sha256 }}
+        run: |
+          src="$RUNNER_TEMP/frontend-dist"
+          if [ "$RUNNER_OS" = "Windows" ]; then src="$(cygpath -m "$src")"; fi
+          entries="$(cd "$src" && find . -mindepth 1 -maxdepth 1 -print | LC_ALL=C sort | tr '\n' ' ')"
+          if [ "$entries" != "./dist ./dist.sha256 " ]; then
+            echo "::error::unexpected artifact content: $entries"; exit 1
+          fi
+          if [ -e dist ]; then echo "::error::dist/ exists in the checkout before the download"; exit 1; fi
+          node scripts/dist-manifest.mjs verify --dir "$src/dist" --manifest "$src/dist.sha256" --sha256 "$MANIFEST_SHA256"
+          mv -- "$src/dist" dist
+          node scripts/dist-manifest.mjs verify --dir dist --manifest "$src/dist.sha256" --sha256 "$MANIFEST_SHA256"
+          echo "DIST_MANIFEST=$src/dist.sha256" >> "$GITHUB_ENV"
 
       # Updater signing (§9.8): only the presence of the key is evaluated here; the key itself is
       # passed to the Tauri build step alone. The official repository must sign updates; a fork
@@ -210,8 +335,8 @@ jobs:
             echo "::warning::TAURI_SIGNING_PRIVATE_KEY not set: building without updater artifacts (no latest.json)"
           fi
 
-      # Release-only Tauri config: no beforeBuildCommand (built above), updater artifacts when the
-      # key exists.
+      # Release-only Tauri config: no beforeBuildCommand (the verified dist/ above is embedded as it is),
+      # updater artifacts when the key exists.
       - name: Release build configuration
         shell: bash
         env:
@@ -230,8 +355,8 @@ jobs:
           echo "RELEASE_ARGS=$args" >> "$GITHUB_ENV"
           echo "release build arguments: $args"
 
-      # macOS: Developer ID signing + notarization, only when ALL secrets exist. tauri-action /
-      # Tauri read these variables. Without them the app is signed AD HOC (identity "-"): an
+      # macOS: Developer ID signing + notarization, only when ALL secrets exist. The Tauri CLI
+      # (bundler) reads these variables: it imports the certificate into a temporary keychain and notarizes. Without them the app is signed AD HOC (identity "-"): an
       # unsigned arm64 bundle is reported by Gatekeeper as "damaged" with no way to open it, an
       # ad-hoc signed one gets the normal "Open Anyway" path (README, Install).
       - name: Configure macOS signing (optional)
@@ -310,16 +435,20 @@ jobs:
           put SIGN_ARGS "--config $conf"
           echo "Windows signing: enabled"
 
-      # No tagName/releaseId: tauri-action only builds; it does not upload anything.
-      # The updater signing key is in the environment of this step only (unused when the
-      # release configuration above did not enable updater artifacts).
-      - uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # action-v1.0.0
+      # Builds only; nothing is uploaded here. The updater signing key is in the environment of this step only
+      # (unused when the release configuration above did not enable updater artifacts). The CLI is the verified
+      # addon fetched above; no npm package and no third-party action runs with the key. Its built-in npm/crate
+      # version check runs `npm list --json --depth 0` here (npm of setup-node, no node_modules, so it lists
+      # nothing; the `frontend` job runs scripts/tauri-versions.mjs instead).
+      - name: Tauri build
+        shell: bash
         env:
+          BUILD_ARGS: ${{ matrix.args }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        with:
-          args: ${{ matrix.args }} ${{ env.RELEASE_ARGS }} ${{ env.SIGN_ARGS }} -- --locked
-          uploadWorkflowArtifacts: false
+        run: |
+          # shellcheck disable=SC2086 # the argument lists are split into words on purpose
+          node scripts/tauri-cli.mjs run --cli "$TAURI_CLI" -- build $BUILD_ARGS $RELEASE_ARGS ${SIGN_ARGS:-} -- --locked
 
       # ---- release checks: everything below must pass before anything is uploaded -------------
       - name: Release binaries are built without the e2e feature
@@ -337,9 +466,13 @@ jobs:
             echo "ok (no e2e marker): $b"
           done <<< "$bins"
 
-      - name: Embedded frontend contains no MockBackend marker
+      # The dist/ the build embedded is still exactly the verified frontend job output, and has no mock marker.
+      - name: Embedded frontend is the verified build and contains no MockBackend marker
         shell: bash
+        env:
+          MANIFEST_SHA256: ${{ needs.frontend.outputs.manifest-sha256 }}
         run: |
+          node scripts/dist-manifest.mjs verify --dir dist --manifest "$DIST_MANIFEST" --sha256 "$MANIFEST_SHA256"
           test -f dist/index.html
           if grep -rIl '__shellfin_mock_backend__' dist; then
             echo "::error::MockBackend marker found in the frontend embedded into release artifacts"; exit 1
@@ -387,6 +520,17 @@ jobs:
         with:
           path: installers
           pattern: installers-*
+
+      # Only the four build jobs' artifacts; any other `installers-*` (e.g. uploaded by a compromised job of this
+      # run) fails. draft-release checks the file names too.
+      - name: Exactly the four installer artifacts
+        shell: bash
+        run: |
+          got="$(find installers -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort | tr '\n' ' ')"
+          want="installers-linux-x64 installers-macos-arm64 installers-windows-arm64 installers-windows-x64 "
+          if [ "$got" != "$want" ]; then
+            echo "::error::unexpected installer artifacts: $got"; exit 1
+          fi
 
       - name: Updater artifacts present?
         id: sigs
@@ -492,19 +636,52 @@ jobs:
           name: notes-sbom
           path: notes-sbom
 
+      # Exactly the four build artifacts, each with exactly the files Tauri names for this version (product
+      # Shellfin, rpm release 1, tauri.conf.json), plus the `.sig` of the updater artifacts when signing was on.
+      # Any other artifact or file, e.g. an extra .deb from a compromised job of this run, fails before anything
+      # reaches SHA256SUMS, the attestation or the draft.
       - name: Collect installers and verify the set
         shell: bash
         env:
           UPDATER: ${{ needs.updater-manifest.outputs.enabled }}
         run: |
+          v="${GITHUB_REF_NAME#v}"
+          if [ "$GITHUB_REPOSITORY" = "shellfin-app/shellfin" ] && [ "$UPDATER" != "true" ]; then
+            echo "::error::the official repository must ship updater signatures"; exit 1
+          fi
+          s=""
+          if [ "$UPDATER" = "true" ]; then s=".sig"; fi
+          expect() { # <artifact> <files...>: the artifact holds exactly these files (and their .sig when given)
+            local a="$1"; shift
+            local want="" got f
+            for f in "$@"; do
+              case "$f" in
+                *'|sig') f="${f%|sig}"; want="$want$f"$'\n'; if [ -n "$s" ]; then want="$want$f$s"$'\n'; fi ;;
+                *) want="$want$f"$'\n' ;;
+              esac
+            done
+            want="$(printf '%s' "$want" | LC_ALL=C sort)"
+            got="$(find "installers/$a" -type f -printf '%f\n' | LC_ALL=C sort)"
+            if [ "$got" != "$want" ]; then
+              echo "::error::$a holds unexpected files:"; printf '%s\n' "$got"; echo "expected:"; printf '%s\n' "$want"
+              exit 1
+            fi
+          }
+          got="$(find installers -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort | tr '\n' ' ')"
+          if [ "$got" != "installers-linux-x64 installers-macos-arm64 installers-windows-arm64 installers-windows-x64 " ]; then
+            echo "::error::unexpected installer artifacts: $got"; exit 1
+          fi
+          expect installers-windows-x64 "Shellfin_${v}_x64-setup.exe|sig"
+          expect installers-windows-arm64 "Shellfin_${v}_arm64-setup.exe|sig"
+          expect installers-linux-x64 "Shellfin_${v}_amd64.AppImage|sig" "Shellfin_${v}_amd64.deb" "Shellfin-${v}-1.x86_64.rpm"
+          expect installers-macos-arm64 "Shellfin_${v}_aarch64.dmg" "Shellfin.app.tar.gz|sig"
           mkdir release
           while IFS= read -r -d '' f; do
             if [ -e "release/$(basename "$f")" ]; then
               echo "::error::duplicate artifact name: $(basename "$f")"; exit 1
             fi
             cp -- "$f" release/
-          done < <(find installers -type f \( -name '*.exe' -o -name '*.dmg' -o -name '*.app.tar.gz' \
-            -o -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' -o -name '*.sig' \) -print0)
+          done < <(find installers -type f -print0)
           if [ "$UPDATER" = "true" ]; then
             cp -- manifest/latest.json release/latest.json
           fi

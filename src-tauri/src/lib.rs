@@ -6,7 +6,7 @@
 #![allow(clippy::result_large_err)]
 
 // `cfg(dev)` is set whenever tauri's `custom-protocol` feature is off, i.e. for any build
-// not produced by the Tauri CLI (`tauri build` / tauri-action). Such a binary loads `devUrl`
+// not produced by the Tauri CLI (`tauri build`, also in CI and release). Such a binary loads `devUrl`
 // (http://localhost:5173) with full IPC, no CSP, and the dev origin allowed by the navigation lock
 // (§9.1). Optimised builds must therefore never be dev builds.
 #[cfg(all(dev, not(debug_assertions)))]

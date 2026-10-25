@@ -420,10 +420,83 @@ jobs:
         continue-on-error: true
         run: npm audit --audit-level=high
 
+  # The release path (release.yml `frontend`, §11.3): `dist/` is built once, in a job of its own, and handed to `build`
+  # with a SHA-256 manifest, so the `build` jobs install and run no npm package, as in the release. Same commands as
+  # the release; only the npm download cache differs.
+  frontend-dist:
+    needs: changes
+    if: needs.changes.outputs.packaging == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    outputs:
+      manifest-sha256: ${{ steps.manifest.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Release artifacts never select MockBackend, same command as beforeBuildCommand
+        shell: bash
+        run: |
+          if [ -n "${VITE_BACKEND:-}" ]; then
+            echo "::error::VITE_BACKEND must not be set when building release artifacts"; exit 1
+          fi
+          cmd="$(node -p "require('./src-tauri/tauri.conf.json').build.beforeBuildCommand")"
+          if [ "$cmd" != "npm run build" ]; then
+            echo "::error::beforeBuildCommand is '$cmd', the frontend job runs 'npm run build': update ci.yml and release.yml"; exit 1
+          fi
+
+      - name: Reproducibility settings
+        run: echo "SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.22.1
+          cache: npm
+
+      # Same install mode as release.yml, so the release path is exercised on every PR.
+      - name: npm ci (no lifecycle scripts)
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      # What the Tauri CLI's own npm/crate check would catch if node_modules existed in the build jobs.
+      - name: Tauri npm packages match the crates (major.minor)
+        run: node scripts/tauri-versions.mjs --lock package-lock.json --cargo-lock src-tauri/Cargo.lock
+
+      - name: Build the frontend
+        run: npm run build
+
+      - name: Frontend contains no MockBackend marker
+        run: |
+          test -f dist/index.html
+          if grep -rIl '__shellfin_mock_backend__' dist; then
+            echo "::error::MockBackend marker found in the release frontend"; exit 1
+          fi
+
+      - name: SHA-256 manifest of dist/
+        id: manifest
+        run: |
+          sha="$(node scripts/dist-manifest.mjs write --dir dist --out dist.sha256)"
+          if ! printf '%s' "$sha" | grep -Eqx '[0-9a-f]{64}'; then
+            echo "::error::no manifest hash"; exit 1
+          fi
+          echo "sha256=$sha" >> "$GITHUB_OUTPUT"
+          echo "dist.sha256 ($(wc -l < dist.sha256) files): $sha"
+
+      - name: Upload the frontend
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: frontend-dist
+          path: |
+            dist
+            dist.sha256
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
   # Frontend-only pull requests skip this job: `checks` builds the same production bundle (`npm run build`, no-mock and
   # freezePrototype checks).
   build:
-    needs: changes
+    needs: [changes, frontend-dist]
     if: needs.changes.outputs.packaging == 'true'
     timeout-minutes: 90
     strategy:
@@ -479,14 +552,28 @@ jobs:
           key: ${{ matrix.rust-targets }}
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
+      # As in release.yml: Node runs only inline scripts and scripts/*.mjs without dependencies; no npm package is
+      # installed in this job.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.22.1
-          cache: npm
 
-      # Same install mode as release.yml, so the release path is exercised on every PR.
-      - name: npm ci (no lifecycle scripts)
-        run: npm ci --ignore-scripts --no-audit --no-fund
+      # Same step as release.yml: the prebuilt CLI addon of @tauri-apps/cli-<triple>, checked against the sha512
+      # of package-lock.json (scripts/tauri-cli.mjs); no npm install, nothing compiled.
+      - name: Fetch the Tauri CLI
+        shell: bash
+        run: |
+          dir="$RUNNER_TEMP/tauri-cli"
+          if [ "$RUNNER_OS" = "Windows" ]; then dir="$(cygpath -m "$dir")"; fi
+          mkdir -p "$dir"
+          node scripts/tauri-cli.mjs fetch --lock package-lock.json --package package.json --out "$dir/cli.node"
+          v="$(node -p "require('./package.json').devDependencies['@tauri-apps/cli']")"
+          got="$(node scripts/tauri-cli.mjs run --cli "$dir/cli.node" -- --version)"
+          echo "$got"
+          if [ "$got" != "tauri-cli $v" ]; then
+            echo "::error::the Tauri CLI reports '$got', expected tauri-cli $v"; exit 1
+          fi
+          echo "TAURI_CLI=$dir/cli.node" >> "$GITHUB_ENV"
 
       - name: Release artifacts never select MockBackend
         shell: bash
@@ -495,20 +582,55 @@ jobs:
             echo "::error::VITE_BACKEND must not be set when building release artifacts"; exit 1
           fi
 
+      - name: Download the frontend
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: frontend-dist
+          path: ${{ runner.temp }}/frontend-dist
+
+      # Same verification as release.yml.
+      - name: Verify the frontend against its manifest
+        shell: bash
+        env:
+          MANIFEST_SHA256: ${{ needs.frontend-dist.outputs.manifest-sha256 }}
+        run: |
+          src="$RUNNER_TEMP/frontend-dist"
+          if [ "$RUNNER_OS" = "Windows" ]; then src="$(cygpath -m "$src")"; fi
+          entries="$(cd "$src" && find . -mindepth 1 -maxdepth 1 -print | LC_ALL=C sort | tr '\n' ' ')"
+          if [ "$entries" != "./dist ./dist.sha256 " ]; then
+            echo "::error::unexpected artifact content: $entries"; exit 1
+          fi
+          if [ -e dist ]; then echo "::error::dist/ exists in the checkout before the download"; exit 1; fi
+          node scripts/dist-manifest.mjs verify --dir "$src/dist" --manifest "$src/dist.sha256" --sha256 "$MANIFEST_SHA256"
+          mv -- "$src/dist" dist
+          node scripts/dist-manifest.mjs verify --dir dist --manifest "$src/dist.sha256" --sha256 "$MANIFEST_SHA256"
+          echo "DIST_MANIFEST=$src/dist.sha256" >> "$GITHUB_ENV"
+
+      # Same as release.yml: the verified dist/ is embedded as it is.
+      - name: Build configuration (no beforeBuildCommand)
+        shell: bash
+        run: |
+          conf="$RUNNER_TEMP/ci.conf.json"
+          if [ "$RUNNER_OS" = "Windows" ]; then conf="$(cygpath -m "$conf")"; fi
+          node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ build: { beforeBuildCommand: "" } }))' "$conf"
+          echo "CI_ARGS=--config $conf" >> "$GITHUB_ENV"
+
       # Same as the release without Apple secrets: an ad-hoc signed app (identity "-"), so that path
       # is exercised on every PR.
       - name: Ad-hoc sign the macOS app
         if: runner.os == 'macOS'
         run: echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
 
-      # Artifacts only: no tagName/releaseId, so nothing is released from CI (§11.2).
-      # tauri-action does NOT upload; the artifacts are uploaded at the end of the job,
-      # only after the e2e and MockBackend checks below have passed. Any future release workflow
-      # must keep this order: build → checks → upload/publish.
-      - uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # action-v1.0.0
-        with:
-          args: ${{ matrix.args }} -- --locked
-          uploadWorkflowArtifacts: false
+      # Artifacts only: nothing is released from CI (§11.2). The build does not upload; the artifacts are
+      # uploaded at the end of the job, only after the e2e and MockBackend checks below have passed. Any future
+      # release workflow must keep this order: build → checks → upload/publish.
+      - name: Tauri build
+        shell: bash
+        env:
+          BUILD_ARGS: ${{ matrix.args }}
+        run: |
+          # shellcheck disable=SC2086 # the argument lists are split into words on purpose
+          node scripts/tauri-cli.mjs run --cli "$TAURI_CLI" -- build $BUILD_ARGS $CI_ARGS -- --locked
 
       # The e2e isolation feature (src-tauri/src/e2e.rs: SHELLFIN_E2E_ROOT redirects all user
       # state) must never reach a release artifact: no `e2e` in the build arguments, and no built
@@ -528,12 +650,15 @@ jobs:
             echo "ok (no e2e marker): $b"
           done <<< "$bins"
 
-      # tauri build embeds dist/ (produced by beforeBuildCommand). Assets are compressed inside
-      # the binary, so check the exact frontend that was embedded. The check is self-contained
-      # (does not trust scripts/assert-no-mock.mjs).
-      - name: Embedded frontend contains no MockBackend marker
+      # tauri build embeds dist/ (the verified `frontend-dist` output). Assets are compressed inside
+      # the binary, so check the exact frontend that was embedded: still the verified build, and no
+      # mock marker. The grep is self-contained (does not trust scripts/assert-no-mock.mjs).
+      - name: Embedded frontend is the verified build and contains no MockBackend marker
         shell: bash
+        env:
+          MANIFEST_SHA256: ${{ needs.frontend-dist.outputs.manifest-sha256 }}
         run: |
+          node scripts/dist-manifest.mjs verify --dir dist --manifest "$DIST_MANIFEST" --sha256 "$MANIFEST_SHA256"
           test -f dist/index.html
           if grep -rIl '__shellfin_mock_backend__' dist; then
             echo "::error::MockBackend marker found in the frontend embedded into release artifacts"; exit 1
@@ -559,7 +684,7 @@ jobs:
   #                 release.yml `verify` takes a green push run as proof that the commit passed everything
   ci-ok:
     if: always()
-    needs: [changes, checks, msrv, homebrew-cask, workflows, unit-native, integration, security, build]
+    needs: [changes, checks, msrv, homebrew-cask, workflows, unit-native, integration, security, frontend-dist, build]
     runs-on: ubuntu-22.04
     timeout-minutes: 5
     permissions: {}
