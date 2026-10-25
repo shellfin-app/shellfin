@@ -6,7 +6,7 @@
 | App id | `app.shellfin.desktop` · product name **Shellfin** |
 | Platforms | Windows x64 and ARM64, Linux x64, macOS Apple Silicon (arm64). No 32-bit Windows, no Intel Macs. |
 | Stack | Tauri 2 · Rust (edition 2024, MSRV 1.90) · React 19 + TypeScript + Vite · xterm.js · CodeMirror 6 |
-| UI language | **English (default and fallback) and Ukrainian (`uk`)**, switchable in Settings > General (default: system language); every user-facing string goes through i18n (§8.2). Further locales are added as locale files only. Ukrainian terminology: `docs/i18n-glossary-uk.md`. |
+| UI language | **English (default and fallback), Ukrainian (`uk`) and German (`de`, beta)**, switchable in Settings > General (default: system language); every user-facing string goes through i18n (§8.2). Further locales are added as locale files only. Terminology: `docs/i18n-glossary-uk.md`, `docs/i18n-glossary-de.md`. |
 | Design | Dark IDE layout ("Graphite"): title bar with in-app menu bar and connection tabs, activity bar, sidebar (bookmarks + file tree), editor area, terminal panel, status bar. Tokens in `src/styles/tokens.css` (§8.5). |
 
 Conventions: **MUST/SHOULD** are normative. Rust identifiers are given with full paths the first time they appear. The generated TypeScript in `src/ipc/bindings/` is the source of truth for wire types (§4.1); this document describes behaviour and rules. For a quick orientation start with `AGENTS.md` at the repository root.
@@ -1387,7 +1387,7 @@ The installers redistribute Rust crates (MIT, Apache-2.0, BSD, ISC, Zlib, Unicod
 
 ### 11.6.1 Installer and bundle languages
 
-The NSIS installer lists the shipped UI languages in `bundle.windows.nsis.languages` (`English` first, the fallback, then `Ukrainian`); there is no language selector, NSIS follows the Windows display language. The installer strings come with tauri-bundler (verified in the pinned `@tauri-apps/cli` 2.12.3, whose bundler embeds the NSIS translations; they include English, German, French, Spanish, SpanishInternational, PortugueseBR, Portuguese, Japanese, Korean, SimpChinese, TradChinese and Ukrainian, among others), so a new UI language adds its NSIS name and nothing else. The licence page stays the English `installer/LICENSE.txt` (legal text). macOS: `src-tauri/Info.plist` declares `CFBundleLocalizations` (§8.2.3; its effect on language detection is still to be verified on a Mac). DMG, AppImage, deb and rpm have no localizable UI. `src/i18n/i18n.test.ts` keeps both lists equal to `SUPPORTED_LANGUAGES`.
+The NSIS installer lists the shipped UI languages in `bundle.windows.nsis.languages` (`English` first, the fallback, then `German` and `Ukrainian`); there is no language selector, NSIS follows the Windows display language. The installer strings come with tauri-bundler (verified in the pinned `@tauri-apps/cli` 2.12.3, whose bundler embeds the NSIS translations; they include English, German, French, Spanish, SpanishInternational, PortugueseBR, Portuguese, Japanese, Korean, SimpChinese, TradChinese and Ukrainian, among others), so a new UI language adds its NSIS name and nothing else. The licence page stays the English `installer/LICENSE.txt` (legal text). macOS: `src-tauri/Info.plist` declares `CFBundleLocalizations` (§8.2.3; its effect on language detection is still to be verified on a Mac). DMG, AppImage, deb and rpm have no localizable UI. `src/i18n/i18n.test.ts` keeps both lists equal to `SUPPORTED_LANGUAGES`.
 
 ### 11.7 Platform baseline decisions
 
