@@ -17,7 +17,29 @@ import {
   validDefaultUser,
   validWordSeparators,
 } from "./settingsForm";
+import { SHOW_WHITESPACE_MODES, showWhitespaceMode } from "./showWhitespace";
 import { NOTES_MAX, STARTUP_COMMAND_MAX, emptyForm, formFromSpec, toBookmarkInput, validNotes, validStartupCommand, validateForm } from "./bookmarkForm";
+
+describe("editor.showWhitespace: three modes, booleans of earlier builds still map", () => {
+  it("keeps a mode, maps true to all and anything else to none", () => {
+    for (const mode of SHOW_WHITESPACE_MODES) expect(showWhitespaceMode(mode)).toBe(mode);
+    expect(showWhitespaceMode(true)).toBe("all");
+    for (const other of [false, undefined, null, "", "ActiveLine", "active-line", 1, {}]) expect(showWhitespaceMode(other)).toBe("none");
+  });
+
+  it("the settings form turns a stored boolean into a mode and saves the mode", () => {
+    for (const [stored, mode] of [
+      [true, "all"],
+      [false, "none"],
+    ] as const) {
+      const s = makeSettings();
+      const legacy = { ...s, editor: { ...s.editor, showWhitespace: stored as unknown as typeof s.editor.showWhitespace } };
+      const form = formFromSettings(legacy);
+      expect(form.showWhitespace).toBe(mode);
+      expect(settingsFromForm(legacy, form).editor.showWhitespace).toBe(mode);
+    }
+  });
+});
 
 describe("settings form: round trip and ranges", () => {
   it("an untouched form gives the same settings back", () => {
@@ -49,7 +71,7 @@ describe("settings form: round trip and ranges", () => {
       newFileEol: "crlf",
       autoCloseBrackets: true,
       bracketMatching: false,
-      showWhitespace: true,
+      showWhitespace: "activeLine",
       codeFolding: false,
       doubleClick: "download",
       sizeUnits: "decimal",
@@ -84,7 +106,7 @@ describe("settings form: round trip and ranges", () => {
       newFileEol: "crlf",
       autoCloseBrackets: true,
       bracketMatching: false,
-      showWhitespace: true,
+      showWhitespace: "activeLine",
       codeFolding: false,
     });
     expect(out.files).toMatchObject({ doubleClick: "download", sizeUnits: "decimal", dateFormat: "absolute", showPermissions: true, autoRefresh: 30 });

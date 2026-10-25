@@ -2,6 +2,8 @@ import { useTranslation } from "react-i18next";
 import { Checkbox, Select, Setting } from "../../components/Field";
 import type { NewFileEol } from "../../ipc/types";
 import { EDITOR_FONT_FAMILY_FIELD, FIELD, MAX_FILE_WARN_FROM_MIB } from "../../lib/settingsForm";
+import { SHOW_WHITESPACE } from "../../lib/identifiers";
+import { showWhitespaceMode } from "../../lib/showWhitespace";
 import { FontFamilyField, FontPreview, NumberField, usableFontFamily, type FontPickerProps, type SectionProps } from "./settingsFields";
 
 export function EditorSection(props: SectionProps & FontPickerProps) {
@@ -75,12 +77,18 @@ export function EditorSection(props: SectionProps & FontPickerProps) {
         onChange={(autoCloseBrackets) => patch({ autoCloseBrackets })}
       />
       <Checkbox label={t("settings.bracketMatching")} checked={form.bracketMatching} onChange={(bracketMatching) => patch({ bracketMatching })} />
-      <Checkbox label={t("settings.showWhitespace")} checked={form.showWhitespace} onChange={(showWhitespace) => patch({ showWhitespace })} />
       <Checkbox label={t("settings.codeFolding")} checked={form.codeFolding} onChange={(codeFolding) => patch({ codeFolding })} />
       <Setting label={t("settings.newFileEol")} info={t("settings.newFileEolInfo")}>
         <Select value={form.newFileEol} onChange={(e) => patch({ newFileEol: e.target.value as NewFileEol })}>
           <option value="lf">{t("settings.newFileEolLf")}</option>
           <option value="crlf">{t("settings.newFileEolCrlf")}</option>
+        </Select>
+      </Setting>
+      <Setting label={t("settings.showWhitespace")}>
+        <Select value={form.showWhitespace} onChange={(e) => patch({ showWhitespace: showWhitespaceMode(e.target.value) })}>
+          <option value={SHOW_WHITESPACE.all}>{t("settings.showWhitespaceAll")}</option>
+          <option value={SHOW_WHITESPACE.activeLine}>{t("settings.showWhitespaceActiveLine")}</option>
+          <option value={SHOW_WHITESPACE.none}>{t("settings.showWhitespaceNone")}</option>
         </Select>
       </Setting>
     </fieldset>

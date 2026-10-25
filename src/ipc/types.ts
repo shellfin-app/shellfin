@@ -118,6 +118,7 @@ export type * from "./bindings/NewFileEol";
 export type * from "./bindings/NewTerminalCwd";
 export type * from "./bindings/NotificationTexts";
 export type * from "./bindings/ReduceMotion";
+export type * from "./bindings/ShowWhitespace";
 export type * from "./bindings/SizeUnits";
 export type * from "./bindings/StartupAction";
 export type * from "./bindings/TerminalExitAction";

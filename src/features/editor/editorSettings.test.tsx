@@ -126,14 +126,27 @@ describe("live switches in the editor", () => {
     await waitFor(() => expect(document.querySelector(".cm-matchingBracket")).toBeTruthy());
   });
 
-  it("show whitespace marks spaces and tabs, and can be turned off again", async () => {
+  it("show whitespace switches live between all, the active line only and none", async () => {
     const { user } = await setupConnected();
-    await open(user, "README.md");
+    await open(user, "README.md"); // "# app\n\nDeployment notes.\n", cursor on line 1
+    const markedLines = () =>
+      [...document.querySelectorAll(".cm-highlightSpace")].map((el) => el.closest(".cm-line")?.textContent).sort();
     expect(document.querySelector(".cm-highlightSpace, .cm-highlightTab")).toBeNull();
-    patchEditor({ showWhitespace: true });
-    await waitFor(() => expect(document.querySelector(".cm-highlightSpace")).toBeTruthy());
-    patchEditor({ showWhitespace: false });
+    patchEditor({ showWhitespace: "all" });
+    await waitFor(() => expect(markedLines()).toEqual(["# app", "Deployment notes."]));
+    patchEditor({ showWhitespace: "activeLine" });
+    await waitFor(() => expect(markedLines()).toEqual(["# app"]));
+    const v = view();
+    act(() => v.dispatch({ selection: { anchor: v.state.doc.line(3).from } }));
+    await waitFor(() => expect(markedLines()).toEqual(["Deployment notes."]));
+    patchEditor({ showWhitespace: "none" });
     await waitFor(() => expect(document.querySelector(".cm-highlightSpace")).toBeNull());
+  });
+
+  it("a stored boolean from an earlier build still works (true = all, false = none)", () => {
+    expect(bufferOptionsFromSettings({ showWhitespace: true as unknown as Settings["editor"]["showWhitespace"] }).showWhitespace).toBe("all");
+    expect(bufferOptionsFromSettings({ showWhitespace: false as unknown as Settings["editor"]["showWhitespace"] }).showWhitespace).toBe("none");
+    expect(bufferOptionsFromSettings(undefined).showWhitespace).toBe("none");
   });
 
   it("buffers that are not on screen get the new switches too", async () => {
@@ -143,7 +156,7 @@ describe("live switches in the editor", () => {
     const id = `${sessionId}:/srv/app/README.md`;
     const stored = getBufferState(id);
     expect(stored).toBeTruthy();
-    const options = defaults({ autoCloseBrackets: true, showWhitespace: true });
+    const options = defaults({ autoCloseBrackets: true, showWhitespace: "all" });
     applySettingsToAll(options, `${sessionId}:/srv/app/deploy.sh`);
     const after = getBufferState(id) as EditorState;
     expect(after.facet(EditorView.inputHandler).length).toBeGreaterThan((stored as EditorState).facet(EditorView.inputHandler).length);

@@ -12,6 +12,7 @@ import type {
   NewTerminalCwd,
   RightClickAction,
   Settings,
+  ShowWhitespace,
   SizeUnits,
   StartupAction,
   TermType,
@@ -21,6 +22,7 @@ import type {
 import { fieldFromKiBps, kibpsFromField, type BandwidthField } from "./bandwidth";
 import { validateFontFamily } from "./fontFamily";
 import { applyAppearance, appearanceFromSettings, appearanceInvalidFields, type AppearanceForm } from "./settingsFormAppearance";
+import { showWhitespaceMode } from "./showWhitespace";
 
 /** Field path of the terminal font family in `invalidFields` / backend `invalidArgument{field}`. */
 export const FONT_FAMILY_FIELD = "terminal.fontFamily";
@@ -143,7 +145,7 @@ export interface SettingsFormState {
   newFileEol: NewFileEol;
   autoCloseBrackets: boolean;
   bracketMatching: boolean;
-  showWhitespace: boolean;
+  showWhitespace: ShowWhitespace;
   codeFolding: boolean;
   fontLigatures: boolean;
   // Files
@@ -247,7 +249,7 @@ export function formFromSettings(settings: Settings): SettingsFormState {
     newFileEol: settings.editor.newFileEol,
     autoCloseBrackets: settings.editor.autoCloseBrackets,
     bracketMatching: settings.editor.bracketMatching,
-    showWhitespace: settings.editor.showWhitespace,
+    showWhitespace: showWhitespaceMode(settings.editor.showWhitespace),
     codeFolding: settings.editor.codeFolding,
     fontLigatures: settings.editor.fontLigatures,
     showHidden: settings.files.showHidden,
