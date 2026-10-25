@@ -66,16 +66,23 @@ describe("en-XA pseudo-locale", () => {
 
 describe("resolveLocale", () => {
   it("falls back to en", () => {
-    expect(resolveLocale("system", ["de", "fr-CA"])).toBe("en");
+    expect(resolveLocale("system", ["it", "nl-BE"])).toBe("en");
     expect(resolveLocale("system", ["en-GB"])).toBe("en");
-    expect(resolveLocale("fr")).toBe("en");
+    expect(resolveLocale("it")).toBe("en");
   });
 
   it("detects Ukrainian from the system languages or an explicit setting", () => {
     expect(resolveLocale("system", ["uk-UA", "de"])).toBe("uk");
-    expect(resolveLocale("system", ["de", "uk"])).toBe("uk");
+    expect(resolveLocale("system", ["it", "uk"])).toBe("uk");
     expect(resolveLocale("uk")).toBe("uk");
     expect(resolveLocale("en")).toBe("en");
+  });
+
+  it("detects German, including regional variants", () => {
+    expect(resolveLocale("system", ["de-DE", "uk"])).toBe("de");
+    expect(resolveLocale("system", ["it", "de-AT"])).toBe("de");
+    expect(resolveLocale("system", ["de-CH"])).toBe("de");
+    expect(resolveLocale("de")).toBe("de");
   });
 
   // The planned first wave (#17) as a fixture list: the rules must work before any of these ships.
