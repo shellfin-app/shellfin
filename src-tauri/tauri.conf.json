@@ -76,7 +76,7 @@
       "nsis": {
         "installMode": "currentUser",
         "compression": "lzma",
-        "languages": ["English", "German", "Japanese", "Ukrainian"]
+        "languages": ["English", "German", "Spanish", "Japanese", "Ukrainian"]
       }
     },
     "macOS": {
