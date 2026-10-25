@@ -3,7 +3,7 @@ import { defineConfig } from "i18next-cli";
 // Key extraction / drift check (docs/ARCHITECTURE.md §8.2.4).
 // `{{namespace}}` in `output` is REQUIRED: without it i18next-cli switches to merged-namespace files.
 export default defineConfig({
-  locales: ["en", "de", "uk"],
+  locales: ["en", "de", "ja", "uk"],
   extract: {
     input: ["src/**/*.{ts,tsx}"],
     ignore: ["src/**/*.test.{ts,tsx}", "src/ipc/bindings/**"],

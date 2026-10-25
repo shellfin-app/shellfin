@@ -4,13 +4,14 @@ import en from "./locales/en/translation.json";
 import { PSEUDO_LOCALE, PSEUDO_PADDING, pseudoLocalizeBundle } from "./pseudo";
 
 /** Languages shipped in this build. Each non-English one is a lazily loaded JSON chunk (§8.2). */
-export const SUPPORTED_LANGUAGES = ["en", "de", "uk"] as const;
+export const SUPPORTED_LANGUAGES = ["en", "de", "ja", "uk"] as const;
 export type SupportedLanguage = (typeof SUPPORTED_LANGUAGES)[number];
 
 /** Endonyms for the language picker: never translated, so a user can always find their own language. */
 export const LANGUAGE_ENDONYMS: Record<SupportedLanguage, string> = {
   en: "English",
   de: "Deutsch",
+  ja: "日本語",
   uk: "Українська",
 };
 
@@ -21,6 +22,7 @@ export const LANGUAGE_ENDONYMS: Record<SupportedLanguage, string> = {
 export const LANGUAGE_STATUS: Record<SupportedLanguage, "complete" | "beta"> = {
   en: "complete",
   de: "beta",
+  ja: "beta",
   uk: "complete",
 };
 

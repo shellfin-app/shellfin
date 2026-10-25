@@ -85,6 +85,12 @@ describe("resolveLocale", () => {
     expect(resolveLocale("de")).toBe("de");
   });
 
+  it("detects Japanese from the system languages or an explicit setting", () => {
+    expect(resolveLocale("system", ["ja-JP", "en"])).toBe("ja");
+    expect(resolveLocale("system", ["it", "ja"])).toBe("ja");
+    expect(resolveLocale("ja")).toBe("ja");
+  });
+
   // The planned first wave (#17) as a fixture list: the rules must work before any of these ships.
   const WAVE = ["en", "uk", "de", "es", "fr", "pt-BR", "ja", "ko", "zh-CN"];
   const table: [string, string | undefined][] = [
