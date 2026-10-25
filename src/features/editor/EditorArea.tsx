@@ -15,6 +15,7 @@ import type { BufferMeta } from "../../state/slices/buffers";
 import { useStore } from "../../state/store";
 import { identityOf, writability } from "../../lib/permissions";
 import { lookupEntry } from "../files/fileActions";
+import { openErrorDetails, sourceFromAppError } from "../errorReport/errorReport";
 import { downloadFile } from "../transfers/transferActions";
 import { closeBuffer, openFile, requestCloseBuffer } from "./editorActions";
 import { editorStatus } from "../../lib/editorStatus";
@@ -88,6 +89,7 @@ function OpenFailure({ meta }: { meta: BufferMeta }) {
           <Button variant="primary" icon="refresh" onClick={() => guard(openFile(meta.sessionId, meta.path))} disabled={!connected}>
             {t("session.retry")}
           </Button>
+          {failure ? <Button onClick={() => openErrorDetails(sourceFromAppError(failure))}>{t("errorReport.details")}</Button> : null}
           {closeTab}
         </>
       );

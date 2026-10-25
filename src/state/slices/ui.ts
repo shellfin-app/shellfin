@@ -10,8 +10,27 @@ export type BookmarksIoResult =
   | { mode: "import"; data: BookmarksImportResult }
   | { mode: "export"; data: BookmarksExportResult };
 
+/**
+ * What the error details dialog reports (§8.14): the error as received plus where/when. `message` is the translated
+ * text the user saw. Everything is sent to `app_error_report`, which bounds, redacts and escapes it.
+ */
+export interface ErrorReportSource {
+  code: string;
+  params?: unknown;
+  detail?: string;
+  message: string;
+  context?: string;
+  stack?: string;
+  occurredAtMs: number;
+}
+
 /** Modal dialogs driven by the store (prompts are driven by the prompts slice, not by this). */
 export type DialogState =
+  /**
+   * Error details + "Report on GitHub…" (§8.14). `source: null` = Help > Report a problem (environment only).
+   * `more`: further unexpected errors that arrived while it was open. `auto`: opened by itself (input guard).
+   */
+  | { kind: "errorReport"; source: ErrorReportSource | null; more: number; auto: boolean }
   /** Bookmark export options (format), then the native Save dialog. */
   | { kind: "bookmarksIo" }
   /** Bookmark import review after the file was picked: nothing is saved until the user confirms (`token` = pending import). */
@@ -113,6 +132,10 @@ export interface Notice {
   level: NoticeLevel;
   error?: AppError;
   info?: NoticeInfo;
+  /** Error notices only: what "Details…" opens (a frontend failure has no backend error behind it). */
+  source?: ErrorReportSource;
+  /** When the notice was pushed (Unix ms): the time "Details…" reports for an error notice. */
+  occurredAtMs: number;
 }
 
 const MAX_NOTICES = 5;
@@ -154,7 +177,7 @@ export interface UiSlice {
   showPromptOf(sessionId: string | null): void;
   setRenamingSession(sessionId: string | null): void;
   /** `level` defaults to "error"; non-fatal warnings (config warnings, session warnings) pass "warning". */
-  pushNotice(error: AppError, level?: NoticeLevel): void;
+  pushNotice(error: AppError, level?: NoticeLevel, source?: ErrorReportSource): void;
   pushInfo(info: NoticeInfo): void;
   dismissNotice(id: number): void;
 }
@@ -230,19 +253,19 @@ export const createUiSlice: SliceCreator<UiSlice> = (set) => ({
     set((s) => {
       s.renamingSession = sessionId;
     }),
-  pushNotice: (error, level = "error") =>
+  pushNotice: (error, level = "error", source) =>
     set((s) => {
       // Identical errors are shown once (a retry loop must not stack toasts).
       const key = JSON.stringify(error);
       if (s.notices.some((n) => n.error !== undefined && JSON.stringify(n.error) === key)) return;
-      s.notices.push({ id: nextNoticeId++, level, error });
+      s.notices.push({ id: nextNoticeId++, level, error, occurredAtMs: Date.now(), ...(source ? { source } : {}) });
       if (s.notices.length > MAX_NOTICES) s.notices.splice(0, s.notices.length - MAX_NOTICES);
     }),
   pushInfo: (info) =>
     set((s) => {
       const key = JSON.stringify(info);
       if (s.notices.some((n) => n.info !== undefined && JSON.stringify(n.info) === key)) return;
-      s.notices.push({ id: nextNoticeId++, level: infoLevel(info), info });
+      s.notices.push({ id: nextNoticeId++, level: infoLevel(info), info, occurredAtMs: Date.now() });
       if (s.notices.length > MAX_NOTICES) s.notices.splice(0, s.notices.length - MAX_NOTICES);
     }),
   dismissNotice: (id) =>

@@ -16,6 +16,7 @@ import { quickTarget } from "../../lib/targets";
 import { useStore } from "../../state/store";
 import { dropBuffer } from "../editor/bufferStore";
 import { dirtyBuffers, runPendingSaves } from "../editor/editorActions";
+import { isUnexpectedError, reportUnexpected, sourceFromAppError } from "../errorReport/errorReport";
 import { loadRoot, refreshTree } from "../files/fileActions";
 import { confirmCloseWithTerminals, openTerminalTab, runningTerminals } from "../terminal/terminalActions";
 import { disposeTerminalIfLoaded } from "../terminal/terminalLoader";
@@ -104,6 +105,10 @@ function applyEvent(sessionId: string, event: SessionEvent): void {
   const entry = store.sessionsById[sessionId];
   if (!entry) return;
   store.applySessionEvent(sessionId, event);
+  // A session task that panicked or failed internally arrives by event, not through `reportError`: it is a defect.
+  if (event.type === "state" && event.state.phase === "disconnected" && event.state.error && isUnexpectedError(event.state.error)) {
+    reportUnexpected(sourceFromAppError(event.state.error));
+  }
   if (event.type === "warning") {
     store.pushNotice(event.warning, "warning");
   } else if (event.type === "state" && event.state.phase === "connected" && !entry.probe) {

@@ -852,7 +852,8 @@ impl Supervisor {
             match result {
                 Ok(Ok(())) => {}
                 Ok(Err(e)) => self.emit(SessionEvent::Warning { warning: e }),
-                Err(e) => tracing::warn!(error = %e, "keychain task failed"),
+                // Never `%e`: a `JoinError`'s text carries the panic payload.
+                Err(e) => tracing::warn!(panicked = e.is_panic(), "keychain task failed"),
             }
         }
     }

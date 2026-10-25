@@ -29,6 +29,11 @@ describe("native menu labels (translated labels)", () => {
     expect(labels["file.exportBookmarks"]).toBe("Export bookmarks…");
   });
 
+  it("maps Help > Report a problem and labels it like the in-app menu", () => {
+    expect(NATIVE_MENU["help.reportProblem"]).toBe("reportProblem");
+    expect(nativeMenuLabels()["help.reportProblem"]).toBe("Report a problem…");
+  });
+
   it("maps the bookmark import/export items to their actions", () => {
     expect(NATIVE_MENU["file.importBookmarks"]).toBe("importBookmarks");
     expect(NATIVE_MENU["file.exportBookmarks"]).toBe("exportBookmarks");

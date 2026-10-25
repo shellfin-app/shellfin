@@ -175,7 +175,7 @@ export function App() {
   useGlobalShortcuts();
   useBrowserGuards();
   return (
-    <ErrorBoundary>
+    <ErrorBoundary reportHost>
       {ready ? <Shell /> : failed ? <BootError /> : null}
       <DialogHost />
       <Notices />

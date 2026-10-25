@@ -3,6 +3,7 @@
 
 pub mod file_trust;
 pub mod local_path;
+pub mod os_info;
 #[cfg(windows)]
 pub mod win_security;
 

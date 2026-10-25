@@ -9,6 +9,7 @@ import { sshCommand } from "../../lib/sshCommand";
 import { t } from "../../i18n/translate";
 import type { RootState } from "../../state/slices/types";
 import { useStore } from "../../state/store";
+import { openErrorDetails } from "../errorReport/errorReport";
 import { closeActiveBuffer, saveActiveBuffer, saveAllBuffers } from "../editor/editorActions";
 import { isDirLike, lookupEntry } from "../files/fileActions";
 import {
@@ -356,7 +357,8 @@ export const ACTIONS: Record<ActionId, ActionDef> = {
   // ---- Help ----
   keyboardShortcuts: { run: () => useStore.getState().openDialog({ kind: "shortcuts" }) },
   documentation: { run: () => openExternal(HELP_LINKS.documentation) },
-  reportIssue: { run: () => openExternal(HELP_LINKS.reportIssue) },
+  // The error details dialog without an error: environment only (and the log on request), then "Report on GitHub…".
+  reportProblem: { run: () => openErrorDetails(null) },
   securityPolicy: { run: () => openExternal(HELP_LINKS.securityPolicy) },
   openLogs: { run: () => getBackend().appOpenLogsDir() },
   checkForUpdates: { run: () => checkForUpdates() },

@@ -7,6 +7,7 @@
 use tauri::State;
 
 use crate::app_state::AppState;
+use crate::commands::guarded;
 use crate::error::AppError;
 use crate::ipc::dto::{DirListing, FileEntry, SaveRequest, SaveResult, TextDocument};
 use crate::sftp::client::Sftp;
@@ -29,10 +30,13 @@ pub async fn sftp_realpath(
     session_id: String,
     path: String,
 ) -> Result<String, AppError> {
-    if path.is_empty() || path.contains('\0') || path.len() > 4096 {
-        return Err(AppError::invalid_argument("path"));
-    }
-    sftp(&state, &session_id).await?.realpath(&path).await
+    guarded("sftp_realpath", async move {
+        if path.is_empty() || path.contains('\0') || path.len() > 4096 {
+            return Err(AppError::invalid_argument("path"));
+        }
+        sftp(&state, &session_id).await?.realpath(&path).await
+    })
+    .await
 }
 
 /// Bounded listing (§6.2): `truncated` after 100 000 entries or 48 MiB of listing budget
@@ -44,8 +48,11 @@ pub async fn sftp_list(
     session_id: String,
     path: String,
 ) -> Result<DirListing, AppError> {
-    path::validate(&path, "path")?;
-    sftp(&state, &session_id).await?.list(&path).await
+    guarded("sftp_list", async move {
+        path::validate(&path, "path")?;
+        sftp(&state, &session_id).await?.list(&path).await
+    })
+    .await
 }
 
 #[tauri::command]
@@ -54,8 +61,11 @@ pub async fn sftp_stat(
     session_id: String,
     path: String,
 ) -> Result<FileEntry, AppError> {
-    path::validate(&path, "path")?;
-    sftp(&state, &session_id).await?.entry(&path).await
+    guarded("sftp_stat", async move {
+        path::validate(&path, "path")?;
+        sftp(&state, &session_id).await?.entry(&path).await
+    })
+    .await
 }
 
 #[tauri::command]
@@ -65,12 +75,15 @@ pub async fn sftp_read_text(
     path: String,
     encoding: Option<String>,
 ) -> Result<TextDocument, AppError> {
-    path::validate_exact(&path, "path")?;
-    let limit = max_text_bytes(&state);
-    sftp(&state, &session_id)
-        .await?
-        .read_text(&path, encoding.as_deref(), limit)
-        .await
+    guarded("sftp_read_text", async move {
+        path::validate_exact(&path, "path")?;
+        let limit = max_text_bytes(&state);
+        sftp(&state, &session_id)
+            .await?
+            .read_text(&path, encoding.as_deref(), limit)
+            .await
+    })
+    .await
 }
 
 #[tauri::command]
@@ -79,10 +92,13 @@ pub async fn sftp_write_text(
     session_id: String,
     req: SaveRequest,
 ) -> Result<SaveResult, AppError> {
-    path::validate_exact(&req.path, "req.path")?;
-    let limit = max_text_bytes(&state);
-    let sftp = sftp(&state, &session_id).await?;
-    save::save_text(&sftp, &req, limit).await
+    guarded("sftp_write_text", async move {
+        path::validate_exact(&req.path, "req.path")?;
+        let limit = max_text_bytes(&state);
+        let sftp = sftp(&state, &session_id).await?;
+        save::save_text(&sftp, &req, limit).await
+    })
+    .await
 }
 
 #[tauri::command]
@@ -91,8 +107,11 @@ pub async fn sftp_create_file(
     session_id: String,
     path: String,
 ) -> Result<FileEntry, AppError> {
-    path::validate_exact(&path, "path")?;
-    sftp(&state, &session_id).await?.create_file(&path).await
+    guarded("sftp_create_file", async move {
+        path::validate_exact(&path, "path")?;
+        sftp(&state, &session_id).await?.create_file(&path).await
+    })
+    .await
 }
 
 #[tauri::command]
@@ -101,8 +120,11 @@ pub async fn sftp_mkdir(
     session_id: String,
     path: String,
 ) -> Result<FileEntry, AppError> {
-    path::validate_exact(&path, "path")?;
-    sftp(&state, &session_id).await?.mkdir(&path).await
+    guarded("sftp_mkdir", async move {
+        path::validate_exact(&path, "path")?;
+        sftp(&state, &session_id).await?.mkdir(&path).await
+    })
+    .await
 }
 
 /// Never overwrites (`remoteExists`).
@@ -113,9 +135,12 @@ pub async fn sftp_rename(
     from: String,
     to: String,
 ) -> Result<FileEntry, AppError> {
-    path::validate_exact(&from, "from")?;
-    path::validate_exact(&to, "to")?;
-    sftp(&state, &session_id).await?.rename(&from, &to).await
+    guarded("sftp_rename", async move {
+        path::validate_exact(&from, "from")?;
+        path::validate_exact(&to, "to")?;
+        sftp(&state, &session_id).await?.rename(&from, &to).await
+    })
+    .await
 }
 
 /// A file, symlink or empty directory (`directoryNotEmpty` otherwise; never recursive).
@@ -125,9 +150,12 @@ pub async fn sftp_delete(
     session_id: String,
     path: String,
 ) -> Result<(), AppError> {
-    path::validate_exact(&path, "path")?;
-    if path::basename(&path).is_empty() {
-        return Err(AppError::invalid_argument("path"));
-    }
-    sftp(&state, &session_id).await?.delete(&path).await
+    guarded("sftp_delete", async move {
+        path::validate_exact(&path, "path")?;
+        if path::basename(&path).is_empty() {
+            return Err(AppError::invalid_argument("path"));
+        }
+        sftp(&state, &session_id).await?.delete(&path).await
+    })
+    .await
 }

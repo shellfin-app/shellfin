@@ -109,7 +109,7 @@ fn utc_day() -> u64 {
 }
 
 /// `YYYY-MM-DD` of a day number (the date in the rolling appender's file names).
-fn civil_date(day: u64) -> String {
+pub(crate) fn civil_date(day: u64) -> String {
     // Howard Hinnant's days-to-civil algorithm, for days since 1970-01-01.
     let z = i64::try_from(day).unwrap_or(0) + 719_468;
     let era = z.div_euclid(146_097);
@@ -227,16 +227,157 @@ pub fn flush() {
     drop(guard);
 }
 
+/// Most lines of the log tail an error report may include (§9.6).
+pub const LOG_TAIL_MAX_LINES: usize = 200;
+/// Most bytes read from the end of the log file for an error report.
+pub const LOG_TAIL_MAX_BYTES: u64 = 64 * 1024;
+
+/// `shellfin.YYYY-MM-DD.log`, the names the daily appender writes.
+fn is_log_file_name(name: &str) -> bool {
+    let Some(date) = name
+        .strip_prefix(LOG_FILE_PREFIX)
+        .and_then(|r| r.strip_prefix('.'))
+        .and_then(|r| r.strip_suffix(LOG_FILE_SUFFIX))
+        .and_then(|r| r.strip_suffix('.'))
+    else {
+        return false;
+    };
+    date.len() == 10
+        && date.char_indices().all(|(i, c)| match i {
+            4 | 7 => c == '-',
+            _ => c.is_ascii_digit(),
+        })
+}
+
+/// The current log file: the newest `shellfin.<date>.log` in the app's own log directory that is
+/// a regular file (not a link). Never a path from the WebView (§9.4).
+pub fn current_log_file(log_dir: &Path) -> Option<std::path::PathBuf> {
+    let entries = std::fs::read_dir(log_dir).ok()?;
+    entries
+        .filter_map(Result::ok)
+        .filter_map(|e| {
+            let name = e.file_name().into_string().ok()?;
+            let regular = std::fs::symlink_metadata(e.path())
+                .ok()?
+                .file_type()
+                .is_file();
+            (regular && is_log_file_name(&name)).then_some(name)
+        })
+        // The date sorts lexicographically.
+        .max()
+        .map(|name| log_dir.join(name))
+}
+
+/// The last complete lines of a log file: at most `max_lines` lines from the last `max_bytes`
+/// bytes, oldest first. A line cut by the byte window and an unterminated last line (a write in
+/// progress) are dropped, so no value is ever cut in half; invalid UTF-8 becomes U+FFFD. A missing
+/// file is an error; an empty file gives no lines.
+pub fn read_log_tail(
+    path: &Path,
+    max_lines: usize,
+    max_bytes: u64,
+) -> std::io::Result<Vec<String>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(path)?;
+    let len = file.metadata()?.len();
+    let start = len.saturating_sub(max_bytes);
+    file.seek(SeekFrom::Start(start))?;
+    let mut bytes = Vec::new();
+    file.take(max_bytes).read_to_end(&mut bytes)?;
+    let mut window = bytes.as_slice();
+    if start > 0 {
+        // The first line started before the window.
+        window = match window.iter().position(|&b| b == b'\n') {
+            Some(i) => window.get(i + 1..).unwrap_or_default(),
+            None => &[],
+        };
+    }
+    // Only complete lines (the last one ends with a newline).
+    window = match window.iter().rposition(|&b| b == b'\n') {
+        Some(i) => window.get(..i).unwrap_or_default(),
+        None => &[],
+    };
+    if window.is_empty() {
+        return Ok(Vec::new());
+    }
+    let text = String::from_utf8_lossy(window);
+    let lines: Vec<&str> = text.split('\n').collect();
+    let skip = lines.len().saturating_sub(max_lines);
+    Ok(lines
+        .into_iter()
+        .skip(skip)
+        .map(|l| l.strip_suffix('\r').unwrap_or(l).to_owned())
+        .collect())
+}
+
+/// Where a panic happened (`file`, `line`, `column`); never its message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PanicLocation {
+    /// Source file as compiled (relative for this crate, a build-machine path for dependencies).
+    pub file: String,
+    pub line: u32,
+    pub column: u32,
+}
+
+impl std::fmt::Display for PanicLocation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}:{}", self.file, self.line, self.column)
+    }
+}
+
+thread_local! {
+    /// The location of the last panic on this thread (set by the hook, taken by the code that
+    /// catches the panic: `commands::guarded`). The unwinding runs on the panicking thread, so the
+    /// catch site reads its own panic.
+    static LAST_PANIC: std::cell::Cell<Option<PanicLocation>> = const { std::cell::Cell::new(None) };
+}
+
+/// Record a panic location for [`take_panic_location`] (the panic hook calls it).
+pub fn record_panic_location(location: Option<PanicLocation>) {
+    LAST_PANIC.with(|last| last.set(location));
+}
+
+/// The location of the last panic on this thread, if any (cleared by the call).
+pub fn take_panic_location() -> Option<PanicLocation> {
+    LAST_PANIC.with(std::cell::Cell::take)
+}
+
+/// Tests: record panic locations like [`install_panic_hook`], but keep the default hook's output
+/// so failing tests still print their messages. Idempotent.
+#[cfg(test)]
+pub(crate) fn install_test_panic_hook() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            record_panic_location(info.location().map(|loc| PanicLocation {
+                file: loc.file().to_owned(),
+                line: loc.line(),
+                column: loc.column(),
+            }));
+            previous(info);
+        }));
+    });
+}
+
 /// Panic hook: logs file:line only — never the payload (it may contain secrets or server data).
+/// The location is also kept for the thread's catch site (`commands::guarded`).
 pub fn install_panic_hook() {
-    std::panic::set_hook(Box::new(|info| match info.location() {
-        Some(loc) => tracing::error!(
-            file = loc.file(),
-            line = loc.line(),
-            column = loc.column(),
-            "panic"
-        ),
-        None => tracing::error!("panic at an unknown location"),
+    std::panic::set_hook(Box::new(|info| {
+        match info.location() {
+            Some(loc) => tracing::error!(
+                file = loc.file(),
+                line = loc.line(),
+                column = loc.column(),
+                "panic"
+            ),
+            None => tracing::error!("panic at an unknown location"),
+        }
+        record_panic_location(info.location().map(|loc| PanicLocation {
+            file: loc.file().to_owned(),
+            line: loc.line(),
+            column: loc.column(),
+        }));
     }));
 }
 
@@ -361,6 +502,113 @@ mod tests {
         assert_eq!(civil_date(11_016), "2000-02-29");
         assert_eq!(civil_date(20_747), "2026-10-21");
         assert_eq!(civil_date(utc_day()).len(), 10);
+    }
+
+    fn write(dir: &Path, name: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let path = dir.join(name);
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    #[test]
+    fn log_file_names_are_recognised_strictly() {
+        assert!(is_log_file_name("shellfin.2026-10-23.log"));
+        for bad in [
+            "shellfin.log",
+            "shellfin.2026-10-2.log",
+            "shellfin.2026_10_23.log",
+            "shellfin.2026-10-23.log.bak",
+            "other.2026-10-23.log",
+            "shellfin.2026-10-23.txt",
+            "shellfin.../../x.log",
+            "shellfin.２０２６-10-23.log",
+        ] {
+            assert!(!is_log_file_name(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn current_log_file_is_the_newest_dated_file() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(current_log_file(dir.path()), None, "empty dir");
+        assert_eq!(current_log_file(&dir.path().join("missing")), None);
+        write(dir.path(), "shellfin.2026-10-21.log", b"old\n");
+        let newest = write(dir.path(), "shellfin.2026-10-23.log", b"new\n");
+        write(dir.path(), "shellfin.2026-10-22.log", b"mid\n");
+        write(dir.path(), "zzz.2099-01-01.log", b"not ours\n");
+        std::fs::create_dir(dir.path().join("shellfin.2099-01-01.log")).unwrap();
+        assert_eq!(current_log_file(dir.path()), Some(newest));
+    }
+
+    #[test]
+    fn log_tail_keeps_complete_lines_only() {
+        let dir = tempfile::tempdir().unwrap();
+        // Missing file: an error, the report then says "no log".
+        assert!(read_log_tail(&dir.path().join("none.log"), 10, 1024).is_err());
+        // Empty file, and a file with no complete line.
+        let p = write(dir.path(), "a.log", b"");
+        assert!(read_log_tail(&p, 10, 1024).unwrap().is_empty());
+        let p = write(dir.path(), "b.log", b"no newline yet");
+        assert!(read_log_tail(&p, 10, 1024).unwrap().is_empty());
+        // The unterminated last line (a write in progress) is dropped; CRLF is trimmed.
+        let p = write(dir.path(), "c.log", b"one\r\ntwo\nthree");
+        assert_eq!(read_log_tail(&p, 10, 1024).unwrap(), ["one", "two"]);
+        // Line limit: the newest lines win.
+        let p = write(dir.path(), "d.log", b"1\n2\n3\n4\n");
+        assert_eq!(read_log_tail(&p, 2, 1024).unwrap(), ["3", "4"]);
+        // Byte window: the first line in it may be cut, so it is dropped (here the window starts
+        // at the newline after `aaaaaaaaaa`, then inside `bbb`).
+        let p = write(dir.path(), "e.log", b"aaaaaaaaaa\nbbb\ncc\n");
+        assert_eq!(read_log_tail(&p, 10, 8).unwrap(), ["bbb", "cc"]);
+        assert_eq!(read_log_tail(&p, 10, 6).unwrap(), ["cc"]);
+        // A single line longer than the window gives nothing (never half a line).
+        let p = write(
+            dir.path(),
+            "f.log",
+            format!("{}\n", "x".repeat(100)).as_bytes(),
+        );
+        assert!(read_log_tail(&p, 10, 50).unwrap().is_empty());
+        // Invalid UTF-8 is replaced, not an error.
+        let p = write(dir.path(), "g.log", b"ok\n\xff\xfe bad\n");
+        assert_eq!(
+            read_log_tail(&p, 10, 1024).unwrap(),
+            ["ok", "\u{FFFD}\u{FFFD} bad"]
+        );
+    }
+
+    #[test]
+    fn log_tail_of_a_huge_file_reads_only_the_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let line = format!("{}\n", "y".repeat(99));
+        let p = write(dir.path(), "h.log", line.repeat(20_000).as_bytes());
+        let tail = read_log_tail(&p, LOG_TAIL_MAX_LINES, LOG_TAIL_MAX_BYTES).unwrap();
+        assert_eq!(tail.len(), LOG_TAIL_MAX_LINES);
+        assert!(tail.iter().all(|l| l.len() == 99));
+        let bytes: usize = tail.iter().map(|l| l.len() + 1).sum();
+        assert!(bytes as u64 <= LOG_TAIL_MAX_BYTES);
+        // 64 KiB of 100-byte lines is more than 200 lines; with longer lines the byte cap wins.
+        let long = format!("{}\n", "z".repeat(999));
+        let p = write(dir.path(), "i.log", long.repeat(1000).as_bytes());
+        let tail = read_log_tail(&p, LOG_TAIL_MAX_LINES, LOG_TAIL_MAX_BYTES).unwrap();
+        assert_eq!(
+            tail.len(),
+            65,
+            "65 536 bytes hold 65 whole 1000-byte lines after the cut one"
+        );
+    }
+
+    #[test]
+    fn panic_location_is_kept_per_thread() {
+        record_panic_location(Some(PanicLocation {
+            file: "src/x.rs".into(),
+            line: 3,
+            column: 9,
+        }));
+        let other = std::thread::spawn(take_panic_location).join().unwrap();
+        assert_eq!(other, None);
+        let loc = take_panic_location().unwrap();
+        assert_eq!(loc.to_string(), "src/x.rs:3:9");
+        assert_eq!(take_panic_location(), None, "taken once");
     }
 
     #[test]

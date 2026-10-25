@@ -4,7 +4,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::app_state::AppState;
-use crate::commands::blocking;
+use crate::commands::{blocking, guarded};
 use crate::error::{AppError, EntityKind, ErrorCode, ImportInvalidReason, IoOp};
 use crate::external_link::sanitize_dialog_text;
 use crate::ipc::dto::{
@@ -24,10 +24,13 @@ use crate::window::MAIN_WINDOW_LABEL;
 
 #[tauri::command]
 pub async fn ssh_config_reload(state: State<'_, AppState>) -> Result<SshConfigSnapshot, AppError> {
-    let service = state.ssh_config.clone();
-    blocking(move || {
-        service.reload();
-        Ok(service.snapshot())
+    guarded("ssh_config_reload", async move {
+        let service = state.ssh_config.clone();
+        blocking(move || {
+            service.reload();
+            Ok(service.snapshot())
+        })
+        .await
     })
     .await
 }
@@ -36,8 +39,11 @@ pub async fn ssh_config_reload(state: State<'_, AppState>) -> Result<SshConfigSn
 /// mutex can be held for a long store operation (a large import, a slow disk write).
 #[tauri::command]
 pub async fn bookmarks_get(state: State<'_, AppState>) -> Result<BookmarksDto, AppError> {
-    let stores = state.stores.clone();
-    blocking(move || Ok(stores.lock_bookmarks().dto())).await
+    guarded("bookmarks_get", async move {
+        let stores = state.stores.clone();
+        blocking(move || Ok(stores.lock_bookmarks().dto())).await
+    })
+    .await
 }
 
 /// Delete keychain entries after the store forgot them. If a delete fails, the entry stays
@@ -57,18 +63,21 @@ pub async fn bookmark_save(
     state: State<'_, AppState>,
     input: BookmarkInput,
 ) -> Result<Bookmark, AppError> {
-    let stores = state.stores.clone();
-    let bookmark = blocking(move || {
-        let outcome = stores.lock_bookmarks().save(input, now_ms())?;
-        if outcome.forget_password {
-            forget_keychain([outcome.bookmark.id.clone()]);
-        }
-        Ok(outcome.bookmark)
+    guarded("bookmark_save", async move {
+        let stores = state.stores.clone();
+        let bookmark = blocking(move || {
+            let outcome = stores.lock_bookmarks().save(input, now_ms())?;
+            if outcome.forget_password {
+                forget_keychain([outcome.bookmark.id.clone()]);
+            }
+            Ok(outcome.bookmark)
+        })
+        .await?;
+        // Live edits of connected sessions (limits now; label/color via `bookmarkUpdated`).
+        state.sessions.apply_bookmark(&bookmark);
+        Ok(bookmark)
     })
-    .await?;
-    // Live edits of connected sessions (limits now; label/color via `bookmarkUpdated`).
-    state.sessions.apply_bookmark(&bookmark);
-    Ok(bookmark)
+    .await
 }
 
 /// Also deletes the bookmark's keychain entry (and those of bookmarks whose saved password was
@@ -79,23 +88,26 @@ pub async fn bookmark_delete(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<(), AppError> {
-    let stores = state.stores.clone();
-    let recents = blocking(move || {
-        let (outcome, recents) = stores.delete_bookmark(&id, now_ms())?;
-        let mut forget = outcome.forgotten_dependents;
-        if outcome.had_password {
-            forget.push(id);
+    guarded("bookmark_delete", async move {
+        let stores = state.stores.clone();
+        let recents = blocking(move || {
+            let (outcome, recents) = stores.delete_bookmark(&id, now_ms())?;
+            let mut forget = outcome.forgotten_dependents;
+            if outcome.had_password {
+                forget.push(id);
+            }
+            forget_keychain(forget);
+            Ok(recents)
+        })
+        .await?;
+        if let Some(list) = recents
+            && let Err(e) = app.emit(events::RECENTS_CHANGED, list)
+        {
+            tracing::warn!(error = %e, "failed to emit recents:changed");
         }
-        forget_keychain(forget);
-        Ok(recents)
+        Ok(())
     })
-    .await?;
-    if let Some(list) = recents
-        && let Err(e) = app.emit(events::RECENTS_CHANGED, list)
-    {
-        tracing::warn!(error = %e, "failed to emit recents:changed");
-    }
-    Ok(())
+    .await
 }
 
 #[tauri::command]
@@ -103,18 +115,21 @@ pub async fn bookmark_copy_from_ssh_config(
     state: State<'_, AppState>,
     alias: String,
 ) -> Result<Bookmark, AppError> {
-    let stores = state.stores.clone();
-    let service = state.ssh_config.clone();
-    blocking(move || {
-        if !service.lists_host(&alias) {
-            return Err(AppError::new(ErrorCode::NotFound {
-                what: EntityKind::SshConfigHost,
-                id: alias,
-            }));
-        }
-        stores
-            .lock_bookmarks()
-            .copy_from_ssh_config(&alias, now_ms())
+    guarded("bookmark_copy_from_ssh_config", async move {
+        let stores = state.stores.clone();
+        let service = state.ssh_config.clone();
+        blocking(move || {
+            if !service.lists_host(&alias) {
+                return Err(AppError::new(ErrorCode::NotFound {
+                    what: EntityKind::SshConfigHost,
+                    id: alias,
+                }));
+            }
+            stores
+                .lock_bookmarks()
+                .copy_from_ssh_config(&alias, now_ms())
+        })
+        .await
     })
     .await
 }
@@ -164,50 +179,56 @@ pub async fn bookmark_set_password(
     id: String,
     password: Option<Secret<String>>,
 ) -> Result<Bookmark, AppError> {
-    let stores = state.stores.clone();
-    let service = state.ssh_config.clone();
-    blocking(move || {
-        let bookmark = stores.lock_bookmarks().get(&id).ok_or_else(|| {
-            AppError::new(ErrorCode::NotFound {
-                what: EntityKind::Bookmark,
-                id: id.clone(),
-            })
-        })?;
-        if !matches!(bookmark.auth, AuthConfig::Password { .. }) {
-            return Err(AppError::invalid_argument("auth"));
-        }
-        let account = secrets::bookmark_account(&id);
-        match password {
-            None => {
-                secrets::delete_password(&account)?;
-                stores
-                    .lock_bookmarks()
-                    .set_password_saved(&id, None, now_ms())
+    guarded("bookmark_set_password", async move {
+        let stores = state.stores.clone();
+        let service = state.ssh_config.clone();
+        blocking(move || {
+            let bookmark = stores.lock_bookmarks().get(&id).ok_or_else(|| {
+                AppError::new(ErrorCode::NotFound {
+                    what: EntityKind::Bookmark,
+                    id: id.clone(),
+                })
+            })?;
+            if !matches!(bookmark.auth, AuthConfig::Password { .. }) {
+                return Err(AppError::invalid_argument("auth"));
             }
-            Some(pw) => {
-                secret_storage_allowed(&stores.settings())?;
-                secrets::availability()?;
-                let binding = destination_binding(&bookmark, &service.current(), service.env());
-                secrets::set_password(&account, pw.expose())?;
-                let saved =
+            let account = secrets::bookmark_account(&id);
+            match password {
+                None => {
+                    secrets::delete_password(&account)?;
                     stores
                         .lock_bookmarks()
-                        .set_password_saved(&id, Some(binding), now_ms());
-                if saved.is_err() {
-                    // Keep keychain and store consistent: no entry without a binding.
-                    let _ = secrets::delete_password(&account);
+                        .set_password_saved(&id, None, now_ms())
                 }
-                saved
+                Some(pw) => {
+                    secret_storage_allowed(&stores.settings())?;
+                    secrets::availability()?;
+                    let binding = destination_binding(&bookmark, &service.current(), service.env());
+                    secrets::set_password(&account, pw.expose())?;
+                    let saved =
+                        stores
+                            .lock_bookmarks()
+                            .set_password_saved(&id, Some(binding), now_ms());
+                    if saved.is_err() {
+                        // Keep keychain and store consistent: no entry without a binding.
+                        let _ = secrets::delete_password(&account);
+                    }
+                    saved
+                }
             }
-        }
+        })
+        .await
     })
     .await
 }
 
 #[tauri::command]
 pub async fn group_save(state: State<'_, AppState>, input: GroupInput) -> Result<Group, AppError> {
-    let stores = state.stores.clone();
-    blocking(move || stores.lock_bookmarks().group_save(input)).await
+    guarded("group_save", async move {
+        let stores = state.stores.clone();
+        blocking(move || stores.lock_bookmarks().group_save(input)).await
+    })
+    .await
 }
 
 /// Move a bookmark to `group_id` (`null` = ungrouped) at `index` (clamped); one atomic write.
@@ -218,11 +239,14 @@ pub async fn bookmark_move(
     group_id: Option<String>,
     index: u32,
 ) -> Result<BookmarksDto, AppError> {
-    let stores = state.stores.clone();
-    blocking(move || {
-        stores
-            .lock_bookmarks()
-            .bookmark_move(&id, group_id, index, now_ms())
+    guarded("bookmark_move", async move {
+        let stores = state.stores.clone();
+        blocking(move || {
+            stores
+                .lock_bookmarks()
+                .bookmark_move(&id, group_id, index, now_ms())
+        })
+        .await
     })
     .await
 }
@@ -234,20 +258,29 @@ pub async fn group_move(
     id: String,
     index: u32,
 ) -> Result<BookmarksDto, AppError> {
-    let stores = state.stores.clone();
-    blocking(move || stores.lock_bookmarks().group_move(&id, index)).await
+    guarded("group_move", async move {
+        let stores = state.stores.clone();
+        blocking(move || stores.lock_bookmarks().group_move(&id, index)).await
+    })
+    .await
 }
 
 #[tauri::command]
 pub async fn group_delete(state: State<'_, AppState>, id: String) -> Result<(), AppError> {
-    let stores = state.stores.clone();
-    blocking(move || stores.lock_bookmarks().group_delete(&id, now_ms())).await
+    guarded("group_delete", async move {
+        let stores = state.stores.clone();
+        blocking(move || stores.lock_bookmarks().group_delete(&id, now_ms())).await
+    })
+    .await
 }
 
 #[tauri::command]
 pub async fn recents_get(state: State<'_, AppState>) -> Result<Vec<RecentEntry>, AppError> {
-    let stores = state.stores.clone();
-    blocking(move || Ok(stores.lock_recents().list())).await
+    guarded("recents_get", async move {
+        let stores = state.stores.clone();
+        blocking(move || Ok(stores.lock_recents().list())).await
+    })
+    .await
 }
 
 /// Default file names offered by the export Save dialog.
@@ -284,56 +317,59 @@ pub async fn bookmarks_export(
     format: BookmarkExportFormat,
     dialog_title: String,
 ) -> Result<BookmarksExportResult, AppError> {
-    let stores = state.stores.clone();
-    let dto = blocking(move || Ok(stores.lock_bookmarks().dto())).await?;
-    let now = now_ms();
-    let (bytes, count, skipped, default_name) = match format {
-        BookmarkExportFormat::Json => {
-            let (bytes, count) = bookmarks::export_json(&dto, now);
-            (bytes, count, Vec::new(), EXPORT_JSON_NAME)
+    guarded("bookmarks_export", async move {
+        let stores = state.stores.clone();
+        let dto = blocking(move || Ok(stores.lock_bookmarks().dto())).await?;
+        let now = now_ms();
+        let (bytes, count, skipped, default_name) = match format {
+            BookmarkExportFormat::Json => {
+                let (bytes, count) = bookmarks::export_json(&dto, now);
+                (bytes, count, Vec::new(), EXPORT_JSON_NAME)
+            }
+            BookmarkExportFormat::SshConfig => {
+                let (text, count, skipped) = bookmarks::export_ssh_config(&dto, now);
+                (text.into_bytes(), count, skipped, EXPORT_SSH_CONFIG_NAME)
+            }
+        };
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let mut dialog = app
+            .dialog()
+            .file()
+            .set_title(sanitize_dialog_text(&dialog_title))
+            .set_file_name(default_name);
+        if let Ok(downloads) = app.path().download_dir()
+            && downloads.is_dir()
+        {
+            dialog = dialog.set_directory(downloads);
         }
-        BookmarkExportFormat::SshConfig => {
-            let (text, count, skipped) = bookmarks::export_ssh_config(&dto, now);
-            (text.into_bytes(), count, skipped, EXPORT_SSH_CONFIG_NAME)
+        if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+            dialog = dialog.set_parent(&window);
         }
-    };
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    let mut dialog = app
-        .dialog()
-        .file()
-        .set_title(sanitize_dialog_text(&dialog_title))
-        .set_file_name(default_name);
-    if let Ok(downloads) = app.path().download_dir()
-        && downloads.is_dir()
-    {
-        dialog = dialog.set_directory(downloads);
-    }
-    if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
-        dialog = dialog.set_parent(&window);
-    }
-    dialog.save_file(move |picked| {
-        let _ = tx.send(picked);
-    });
-    let Some(picked) = rx.await.ok().flatten() else {
-        return Ok(BookmarksExportResult {
-            saved: false,
-            file_name: None,
-            count: 0,
-            skipped: Vec::new(),
+        dialog.save_file(move |picked| {
+            let _ = tx.send(picked);
         });
-    };
-    let path = picked
-        .into_path()
-        .map_err(|e| AppError::invalid_argument("path").with_detail(e.to_string()))?;
-    let target = path.clone();
-    blocking(move || crate::storage::file::write_chosen_file(&target, &bytes)).await?;
-    tracing::info!(count, skipped = skipped.len(), "exported bookmarks");
-    Ok(BookmarksExportResult {
-        saved: true,
-        file_name: path.file_name().map(|n| n.to_string_lossy().into_owned()),
-        count,
-        skipped,
+        let Some(picked) = rx.await.ok().flatten() else {
+            return Ok(BookmarksExportResult {
+                saved: false,
+                file_name: None,
+                count: 0,
+                skipped: Vec::new(),
+            });
+        };
+        let path = picked
+            .into_path()
+            .map_err(|e| AppError::invalid_argument("path").with_detail(e.to_string()))?;
+        let target = path.clone();
+        blocking(move || crate::storage::file::write_chosen_file(&target, &bytes)).await?;
+        tracing::info!(count, skipped = skipped.len(), "exported bookmarks");
+        Ok(BookmarksExportResult {
+            saved: true,
+            file_name: path.file_name().map(|n| n.to_string_lossy().into_owned()),
+            count,
+            skipped,
+        })
     })
+    .await
 }
 
 /// Step 1 of a bookmark import: pick a Shellfin JSON file in the native Open dialog, read it
@@ -346,54 +382,57 @@ pub async fn bookmarks_import_open(
     state: State<'_, AppState>,
     dialog_title: String,
 ) -> Result<BookmarksImportPreview, AppError> {
-    state.pending_import.clear();
-    let stores = state.stores.clone();
-    if blocking(move || Ok(stores.lock_bookmarks().read_only())).await? {
-        return Err(AppError::new(ErrorCode::StorageReadOnly));
-    }
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    let mut dialog = app
-        .dialog()
-        .file()
-        .set_title(sanitize_dialog_text(&dialog_title))
-        .add_filter("JSON", &["json"]);
-    if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
-        dialog = dialog.set_parent(&window);
-    }
-    dialog.pick_file(move |picked| {
-        let _ = tx.send(picked);
-    });
-    let Some(picked) = rx.await.ok().flatten() else {
-        return Ok(BookmarksImportPreview {
-            picked: false,
-            token: None,
-            bookmarks: 0,
-            conflicts: 0,
-            invalid: Vec::new(),
-            startup_commands: Vec::new(),
+    guarded("bookmarks_import_open", async move {
+        state.pending_import.clear();
+        let stores = state.stores.clone();
+        if blocking(move || Ok(stores.lock_bookmarks().read_only())).await? {
+            return Err(AppError::new(ErrorCode::StorageReadOnly));
+        }
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let mut dialog = app
+            .dialog()
+            .file()
+            .set_title(sanitize_dialog_text(&dialog_title))
+            .add_filter("JSON", &["json"]);
+        if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+            dialog = dialog.set_parent(&window);
+        }
+        dialog.pick_file(move |picked| {
+            let _ = tx.send(picked);
         });
-    };
-    let path = picked
-        .into_path()
-        .map_err(|e| AppError::invalid_argument("path").with_detail(e.to_string()))?;
-    let stores = state.stores.clone();
-    let (parsed, mut preview) = blocking(move || {
-        let bytes =
-            read_local(&path, FileKind::ImportSource).map_err(|e| import_read_error(e, &path))?;
-        let parsed = bookmarks::parse_import(&bytes)?;
-        let preview = stores.lock_bookmarks().import_preview(&parsed);
-        Ok((parsed, preview))
+        let Some(picked) = rx.await.ok().flatten() else {
+            return Ok(BookmarksImportPreview {
+                picked: false,
+                token: None,
+                bookmarks: 0,
+                conflicts: 0,
+                invalid: Vec::new(),
+                startup_commands: Vec::new(),
+            });
+        };
+        let path = picked
+            .into_path()
+            .map_err(|e| AppError::invalid_argument("path").with_detail(e.to_string()))?;
+        let stores = state.stores.clone();
+        let (parsed, mut preview) = blocking(move || {
+            let bytes = read_local(&path, FileKind::ImportSource)
+                .map_err(|e| import_read_error(e, &path))?;
+            let parsed = bookmarks::parse_import(&bytes)?;
+            let preview = stores.lock_bookmarks().import_preview(&parsed);
+            Ok((parsed, preview))
+        })
+        .await?;
+        preview.token = Some(state.pending_import.put(parsed));
+        tracing::info!(
+            bookmarks = preview.bookmarks,
+            conflicts = preview.conflicts,
+            invalid = preview.invalid.len(),
+            startup_commands = preview.startup_commands.len(),
+            "opened bookmark import"
+        );
+        Ok(preview)
     })
-    .await?;
-    preview.token = Some(state.pending_import.put(parsed));
-    tracing::info!(
-        bookmarks = preview.bookmarks,
-        conflicts = preview.conflicts,
-        invalid = preview.invalid.len(),
-        startup_commands = preview.startup_commands.len(),
-        "opened bookmark import"
-    );
-    Ok(preview)
+    .await
 }
 
 /// Step 2: apply the pending import of `token` in one atomic write with the chosen conflict
@@ -407,42 +446,45 @@ pub async fn bookmarks_import_apply(
     strategy: ImportStrategy,
     keep_startup_commands: bool,
 ) -> Result<BookmarksImportResult, AppError> {
-    let parsed = state.pending_import.take(&token)?;
-    let stores = state.stores.clone();
-    let (outcome, dto) = blocking(move || {
-        let mut store = stores.lock_bookmarks();
-        // `import` refuses a read-only store (`storageReadOnly`) before changing anything.
-        let outcome = store.import(parsed, strategy, keep_startup_commands, now_ms())?;
-        let dto = outcome.changed.then(|| store.dto());
-        drop(store);
-        forget_keychain(outcome.forget_password.clone());
-        Ok((outcome, dto))
-    })
-    .await?;
-    if let Some(dto) = &dto {
-        for id in &outcome.replaced_ids {
-            if let Some(b) = dto.bookmarks.iter().find(|b| &b.id == id) {
-                state.sessions.apply_bookmark(b);
+    guarded("bookmarks_import_apply", async move {
+        let parsed = state.pending_import.take(&token)?;
+        let stores = state.stores.clone();
+        let (outcome, dto) = blocking(move || {
+            let mut store = stores.lock_bookmarks();
+            // `import` refuses a read-only store (`storageReadOnly`) before changing anything.
+            let outcome = store.import(parsed, strategy, keep_startup_commands, now_ms())?;
+            let dto = outcome.changed.then(|| store.dto());
+            drop(store);
+            forget_keychain(outcome.forget_password.clone());
+            Ok((outcome, dto))
+        })
+        .await?;
+        if let Some(dto) = &dto {
+            for id in &outcome.replaced_ids {
+                if let Some(b) = dto.bookmarks.iter().find(|b| &b.id == id) {
+                    state.sessions.apply_bookmark(b);
+                }
             }
         }
-    }
-    tracing::info!(
-        added = outcome.added,
-        replaced = outcome.replaced,
-        skipped = outcome.skipped,
-        invalid = outcome.invalid.len(),
-        startup_commands_stripped = outcome.startup_commands_stripped.len(),
-        "imported bookmarks"
-    );
-    Ok(BookmarksImportResult {
-        picked: true,
-        added: outcome.added,
-        replaced: outcome.replaced,
-        skipped: outcome.skipped,
-        invalid: outcome.invalid,
-        bookmarks: dto,
-        startup_commands_stripped: outcome.startup_commands_stripped,
+        tracing::info!(
+            added = outcome.added,
+            replaced = outcome.replaced,
+            skipped = outcome.skipped,
+            invalid = outcome.invalid.len(),
+            startup_commands_stripped = outcome.startup_commands_stripped.len(),
+            "imported bookmarks"
+        );
+        Ok(BookmarksImportResult {
+            picked: true,
+            added: outcome.added,
+            replaced: outcome.replaced,
+            skipped: outcome.skipped,
+            invalid: outcome.invalid,
+            bookmarks: dto,
+            startup_commands_stripped: outcome.startup_commands_stripped,
+        })
     })
+    .await
 }
 
 /// Drop the pending import of `token` (the user closed the preview). Another or an unknown
@@ -452,8 +494,11 @@ pub async fn bookmarks_import_cancel(
     state: State<'_, AppState>,
     token: String,
 ) -> Result<(), AppError> {
-    state.pending_import.cancel(&token);
-    Ok(())
+    guarded("bookmarks_import_cancel", async move {
+        state.pending_import.cancel(&token);
+        Ok(())
+    })
+    .await
 }
 
 /// Forget the recent connections (`recents.json` emptied); emits `recents:changed`.
@@ -462,12 +507,15 @@ pub async fn recents_clear(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Vec<RecentEntry>, AppError> {
-    let stores = state.stores.clone();
-    let list = blocking(move || stores.lock_recents().clear()).await?;
-    if let Err(e) = app.emit(events::RECENTS_CHANGED, list.clone()) {
-        tracing::warn!(error = %e, "failed to emit recents:changed");
-    }
-    Ok(list)
+    guarded("recents_clear", async move {
+        let stores = state.stores.clone();
+        let list = blocking(move || stores.lock_recents().clear()).await?;
+        if let Err(e) = app.emit(events::RECENTS_CHANGED, list.clone()) {
+            tracing::warn!(error = %e, "failed to emit recents:changed");
+        }
+        Ok(list)
+    })
+    .await
 }
 
 #[cfg(test)]

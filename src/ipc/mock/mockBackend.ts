@@ -15,6 +15,9 @@ import type {
   ImportStartupCommand,
   ImportStrategy,
   EnvInfo,
+  ErrorReport,
+  ErrorReportInput,
+  ReportEnvironment,
   Group,
   GroupInput,
   AppError,
@@ -58,6 +61,12 @@ import {
 } from "./fixtures";
 import { TerminalOutput, floodChunks } from "./termFlow";
 import { type MockImportFile, type ScenarioHooks, type ScenarioName, type SessionScript, resolveScenario } from "./scenarios";
+
+/** The "current log" the mock offers to the error report: 60 short lines, newest last. */
+const MOCK_LOG_LINES: readonly string[] = Array.from(
+  { length: 60 },
+  (_, i) => `2026-01-01T10:00:${String(i).padStart(2, "0")}Z INFO shellfin::session mock log line ${i + 1} <host> connected`,
+);
 
 export interface MockBackendOptions {
   scenario?: ScenarioName;
@@ -344,7 +353,10 @@ export class MockBackend implements Backend {
   }
   /** Number of `app_quit` calls (tests). */
   quitCalls = 0;
-  async appOpenLogsDir(): Promise<void> {}
+  async appOpenLogsDir(): Promise<void> {
+    // `bugReport` scenario: Help > Open logs folder fails like a command that panicked, to exercise the error dialog.
+    if (this.hooks.openLogsError) throw new IpcError(this.hooks.openLogsError);
+  }
   async appRevealPath(): Promise<void> {}
   async appOpenExternal(): Promise<boolean> {
     return false;
@@ -379,6 +391,56 @@ export class MockBackend implements Backend {
   async appSaveTextFile(suggestedName: string, contents: string): Promise<SaveTextOutcome> {
     this.savedTextFiles.push({ suggestedName, contents });
     return { saved: true, fileName: suggestedName === "" ? "output.txt" : suggestedName };
+  }
+
+  /** `app_error_report` inputs, in order (tests assert on them). */
+  readonly errorReportInputs: ErrorReportInput[] = [];
+  /**
+   * Models `app_error_report` (§9.6): a deterministic Markdown report, the bug form URL (≤ 2048 characters, the newest
+   * log lines that fit) and consistent log counters. The real redaction and escaping live in Rust.
+   */
+  async appErrorReport(input: ErrorReportInput): Promise<ErrorReport> {
+    await this.delay();
+    this.errorReportInputs.push(input);
+    const environment: ReportEnvironment = {
+      appVersion: "0.1.0",
+      os: "Mock OS 1.0",
+      arch: "x86_64",
+      install: null,
+      uiLanguage: input.uiLanguage ?? null,
+    };
+    const code = input.code ?? null;
+    const lines: string[] = ["## Error", ""];
+    if (code === null) {
+      lines.push("No error (Help > Report a problem).");
+    } else {
+      lines.push(`- Code: \`${code}\``);
+      if (input.context) lines.push(`- Where: \`${input.context}\``);
+      if (input.occurredAtMs != null) lines.push(`- When: ${new Date(input.occurredAtMs).toISOString()}`);
+      if (input.message) lines.push(`- Message: ${input.message}`);
+      if (input.detail) lines.push(`- Detail: ${input.detail}`);
+      if (input.params !== undefined && input.params !== null) lines.push(`- Params: \`${JSON.stringify(input.params)}\``);
+    }
+    lines.push("", "## Environment", "", `- Shellfin: ${environment.appVersion}`, `- OS: ${environment.os}`, `- Architecture: ${environment.arch}`);
+    const log = input.includeLog ? MOCK_LOG_LINES : [];
+    if (log.length > 0) lines.push("", "## Log (last lines)", "", "```", ...log, "```");
+    const base = "https://github.com/shellfin-app/shellfin/issues/new?template=bug_report.yml";
+    const urlWith = (n: number): string => {
+      const params = new URLSearchParams({ version: environment.appVersion, os: environment.os, arch: environment.arch });
+      if (code !== null) params.set("actual", `${code}${input.context ? ` in ${input.context}` : ""}`);
+      if (n > 0) params.set("logs", log.slice(log.length - n).join("\n"));
+      return `${base}&${params.toString()}`;
+    };
+    let inUrl = log.length;
+    while (inUrl > 0 && urlWith(inUrl).length > 2048) inUrl -= 1;
+    return {
+      markdown: lines.join("\n"),
+      issueUrl: urlWith(inUrl),
+      environment,
+      logIncluded: log.length > 0,
+      logLines: log.length,
+      logLinesInUrl: inUrl,
+    };
   }
 
   // ---- window (the mock keeps a window state so the title bar can be exercised in the browser) ----

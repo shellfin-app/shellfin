@@ -664,9 +664,10 @@ fn local_error(e: &io::Error, path: &Path, op: IoOp) -> AppError {
 async fn blocking<T: Send + 'static>(
     f: impl FnOnce() -> Result<T, AppError> + Send + 'static,
 ) -> Result<T, AppError> {
-    tokio::task::spawn_blocking(f)
+    // A panic is caught on the blocking thread: the `JoinError` text would carry its payload.
+    tokio::task::spawn_blocking(move || crate::error::catch_panic("transfer", f))
         .await
-        .map_err(|e| AppError::internal(format!("background task failed: {e}")))?
+        .map_err(|e| crate::error::join_failed(e.is_panic(), "transfer"))??
 }
 
 // ---------------------------------------------------------------------------------------------

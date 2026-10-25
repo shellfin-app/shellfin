@@ -86,6 +86,86 @@ pub struct MenuActionPayload {
     pub id: String,
 }
 
+/// Input of `app_error_report` (§4.2, §9.6). Everything is optional except `includeLog`; the
+/// backend bounds, redacts and escapes every text before it goes into the report. With no
+/// error fields at all the report holds the environment only (Help → Report a problem).
+#[derive(Debug, Clone, Default, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ErrorReportInput {
+    /// `AppError.code` as received (`[A-Za-z][A-Za-z0-9]{0,63}`, else shown as `unknown`).
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub code: Option<String>,
+    /// `AppError.params` as received (any JSON).
+    #[serde(default)]
+    #[ts(optional = nullable, type = "unknown")]
+    pub params: Option<serde_json::Value>,
+    /// `AppError.detail` as received.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub detail: Option<String>,
+    /// The translated message the dialog shows.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub message: Option<String>,
+    /// Where it happened: an action id or command name (`[A-Za-z0-9_.:-]{1,80}`, else dropped).
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub context: Option<String>,
+    /// A frontend stack trace (at most 100 lines are used).
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub stack: Option<String>,
+    /// When the error happened (Unix ms).
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub occurred_at_ms: Option<i64>,
+    /// The UI language (`i18n.language`), `[A-Za-z0-9-]{1,35}`.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub ui_language: Option<String>,
+    /// Add the tail of the current log file (≤ 200 lines / 64 KiB; the dialog's checkbox,
+    /// off by default).
+    pub include_log: bool,
+}
+
+/// Result of `app_error_report`: the redacted report and the pre-filled issue form.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ErrorReport {
+    /// The full report (Markdown) for the preview and the clipboard: exactly what is copied.
+    pub markdown: String,
+    /// `https://github.com/shellfin-app/shellfin/issues/new?template=bug_report.yml&…` with the
+    /// short fields, the error summary and as much of the log tail as fits; ≤ 2048 characters,
+    /// accepted by `app_open_external`.
+    pub issue_url: String,
+    pub environment: ReportEnvironment,
+    /// `includeLog` was set and the current log file had lines to include.
+    pub log_included: bool,
+    /// Log lines in `markdown` (0 without the log).
+    pub log_lines: u32,
+    /// The newest of those lines that also fit into the issue form's `logs` field.
+    pub log_lines_in_url: u32,
+}
+
+/// The environment part of an error report (also in `markdown`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ReportEnvironment {
+    pub app_version: String,
+    /// e.g. `Windows 11 24H2 (build 26100.2033)`, `macOS 15.1`, `Ubuntu 24.04.1 LTS (Linux 6.8.0)`.
+    pub os: String,
+    /// The CPU architecture (`x86_64`, `aarch64`).
+    pub arch: String,
+    /// How Shellfin was installed, as the bug form's option text; `null` when it cannot be told
+    /// (macOS DMG vs Homebrew, an MSI built by hand).
+    pub install: Option<String>,
+    pub ui_language: Option<String>,
+}
+
 /// Result of `app_save_text_file`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]

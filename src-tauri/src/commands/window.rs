@@ -5,6 +5,7 @@
 
 use tauri::{AppHandle, WebviewWindow};
 
+use crate::commands::guarded;
 use crate::error::AppError;
 use crate::quit;
 
@@ -14,39 +15,51 @@ fn failed(what: &str, err: &tauri::Error) -> AppError {
 
 #[tauri::command]
 pub async fn window_minimize(window: WebviewWindow) -> Result<(), AppError> {
-    window.minimize().map_err(|e| failed("minimize", &e))
+    guarded("window_minimize", async move {
+        window.minimize().map_err(|e| failed("minimize", &e))
+    })
+    .await
 }
 
 /// Maximize, or restore when already maximized. The result arrives as `window:state`.
 #[tauri::command]
 pub async fn window_toggle_maximize(window: WebviewWindow) -> Result<(), AppError> {
-    let maximized = window
-        .is_maximized()
-        .map_err(|e| failed("state query", &e))?;
-    let result = if maximized {
-        window.unmaximize()
-    } else {
-        window.maximize()
-    };
-    result.map_err(|e| failed("maximize", &e))
+    guarded("window_toggle_maximize", async move {
+        let maximized = window
+            .is_maximized()
+            .map_err(|e| failed("state query", &e))?;
+        let result = if maximized {
+            window.unmaximize()
+        } else {
+            window.maximize()
+        };
+        result.map_err(|e| failed("maximize", &e))
+    })
+    .await
 }
 
 /// Enter or leave full screen (F11). The result arrives as `window:state`.
 #[tauri::command]
 pub async fn window_toggle_fullscreen(window: WebviewWindow) -> Result<(), AppError> {
-    let fullscreen = window
-        .is_fullscreen()
-        .map_err(|e| failed("state query", &e))?;
-    window
-        .set_fullscreen(!fullscreen)
-        .map_err(|e| failed("fullscreen", &e))
+    guarded("window_toggle_fullscreen", async move {
+        let fullscreen = window
+            .is_fullscreen()
+            .map_err(|e| failed("state query", &e))?;
+        window
+            .set_fullscreen(!fullscreen)
+            .map_err(|e| failed("fullscreen", &e))
+    })
+    .await
 }
 
 /// The close button: starts the quit flow (`app:quit-requested`), never closes directly.
 #[tauri::command]
 pub async fn window_close(app: AppHandle) -> Result<(), AppError> {
-    quit::handle_close_request(&app);
-    Ok(())
+    guarded("window_close", async move {
+        quit::handle_close_request(&app);
+        Ok(())
+    })
+    .await
 }
 
 /// Begin an OS window drag. Call it from a primary-button `mousedown` on a drag region (the OS
@@ -54,7 +67,10 @@ pub async fn window_close(app: AppHandle) -> Result<(), AppError> {
 /// (`window_toggle_maximize`).
 #[tauri::command]
 pub async fn window_start_dragging(window: WebviewWindow) -> Result<(), AppError> {
-    window.start_dragging().map_err(|e| failed("drag", &e))
+    guarded("window_start_dragging", async move {
+        window.start_dragging().map_err(|e| failed("drag", &e))
+    })
+    .await
 }
 
 /// Translated labels for the macOS native menu (see `app_menu::validate_labels`). `labels` maps
@@ -66,21 +82,25 @@ pub async fn menu_set_labels(
     app: AppHandle,
     labels: std::collections::HashMap<String, String>,
 ) -> Result<(), AppError> {
-    let valid = crate::app_menu::validate_labels(labels)?;
-    #[cfg(target_os = "macos")]
-    {
-        use tauri::Manager;
-        let menu = crate::app_menu::build(&app, &valid).map_err(|e| failed("menu build", &e))?;
-        app.set_menu(menu).map_err(|e| failed("menu install", &e))?;
-        let state = app.state::<crate::app_menu::MenuLabels>();
-        *state
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = valid;
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = (&app, valid);
-    }
-    Ok(())
+    guarded("menu_set_labels", async move {
+        let valid = crate::app_menu::validate_labels(labels)?;
+        #[cfg(target_os = "macos")]
+        {
+            use tauri::Manager;
+            let menu =
+                crate::app_menu::build(&app, &valid).map_err(|e| failed("menu build", &e))?;
+            app.set_menu(menu).map_err(|e| failed("menu install", &e))?;
+            let state = app.state::<crate::app_menu::MenuLabels>();
+            *state
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = valid;
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (&app, valid);
+        }
+        Ok(())
+    })
+    .await
 }

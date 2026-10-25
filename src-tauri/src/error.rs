@@ -26,6 +26,13 @@ pub struct AppError {
 pub enum ErrorCode {
     // generic
     Internal,
+    /// A command panicked: a bug in Shellfin, not a problem with the user's setup. `command` is
+    /// the command name (`snake_case`). The panic location is in `detail` and in the log; the
+    /// panic message is never sent or logged (it may contain server data).
+    #[serde(rename_all = "camelCase")]
+    Bug {
+        command: String,
+    },
     Cancelled,
     PromptTimeout,
     StorageReadOnly,
@@ -444,6 +451,23 @@ impl AppError {
         Self::new(ErrorCode::Internal).with_detail(detail)
     }
 
+    /// A caught panic in `command` (§4.3, `commands::guarded`).
+    pub fn bug(command: impl Into<String>) -> Self {
+        Self::new(ErrorCode::Bug {
+            command: command.into(),
+        })
+    }
+
+    /// `bug{context}` for a panic just caught: the detail is the location only, never the
+    /// payload (it may contain server data or secrets). `context` is bounded and escaped.
+    pub fn panicked(context: &str, location: Option<&crate::logging::PanicLocation>) -> Self {
+        let error = Self::bug(crate::logging::sanitize_for_log(context, 64));
+        match location {
+            Some(location) => error.with_detail(format!("panicked at {location}")),
+            None => error.with_detail("panicked"),
+        }
+    }
+
     pub fn invalid_argument(field: impl Into<String>) -> Self {
         Self::new(ErrorCode::InvalidArgument {
             field: field.into(),
@@ -464,6 +488,43 @@ impl From<ErrorCode> for AppError {
     fn from(kind: ErrorCode) -> Self {
         Self::new(kind)
     }
+}
+
+/// Run `f` and turn a panic into `bug{context}` (location from the panic hook, which ran on this
+/// thread). Use it inside `spawn_blocking` closures: tokio's `JoinError` Display carries the
+/// panic payload, so a panic must never reach a `JoinError` that is formatted.
+pub fn catch_panic<T>(context: &str, f: impl FnOnce() -> T) -> Result<T, AppError> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(value) => Ok(value),
+        Err(_) => {
+            let location = crate::logging::take_panic_location();
+            tracing::error!(
+                context = %crate::logging::sanitize_for_log(context, 64),
+                "a background task panicked"
+            );
+            Err(AppError::panicked(context, location.as_ref()))
+        }
+    }
+}
+
+/// A background task that did not finish, without the `JoinError` text (its Display carries the
+/// panic payload): `bug{context}` for a panic, else `internal`.
+pub fn join_failed(panicked: bool, context: &str) -> AppError {
+    if panicked {
+        AppError::panicked(context, None)
+    } else if context.is_empty() {
+        AppError::internal("background task cancelled")
+    } else {
+        AppError::internal(format!(
+            "{}: background task cancelled",
+            crate::logging::sanitize_for_log(context, 64)
+        ))
+    }
+}
+
+/// Whether a Tauri `JoinHandle` failed because its task panicked.
+pub fn tauri_task_panicked(e: &tauri::Error) -> bool {
+    matches!(e, tauri::Error::JoinError(j) if j.is_panic())
 }
 
 #[cfg(test)]
@@ -488,6 +549,109 @@ mod tests {
             to_json(&AppError::new(ErrorCode::AgentConstraintUnsupported)),
             json!({ "code": "agentConstraintUnsupported" })
         );
+    }
+
+    #[test]
+    fn bug_carries_the_command_name() {
+        assert_eq!(
+            to_json(&AppError::bug("sftp_list").with_detail("panicked at src/x.rs:1:2")),
+            json!({
+                "code": "bug",
+                "params": { "command": "sftp_list" },
+                "detail": "panicked at src/x.rs:1:2"
+            })
+        );
+    }
+
+    /// Logs written on this thread while `f` runs.
+    fn captured_logs(f: impl FnOnce()) -> String {
+        use std::sync::{Arc, Mutex};
+        use tracing_subscriber::layer::SubscriberExt;
+        #[derive(Clone, Default)]
+        struct Buf(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Buf {
+            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(b);
+                Ok(b.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let buf = Buf::default();
+        let sink = buf.clone();
+        let subscriber = tracing_subscriber::registry().with(
+            tracing_subscriber::fmt::layer()
+                .with_ansi(false)
+                .with_writer(move || sink.clone()),
+        );
+        tracing::subscriber::with_default(subscriber, f);
+        String::from_utf8(buf.0.lock().unwrap().clone()).unwrap()
+    }
+
+    #[test]
+    fn caught_panics_keep_their_payload_out_of_errors_and_logs() {
+        crate::logging::install_test_panic_hook();
+        let mut result = None;
+        let logs = captured_logs(|| {
+            result = Some(catch_panic("known_hosts", || -> u8 {
+                panic!("test panic, payload marker PAYLOAD-44d1")
+            }));
+        });
+        let err = result.unwrap().unwrap_err();
+        assert_eq!(
+            err.kind,
+            ErrorCode::Bug {
+                command: "known_hosts".into()
+            }
+        );
+        let detail = err.detail.clone().unwrap();
+        assert!(
+            detail.starts_with("panicked at ") && detail.contains("error.rs"),
+            "{detail}"
+        );
+        assert!(
+            !serde_json::to_string(&err)
+                .unwrap()
+                .contains("PAYLOAD-44d1")
+        );
+        assert!(logs.contains("a background task panicked"), "{logs}");
+        assert!(!logs.contains("PAYLOAD-44d1"), "{logs}");
+        assert_eq!(catch_panic("x", || 3).unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn join_failures_never_use_the_join_error_text() {
+        crate::logging::install_test_panic_hook();
+        let joined =
+            tokio::spawn(async { panic!("test panic, payload marker PAYLOAD-5b70") }).await;
+        let e = joined.unwrap_err();
+        // tokio's text carries the payload: exactly why it is never formatted.
+        assert!(e.to_string().contains("PAYLOAD-5b70"));
+        let err = join_failed(e.is_panic(), "transfer");
+        assert_eq!(
+            err.kind,
+            ErrorCode::Bug {
+                command: "transfer".into()
+            }
+        );
+        assert!(
+            !serde_json::to_string(&err)
+                .unwrap()
+                .contains("PAYLOAD-5b70")
+        );
+        let cancelled = join_failed(false, "transfer");
+        assert_eq!(cancelled.kind, ErrorCode::Internal);
+        assert_eq!(
+            cancelled.detail.as_deref(),
+            Some("transfer: background task cancelled")
+        );
+        assert_eq!(
+            join_failed(false, "").detail.as_deref(),
+            Some("background task cancelled")
+        );
+        let tauri_err = tauri::Error::JoinError(e);
+        assert!(tauri_task_panicked(&tauri_err));
     }
 
     #[test]

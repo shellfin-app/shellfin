@@ -10,6 +10,7 @@ use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::app_state::AppState;
+use crate::commands::guarded;
 use crate::error::{AppError, ErrorCode};
 use crate::external_link::sanitize_dialog_text;
 use crate::ipc::dto::{ConflictPolicy, TransferEvent};
@@ -67,41 +68,44 @@ pub async fn transfer_download(
     dialog_title: String,
     progress: Channel<TransferEvent>,
 ) -> Result<Option<String>, AppError> {
-    path::validate_exact(&remote_path, "remotePath")?;
-    let session = state.sessions.session(&session_id)?;
-    let sftp = Sftp::for_session(&session).await?;
-    // A directory ⇒ `isADirectory`; a FIFO, socket or device ⇒ `notARegularFile`
-    // (before the Save dialog opens).
-    ensure_regular(&sftp.stat(&remote_path).await?, &remote_path)?;
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    let mut dialog = app
-        .dialog()
-        .file()
-        .set_title(sanitize_dialog_text(&dialog_title))
-        .set_file_name(sanitize_local_name(&remote_path));
-    if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
-        dialog = dialog.set_parent(&window);
-    }
-    dialog.save_file(move |picked| {
-        let _ = tx.send(picked);
-    });
-    let Some(picked) = rx.await.ok().flatten() else {
-        return Ok(None);
-    };
-    let Some(local) = into_paths(vec![picked]).pop() else {
-        return Ok(None);
-    };
-    let conflict = download_conflict(true, state.sessions.settings().transfers.on_conflict);
-    let id = state.sessions.transfers().start_with(
-        session,
-        TransferSpec::Download {
-            remote: remote_path,
-            local,
-        },
-        conflict,
-        Arc::new(ChannelSink(progress)),
-    );
-    Ok(Some(id))
+    guarded("transfer_download", async move {
+        path::validate_exact(&remote_path, "remotePath")?;
+        let session = state.sessions.session(&session_id)?;
+        let sftp = Sftp::for_session(&session).await?;
+        // A directory ⇒ `isADirectory`; a FIFO, socket or device ⇒ `notARegularFile`
+        // (before the Save dialog opens).
+        ensure_regular(&sftp.stat(&remote_path).await?, &remote_path)?;
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let mut dialog = app
+            .dialog()
+            .file()
+            .set_title(sanitize_dialog_text(&dialog_title))
+            .set_file_name(sanitize_local_name(&remote_path));
+        if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+            dialog = dialog.set_parent(&window);
+        }
+        dialog.save_file(move |picked| {
+            let _ = tx.send(picked);
+        });
+        let Some(picked) = rx.await.ok().flatten() else {
+            return Ok(None);
+        };
+        let Some(local) = into_paths(vec![picked]).pop() else {
+            return Ok(None);
+        };
+        let conflict = download_conflict(true, state.sessions.settings().transfers.on_conflict);
+        let id = state.sessions.transfers().start_with(
+            session,
+            TransferSpec::Download {
+                remote: remote_path,
+                local,
+            },
+            conflict,
+            Arc::new(ChannelSink(progress)),
+        );
+        Ok(Some(id))
+    })
+    .await
 }
 
 fn start_uploads(
@@ -143,21 +147,24 @@ pub async fn transfer_upload_pick(
     overwrite: bool,
     progress: Channel<TransferEvent>,
 ) -> Result<Vec<String>, AppError> {
-    path::validate_exact(&remote_dir, "remoteDir")?;
-    state.sessions.session(&session_id)?;
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    let mut dialog = app
-        .dialog()
-        .file()
-        .set_title(sanitize_dialog_text(&dialog_title));
-    if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
-        dialog = dialog.set_parent(&window);
-    }
-    dialog.pick_files(move |picked| {
-        let _ = tx.send(picked);
-    });
-    let paths = into_paths(rx.await.ok().flatten().unwrap_or_default());
-    start_uploads(&state, &session_id, paths, &remote_dir, overwrite, progress)
+    guarded("transfer_upload_pick", async move {
+        path::validate_exact(&remote_dir, "remoteDir")?;
+        state.sessions.session(&session_id)?;
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let mut dialog = app
+            .dialog()
+            .file()
+            .set_title(sanitize_dialog_text(&dialog_title));
+        if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+            dialog = dialog.set_parent(&window);
+        }
+        dialog.pick_files(move |picked| {
+            let _ = tx.send(picked);
+        });
+        let paths = into_paths(rx.await.ok().flatten().unwrap_or_default());
+        start_uploads(&state, &session_id, paths, &remote_dir, overwrite, progress)
+    })
+    .await
 }
 
 /// Upload the files of an OS drop (`drop:files`); the drop is consumed. `dropExpired` if the
@@ -171,10 +178,13 @@ pub async fn transfer_upload_dropped(
     overwrite: bool,
     progress: Channel<TransferEvent>,
 ) -> Result<Vec<String>, AppError> {
-    path::validate_exact(&remote_dir, "remoteDir")?;
-    state.sessions.session(&session_id)?;
-    let paths = state.drops.take(&drop_id)?;
-    start_uploads(&state, &session_id, paths, &remote_dir, overwrite, progress)
+    guarded("transfer_upload_dropped", async move {
+        path::validate_exact(&remote_dir, "remoteDir")?;
+        state.sessions.session(&session_id)?;
+        let paths = state.drops.take(&drop_id)?;
+        start_uploads(&state, &session_id, paths, &remote_dir, overwrite, progress)
+    })
+    .await
 }
 
 /// Re-run a failed retryable transfer (e.g. `remoteExists` with `overwrite: true`). Returns the
@@ -186,24 +196,27 @@ pub async fn transfer_retry(
     overwrite: bool,
     progress: Channel<TransferEvent>,
 ) -> Result<String, AppError> {
-    let transfers = state.sessions.transfers();
-    let (session_id, spec) = transfers.take_failed(&transfer_id)?;
-    let Some(session) = state.sessions.get(&session_id) else {
-        return Err(AppError::new(ErrorCode::NotFound {
-            what: crate::error::EntityKind::Transfer,
-            id: transfer_id,
-        }));
-    };
-    let conflict = match &spec {
-        TransferSpec::Upload { .. } => {
-            Conflict::resolve(overwrite, state.sessions.settings().transfers.on_conflict)
-        }
-        // The target was chosen in the Save dialog of the original download.
-        TransferSpec::Download { .. } => {
-            download_conflict(true, state.sessions.settings().transfers.on_conflict)
-        }
-    };
-    Ok(transfers.start_with(session, spec, conflict, Arc::new(ChannelSink(progress))))
+    guarded("transfer_retry", async move {
+        let transfers = state.sessions.transfers();
+        let (session_id, spec) = transfers.take_failed(&transfer_id)?;
+        let Some(session) = state.sessions.get(&session_id) else {
+            return Err(AppError::new(ErrorCode::NotFound {
+                what: crate::error::EntityKind::Transfer,
+                id: transfer_id,
+            }));
+        };
+        let conflict = match &spec {
+            TransferSpec::Upload { .. } => {
+                Conflict::resolve(overwrite, state.sessions.settings().transfers.on_conflict)
+            }
+            // The target was chosen in the Save dialog of the original download.
+            TransferSpec::Download { .. } => {
+                download_conflict(true, state.sessions.settings().transfers.on_conflict)
+            }
+        };
+        Ok(transfers.start_with(session, spec, conflict, Arc::new(ChannelSink(progress))))
+    })
+    .await
 }
 
 /// `WindowEvent::DragDrop` → `drop:hover` / `drop:leave` / `drop:files` (§4.2, §6.6). Positions
@@ -280,8 +293,11 @@ pub async fn transfer_cancel(
     state: State<'_, AppState>,
     transfer_id: String,
 ) -> Result<(), AppError> {
-    state.sessions.transfers().cancel(&transfer_id);
-    Ok(())
+    guarded("transfer_cancel", async move {
+        state.sessions.transfers().cancel(&transfer_id);
+        Ok(())
+    })
+    .await
 }
 
 #[cfg(test)]

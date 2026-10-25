@@ -27,6 +27,7 @@ pub mod logging;
 pub mod notify;
 pub mod platform;
 pub mod quit;
+pub mod report;
 pub mod secrets;
 pub mod session;
 pub mod sftp;

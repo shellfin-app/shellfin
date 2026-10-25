@@ -2,6 +2,7 @@ import i18next from "i18next";
 import { resolveLocale, setLanguage, setPseudoLocale } from "./i18n";
 import { syncNativeMenuLabels } from "./features/shell/nativeMenuLabels";
 import { syncNotificationTexts } from "./features/shell/notificationTexts";
+import { installGlobalErrorHandlers } from "./features/errorReport/errorReport";
 import { installAutoRefresh } from "./features/files/autoRefresh";
 import { restoreBookmarkSessions } from "./features/session/restoreSessions";
 import { guard } from "./lib/reportError";
@@ -39,6 +40,7 @@ async function applyLocale(locale: string): Promise<void> {
  * Throws on failure; use `startApp` to turn that into the retry screen.
  */
 export async function bootstrap(): Promise<void> {
+  installGlobalErrorHandlers(); // uncaught errors and unhandled rejections open the error details dialog (§8.14)
   const backend = await initBackend();
 
   if (!listenersInstalled) {

@@ -6,6 +6,7 @@ use tauri::State;
 use tauri::ipc::Channel;
 
 use crate::app_state::AppState;
+use crate::commands::guarded;
 use crate::error::AppError;
 use crate::ipc::dto::{OpenSessionRequest, PromptAnswer, SessionEvent};
 use crate::ssh::prompt::EventSink;
@@ -30,10 +31,13 @@ pub async fn session_open(
     req: OpenSessionRequest,
     events: Channel<SessionEvent>,
 ) -> Result<String, AppError> {
-    state
-        .sessions
-        .open(req, Arc::new(ChannelSink(events)))
-        .await
+    guarded("session_open", async move {
+        state
+            .sessions
+            .open(req, Arc::new(ChannelSink(events)))
+            .await
+    })
+    .await
 }
 
 #[tauri::command]
@@ -43,9 +47,12 @@ pub async fn session_answer_prompt(
     prompt_id: String,
     answer: PromptAnswer,
 ) -> Result<(), AppError> {
-    state
-        .sessions
-        .answer_prompt(&session_id, &prompt_id, answer)
+    guarded("session_answer_prompt", async move {
+        state
+            .sessions
+            .answer_prompt(&session_id, &prompt_id, answer)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -53,7 +60,10 @@ pub async fn session_reconnect_now(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<(), AppError> {
-    state.sessions.reconnect_now(&session_id)
+    guarded("session_reconnect_now", async move {
+        state.sessions.reconnect_now(&session_id)
+    })
+    .await
 }
 
 /// Real Disconnect: closes the SSH connection but keeps the session. State becomes
@@ -64,7 +74,10 @@ pub async fn session_disconnect(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<(), AppError> {
-    state.sessions.disconnect(&session_id).await
+    guarded("session_disconnect", async move {
+        state.sessions.disconnect(&session_id).await
+    })
+    .await
 }
 
 /// Idempotent; records recents and emits `recents:changed`.
@@ -74,8 +87,11 @@ pub async fn session_close(
     session_id: String,
     last_dir: Option<String>,
 ) -> Result<(), AppError> {
-    state.sessions.close(&session_id, last_dir).await;
-    Ok(())
+    guarded("session_close", async move {
+        state.sessions.close(&session_id, last_dir).await;
+        Ok(())
+    })
+    .await
 }
 
 /// Liveness probe of all sessions (§5.7): returns at once; each connected session is pinged
@@ -85,17 +101,20 @@ pub async fn session_close(
 /// no-op.
 #[tauri::command]
 pub async fn session_probe_all(state: State<'_, AppState>) -> Result<(), AppError> {
-    let sessions = state.sessions.clone();
-    let Some(round) = sessions.begin_probe_round() else {
-        tracing::debug!("probe round skipped (rate limit)");
-        return Ok(());
-    };
-    tauri::async_runtime::spawn(async move {
-        let _round = round;
-        let lost = sessions.probe_all().await;
-        if !lost.is_empty() {
-            tracing::info!(count = lost.len(), "probe declared sessions lost");
-        }
-    });
-    Ok(())
+    guarded("session_probe_all", async move {
+        let sessions = state.sessions.clone();
+        let Some(round) = sessions.begin_probe_round() else {
+            tracing::debug!("probe round skipped (rate limit)");
+            return Ok(());
+        };
+        tauri::async_runtime::spawn(async move {
+            let _round = round;
+            let lost = sessions.probe_all().await;
+            if !lost.is_empty() {
+                tracing::info!(count = lost.len(), "probe declared sessions lost");
+            }
+        });
+        Ok(())
+    })
+    .await
 }

@@ -1,0 +1,12 @@
+/* Error details dialog: facts, the log checkbox and a bounded, scrollable plain-text preview. */
+.error-report { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.error-report__facts { margin: 0; overflow-wrap: anywhere; }
+.error-report__preview {
+  margin: 0; max-height: calc(260px * var(--ui-scale, 1)); overflow: auto; padding: 8px 10px;
+  border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg);
+  color: var(--code-fg); font-size: calc(12px * var(--ui-scale, 1)); line-height: 1.5;
+  white-space: pre-wrap; overflow-wrap: anywhere; user-select: text;
+}
+.error-report__preview--busy { opacity: .6; }
+.error-report__preview:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.error-report__meta { display: flex; flex-wrap: wrap; gap: 2px 16px; margin: 0; overflow-wrap: anywhere; }

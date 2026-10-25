@@ -40,6 +40,7 @@ export const SCENARIO_NAMES = [
   "updateManualDownload",
   "importStartupCommands",
   "configWarnings",
+  "bugReport",
 ] as const;
 
 export type ScenarioName = (typeof SCENARIO_NAMES)[number];
@@ -122,6 +123,8 @@ export interface ScenarioHooks {
   importFile?: MockImportFile;
   /** Load warnings of the ssh config snapshot (and the `badLine` warnings dropped by the per-file cap). */
   sshConfigWarnings?: { warnings: ConfigWarning[]; droppedWarnings: number };
+  /** `app_open_logs_dir` (Help > Open logs folder) fails with this error. */
+  openLogsError?: AppError;
 }
 
 /** A bookmark import file as the mock's native dialog reads it (already parsed; `invalid` = parse-stage rejections). */
@@ -438,6 +441,16 @@ export const SCENARIOS: Record<ScenarioName, ScenarioHooks> = {
   ),
   updateAvailable: implemented(happyScript, { update: "self" }),
   updateManualDownload: implemented(happyScript, { update: "manual" }),
+  // Error details dialog (§8.14): Help > Open logs folder fails like a panicked command (`bug`), which opens the
+  // dialog by itself. Help > Report a problem… works in every scenario.
+  // Connecting to any host also ends in an `internal` failure delivered by event (a session task that panicked).
+  bugReport: implemented(
+    async (s) => {
+      if (!(await connecting(s))) return;
+      s.fail({ code: "internal", detail: "session task panicked" }, true);
+    },
+    { openLogsError: { code: "bug", params: { command: "app_open_logs_dir" }, detail: "panicked at src/commands/app.rs:42:5" } },
+  ),
   // File > Import bookmarks: the picked file has startup commands, one for a name that already exists ("pi-home")
   // and one hostile (bidi / invisible characters, markup), so the review dialog has something to show.
   importStartupCommands: implemented(happyScript, {

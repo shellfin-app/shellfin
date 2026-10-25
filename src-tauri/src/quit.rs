@@ -239,7 +239,11 @@ async fn record_open_bookmarks<R: Runtime>(app: &AppHandle<R>) {
     match recorded {
         Ok(Ok(())) => {}
         Ok(Err(e)) => tracing::warn!(code = ?e.kind, "could not record the open bookmarks"),
-        Err(e) => tracing::warn!(error = %e, "could not record the open bookmarks"),
+        // Never `%e`: a `JoinError`'s text carries the panic payload.
+        Err(e) => tracing::warn!(
+            panicked = crate::error::tauri_task_panicked(&e),
+            "could not record the open bookmarks"
+        ),
     }
 }
 

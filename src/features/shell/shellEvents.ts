@@ -41,6 +41,7 @@ export const NATIVE_MENU: Record<string, ActionId | (() => void)> = {
   "window.prevTab": () => cycleActiveBuffer(-1),
   "help.shortcuts": "keyboardShortcuts",
   "help.openLogs": "openLogs",
+  "help.reportProblem": "reportProblem",
   "help.website": "documentation",
   "help.checkForUpdates": "checkForUpdates", // macOS: in the app menu (convention), Help elsewhere
 };

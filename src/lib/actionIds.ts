@@ -58,7 +58,7 @@ export const ACTION_IDS = [
   // Help
   "keyboardShortcuts",
   "documentation",
-  "reportIssue",
+  "reportProblem",
   "securityPolicy",
   "openLogs",
   "checkForUpdates",
@@ -113,7 +113,7 @@ export const MENUS: Record<MenuId, readonly MenuEntry[]> = {
     "manageKeys",
   ],
   terminal: ["newTerminal", "closeTerminal", "renameTerminal", "restartTerminal", "-", "clearTerminal", "findInTerminal", "saveTerminalOutput"],
-  help: ["keyboardShortcuts", "documentation", "reportIssue", "securityPolicy", "-", "openLogs", "-", "checkForUpdates", "about"],
+  help: ["keyboardShortcuts", "documentation", "reportProblem", "securityPolicy", "-", "openLogs", "-", "checkForUpdates", "about"],
 };
 
 /** Cheat-sheet sections (Help > Keyboard shortcuts): the menus, plus the focus shortcuts. */

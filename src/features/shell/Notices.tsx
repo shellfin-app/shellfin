@@ -5,7 +5,9 @@ import { Icon } from "../../components/Icon";
 import { IconButton } from "../../components/IconButton";
 import { displayLocalPath } from "../../lib/localPath";
 import { displayName } from "../../lib/serverText";
+import type { AppError } from "../../ipc/types";
 import { useStore } from "../../state/store";
+import { openErrorDetails, sourceFromAppError } from "../errorReport/errorReport";
 import type { Notice } from "../../state/slices/ui";
 
 /** How long an informational toast stays (ms). They never stick: the log and the failing view keep the details. */
@@ -83,6 +85,20 @@ function NoticeItem({ notice }: { notice: Notice }) {
       {notice.level === "success" ? <Icon name="check" size={14} /> : notice.level === "info" ? null : <Icon name="alert" size={14} />}
       <span className="sr-only">{t(`notices.level.${notice.level}`)}: </span>
       <span className="notice__text">{text}</span>
+      {notice.level === "error" && notice.error ? (
+        <button
+          type="button"
+          className="notice__action"
+          onClick={() => {
+            // Compute before dismissing; opening replaces any other dialog (an explicit user action).
+            const source = notice.source ?? sourceFromAppError(notice.error as AppError, { occurredAtMs: notice.occurredAtMs });
+            dismiss(id);
+            openErrorDetails(source);
+          }}
+        >
+          {t("errorReport.details")}
+        </button>
+      ) : null}
       <IconButton icon="close" iconSize={12} size={22} label={t("notices.dismiss")} onClick={() => dismiss(id)} />
     </div>
   );

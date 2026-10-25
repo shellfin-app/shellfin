@@ -14,6 +14,7 @@ import type {
   BookmarksImportResult,
   DirListing,
   EnvInfo,
+  ErrorReport,
   FileEntry,
   Group,
   LocalKeyInfo,
@@ -73,6 +74,7 @@ export class TauriBackend implements Backend {
     call<string | null>("dialog_pick_identity_file", { title, filterName });
   appSaveTextFile: Backend["appSaveTextFile"] = (suggestedName, contents, dialogTitle) =>
     call<SaveTextOutcome>("app_save_text_file", { suggestedName, contents, dialogTitle });
+  appErrorReport: Backend["appErrorReport"] = (input) => call<ErrorReport>("app_error_report", { input });
 
   // ---- window ----
   windowMinimize = () => call<void>("window_minimize");

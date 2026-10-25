@@ -16,6 +16,8 @@ import type {
   DropHoverPayload,
   EmptyPayload,
   EnvInfo,
+  ErrorReport,
+  ErrorReportInput,
   MenuActionPayload,
   NotificationTexts,
   WindowState,
@@ -93,6 +95,11 @@ export interface Backend {
   dialogPickIdentityFile(title: string, filterName: string): Promise<string | null>;
   /** Native Save dialog + atomic UTF-8 write (no path ever comes from the page). `saved: false` = cancelled. */
   appSaveTextFile(suggestedName: string, contents: string, dialogTitle: string): Promise<SaveTextOutcome>;
+  /**
+   * Error details dialog (§9.6): the redacted Markdown report (preview = clipboard text) and the pre-filled GitHub
+   * bug form URL (open it with `appOpenExternal`). Sends nothing; `includeLog` adds the current log's tail.
+   */
+  appErrorReport(input: ErrorReportInput): Promise<ErrorReport>;
 
   // ---- window (custom title bar): Windows/Linux draw their own controls ----
   windowMinimize(): Promise<void>;

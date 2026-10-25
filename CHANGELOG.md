@@ -15,6 +15,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Problems found in your SSH config are now shown: the Config card on the Home screen shows "N warnings" when there
   are any, and opens a list with the file, the line and what is wrong. Unreadable lines beyond the first 50 in a file
   are counted as "and N more" instead of being dropped silently.
+- An error details dialog with a "Report on GitHub…" button. It opens by itself only for unexpected failures (and
+  a bug inside Shellfin is now reported as one instead of leaving an action hanging); other errors offer it through
+  "Details…", and Help → "Report a problem…" opens it without an error. It shows exactly the report that will be
+  copied: the error, your Shellfin version, operating system, architecture and installation type, and, only if you
+  tick the box, the last lines of the current log. Host names, IP addresses, user names, your home folder and
+  remote paths are always replaced with placeholders. Nothing is sent automatically: the button copies the report
+  and opens a pre-filled GitHub bug form in your browser for you to review and submit.
 
 ### Changed
 

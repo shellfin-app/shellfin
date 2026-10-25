@@ -35,6 +35,7 @@ const ROWS: Row[] = [
   ["keys_list", (b) => b.keysList(), []],
   ["keys_read_public", (b) => b.keysReadPublic("p"), ["path"]],
   ["app_save_text_file", (b) => b.appSaveTextFile("n", "c", "t"), ["contents", "dialogTitle", "suggestedName"]],
+  ["app_error_report", (b) => b.appErrorReport({ includeLog: false }), ["input"]],
   ["window_minimize", (b) => b.windowMinimize(), []],
   ["window_toggle_maximize", (b) => b.windowToggleMaximize(), []],
   ["window_toggle_fullscreen", (b) => b.windowToggleFullscreen(), []],
@@ -116,7 +117,7 @@ describe("TauriBackend command mapping", () => {
 
   it("covers exactly the commands listed in src-tauri/src/commands/names.rs", () => {
     expect(ROWS.map(([cmd]) => cmd).sort()).toEqual([...rustCommands].sort());
-    expect(rustCommands.length).toBe(69);
+    expect(rustCommands.length).toBe(70);
   });
 
   for (const [command, run, keys] of ROWS) {

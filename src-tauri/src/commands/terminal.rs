@@ -8,6 +8,7 @@ use tauri::http::HeaderMap;
 use tauri::ipc::{Channel, InvokeBody, InvokeResponseBody, Request};
 
 use crate::app_state::AppState;
+use crate::commands::guarded;
 use crate::error::{AppError, ErrorCode};
 use crate::ipc::dto::{TermEvent, TermSize};
 use crate::terminal::{self, TermOutput};
@@ -48,17 +49,20 @@ pub async fn term_open(
     output: Channel<InvokeResponseBody>,
     cwd_fallback: Option<bool>,
 ) -> Result<String, AppError> {
-    let session = state.sessions.get(&session_id).ok_or_else(|| {
-        AppError::new(ErrorCode::SessionNotFound {
-            session_id: session_id.clone(),
-        })
-    })?;
-    let options = terminal::OpenOptions {
-        cwd,
-        cwd_fallback: cwd_fallback.unwrap_or(false),
-        term_type: state.sessions.settings().terminal.term_type,
-    };
-    terminal::open_with(&session, size, &options, Arc::new(ChannelOutput(output))).await
+    guarded("term_open", async move {
+        let session = state.sessions.get(&session_id).ok_or_else(|| {
+            AppError::new(ErrorCode::SessionNotFound {
+                session_id: session_id.clone(),
+            })
+        })?;
+        let options = terminal::OpenOptions {
+            cwd,
+            cwd_fallback: cwd_fallback.unwrap_or(false),
+            term_type: state.sessions.settings().terminal.term_type,
+        };
+        terminal::open_with(&session, size, &options, Arc::new(ChannelOutput(output))).await
+    })
+    .await
 }
 
 /// Header that carries the terminal id of a raw-body `term_write`.
@@ -249,25 +253,34 @@ pub async fn term_ack(
     term_id: String,
     bytes: u64,
 ) -> Result<(), AppError> {
-    if let Some((_, term)) = state.sessions.find_terminal(&term_id) {
-        term.ack(bytes);
-    }
-    Ok(())
+    guarded("term_ack", async move {
+        if let Some((_, term)) = state.sessions.find_terminal(&term_id) {
+            term.ack(bytes);
+        }
+        Ok(())
+    })
+    .await
 }
 
 /// A new shell in the same terminal (same size and cwd). Errors: `terminalNotFound`,
 /// `notConnected`, `channelOpenFailed{reason}`.
 #[tauri::command]
 pub async fn term_restart(state: State<'_, AppState>, term_id: String) -> Result<(), AppError> {
-    let (session, term) = state.sessions.terminal(&term_id)?;
-    terminal::restart(&session, &term).await
+    guarded("term_restart", async move {
+        let (session, term) = state.sessions.terminal(&term_id)?;
+        terminal::restart(&session, &term).await
+    })
+    .await
 }
 
 /// Idempotent close (no errors by contract).
 #[tauri::command]
 pub async fn term_close(state: State<'_, AppState>, term_id: String) -> Result<(), AppError> {
-    if let Some((session, _)) = state.sessions.find_terminal(&term_id) {
-        terminal::close(&session, &term_id).await;
-    }
-    Ok(())
+    guarded("term_close", async move {
+        if let Some((session, _)) = state.sessions.find_terminal(&term_id) {
+            terminal::close(&session, &term_id).await;
+        }
+        Ok(())
+    })
+    .await
 }
