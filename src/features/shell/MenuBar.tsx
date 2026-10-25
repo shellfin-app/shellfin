@@ -4,7 +4,8 @@ import { useTranslation } from "react-i18next";
 import { Icon } from "../../components/Icon";
 import { MENUS, MENU_IDS, shortcutLabel, type MenuId } from "../../lib/actionIds";
 import { SEL_MENU_ITEM } from "../../lib/domIds";
-import { mnemonicChar, mnemonicOf } from "../../lib/menuMnemonic";
+import { isImeKeyEvent } from "../../lib/ime";
+import { foldMnemonic, mnemonicOf, parseMenuTitle, plainMenuTitle } from "../../lib/menuMnemonic";
 import { useStore } from "../../state/store";
 import { isModalOpen } from "../session/promptVisibility";
 import { ACTIONS, actionEnabled, actionLabel, runAction } from "../actions/registry";
@@ -24,13 +25,14 @@ function inTerminal(el: Element | null): boolean {
   return el?.closest(".xterm") != null;
 }
 
-/** The label with its mnemonic letter (first letter) marked. */
+/** The label with its mnemonic character marked: the `&`-marked one, else the first (`lib/menuMnemonic.ts`). */
 function MenuLabel({ text }: { text: string }) {
-  const first = mnemonicChar(text);
+  const { before, mnemonic, after } = parseMenuTitle(text);
   return (
     <>
-      <span className="menubar__mnemonic">{first}</span>
-      {text.slice(first.length)}
+      {before}
+      <span className="menubar__mnemonic">{mnemonic}</span>
+      {after}
     </>
   );
 }
@@ -159,7 +161,7 @@ function Dropdown({
       ref={rootRef}
       className="context-menu menubar__dropdown"
       role="menu"
-      aria-label={menu === "root" ? t("menubar.compact") : t(`menubar.${menu}`)}
+      aria-label={menu === "root" ? t("menubar.compact") : plainMenuTitle(t(`menubar.${menu}`))}
       tabIndex={-1}
       style={{ left, top }}
       onKeyDown={onKeyDown}
@@ -254,10 +256,10 @@ export function MenuBar() {
   const [current, setCurrent] = useState<MenuId>("file");
   const [active, setActive] = useState(false);
   const [anchor, setAnchor] = useState({ left: 0, top: 0 });
-  const compact = useCompactTitleBar();
   const buttons = useRef<Partial<Record<MenuId, HTMLButtonElement | null>>>({});
   const compactButton = useRef<HTMLButtonElement>(null);
   const barRef = useRef<HTMLDivElement>(null);
+  const compact = useCompactTitleBar(barRef);
   const previousFocus = useRef<HTMLElement | null>(null);
 
   const remember = useCallback(() => {
@@ -309,6 +311,7 @@ export function MenuBar() {
         return;
       }
       altAlone = false;
+      if (isImeKeyEvent(e)) return; // a key the IME is composing with is not a menu key
       const state = useStore.getState();
       if (isModalOpen(state) || inTerminal(document.activeElement)) return;
       if (e.key === "F10" && !e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey) {
@@ -318,9 +321,10 @@ export function MenuBar() {
         return;
       }
       if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && e.getModifierState("AltGraph") !== true && e.key.length === 1) {
-        const letter = e.key.toLowerCase();
-        // The mnemonic is the first letter of the translated name; with another keyboard layout than the UI language
-        // (Ukrainian UI on a Latin layout and the reverse) the physical key of the English name's first letter works too.
+        const letter = foldMnemonic(e.key);
+        // The mnemonic is the `&`-marked (else the first) letter of the translated name, compared without accents
+        // (Alt+E opens "Édition"); with another keyboard layout than the UI language (Ukrainian UI on a Latin layout
+        // and the reverse) the physical key of the English name's mnemonic works too.
         const physical = /^Key([A-Z])$/.exec(e.code)?.[1]?.toLowerCase();
         const english = i18next.getFixedT("en");
         const hit =

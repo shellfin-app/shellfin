@@ -91,6 +91,13 @@ input:focus-visible { outline: none; }
   color: var(--link); font: inherit; text-decoration: underline; cursor: pointer;
 }
 .notice__action:hover { color: var(--text-bright); }
+/* A button that reads as a link inside running text (it opens through app_open_external, never an <a href>). */
+.link-button {
+  display: inline; padding: 0; margin: 0; border: 0; background: none; font: inherit; cursor: pointer;
+  color: var(--link); text-decoration: underline; text-align: inherit; overflow-wrap: anywhere;
+}
+.link-button:hover { color: var(--link-hover); }
+.link-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 2px; }
 .error-boundary, .boot-error {
   display: flex; flex-direction: column; align-items: flex-start; gap: 12px; padding: 24px; color: var(--text-muted);
 }
@@ -106,3 +113,13 @@ input, textarea, [contenteditable="true"], .cm-editor, .selectable, .dialog__bod
   -webkit-user-select: text;
 }
 img, a { -webkit-user-drag: none; }
+
+/* ---- per-language typography (ARCHITECTURE §8.5, #17) ----
+   CJK has no letter case: the tracking of the uppercase section headings only spreads the glyphs apart. Korean wraps
+   at spaces, not inside a word; Japanese and Chinese follow the strict line-breaking rules (no line starts with 。、」).
+   Single-tag :lang() only (the list form is newer than the oldest supported WebKit); file content in the editor and the
+   terminal keeps the default breaking. */
+:is(:lang(ja), :lang(zh), :lang(ko)) :is(.sec, .settings-group legend, .palette [cmdk-group-heading], .update__notes-title) { letter-spacing: 0; }
+:root:lang(ko) body { word-break: keep-all; }
+:root:lang(ja) body, :root:lang(zh) body { line-break: strict; }
+:root:is(:lang(ja), :lang(zh), :lang(ko)) :is(.cm-editor, .xterm) { word-break: normal; line-break: auto; }

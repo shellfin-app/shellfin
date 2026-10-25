@@ -35,6 +35,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- The Windows installer is now also in Ukrainian; it follows the Windows display language.
+- The menu bar switches to the single Menu button as soon as the menu names do not fit in the title bar (longer
+  translations, a larger UI font size), not only below 960 px.
+- Bookmarks with the same position are sorted by name in the UI language instead of the system's.
 - The window can be made much smaller (minimum 580 × 500 instead of 960 × 600), so it fits half of the screen in
   Snap layouts on laptops with display scaling. Below 960 px wide the menu bar becomes one Menu button (same
   menus, same Alt/F10 keys), the window controls always stay at the right edge, and the status bar hides the
@@ -74,6 +78,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - On Windows, saving settings, bookmarks, recents or an exported file no longer fails with "Access is denied" when
   another program (an antivirus scan, the search indexer, a sync client, an editor) has the file open for a moment.
   The save waits up to about a second for the file to be released.
+- Typing with an input method (Japanese, Chinese, Korean): Enter that confirms a conversion no longer renames a tab,
+  creates a file or folder, or jumps to the next terminal search match, and Escape that cancels a conversion no
+  longer closes the dialog, the command palette, the find bar or the rename field. Keys used by the input method no
+  longer trigger shortcuts or open a menu.
 - Selected text in the editor is clearly visible again: the current-line highlight no longer covers the selection.
   The selection is a tint of the accent colour, in both themes, with or without focus. To keep syntax colours readable
   on it, comments are a little lighter in the dark theme (and purple slightly lighter), and the light theme's syntax

@@ -10,8 +10,23 @@ const MAP: Record<string, string> = {
   N: "Ñ", O: "Ó", P: "Þ", Q: "Ǫ", R: "Ŕ", S: "Š", T: "Ţ", U: "Ú", V: "Ṽ", W: "Ŵ", X: "Ẋ", Y: "Ý", Z: "Ž",
 };
 
-/** Pseudo-localize one string. `{{...}}` tokens are left untouched. */
-export function pseudoLocalize(source: string): string {
+/** Default padding (share of the letters): about the growth of Ukrainian over English. */
+export const PSEUDO_PADDING = 0.3;
+
+/**
+ * The padding of the `?xa=` dev switch: "1" is the default 30 %, a whole percentage 0..200 ("40") is used as given
+ * (35-40 % simulates German), anything else (absent, garbage) is null = pseudo-locale off.
+ */
+export function pseudoPadding(param: string | null): number | null {
+  if (param === null) return null;
+  if (param === "1") return PSEUDO_PADDING;
+  if (!/^\d{1,3}$/.test(param)) return null;
+  const percent = Number(param);
+  return percent <= 200 ? percent / 100 : null;
+}
+
+/** Pseudo-localize one string with `padding` (share of the letters) extra `·`. `{{...}}` tokens are left untouched. */
+export function pseudoLocalize(source: string, padding = PSEUDO_PADDING): string {
   const parts = source.split(/(\{\{[^}]*\}\})/);
   let letters = 0;
   const body = parts
@@ -26,16 +41,16 @@ export function pseudoLocalize(source: string): string {
       return out;
     })
     .join("");
-  const pad = "·".repeat(Math.ceil(letters * 0.3));
+  const pad = "·".repeat(Math.ceil(letters * Math.max(0, padding)));
   return `[${body}${pad}]`;
 }
 
 /** Recursively pseudo-localize a translation resource object. */
-export function pseudoLocalizeBundle(bundle: Record<string, unknown>): Record<string, unknown> {
+export function pseudoLocalizeBundle(bundle: Record<string, unknown>, padding = PSEUDO_PADDING): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(bundle)) {
-    if (typeof value === "string") out[key] = pseudoLocalize(value);
-    else if (value && typeof value === "object") out[key] = pseudoLocalizeBundle(value as Record<string, unknown>);
+    if (typeof value === "string") out[key] = pseudoLocalize(value, padding);
+    else if (value && typeof value === "object") out[key] = pseudoLocalizeBundle(value as Record<string, unknown>, padding);
     else out[key] = value;
   }
   return out;

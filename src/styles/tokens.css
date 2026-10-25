@@ -184,3 +184,19 @@
 }
 /* Spinners are the one animation that carries meaning: they turn slowly instead of freezing. */
 :root[data-motion="reduce"] .spin { animation: spin 3s linear infinite !important; }
+
+/* ---- per-language UI fonts (ARCHITECTURE §8.5, #17) ----
+   `<html lang>` follows the UI language (setLanguage). No CJK font is bundled (several MB per script): the stacks name
+   the system fonts of Windows, macOS and Linux in that order, so the browser does not guess (Han unification would
+   otherwise pick Chinese glyphs in a Japanese UI on Linux). Inter stays first, so Latin text, digits and technical
+   tokens look the same in every language. The monospace stack is unchanged (terminal and editor content is server
+   text; the browser falls back per glyph). */
+:root:lang(ja) {
+  --font-ui: "Inter", "Yu Gothic UI", "Meiryo UI", "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans CJK JP", "Noto Sans JP", system-ui, sans-serif;
+}
+:root:lang(zh-CN) {
+  --font-ui: "Inter", "Microsoft YaHei UI", "PingFang SC", "Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC", system-ui, sans-serif;
+}
+:root:lang(ko) {
+  --font-ui: "Inter", "Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans CJK KR", "Noto Sans KR", system-ui, sans-serif;
+}

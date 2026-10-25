@@ -4,6 +4,7 @@ import { Button } from "../../components/Button";
 import { Dialog } from "../../components/Dialog";
 import { t as translate } from "../../i18n/translate";
 import { A, CHEAT_SHEET, shortcutLabel } from "../../lib/actionIds";
+import { nativeMenuTitle } from "../../lib/menuMnemonic";
 import { useStore } from "../../state/store";
 import { actionLabel, runAction } from "../actions/registry";
 import "./helpDialogs.css";
@@ -32,7 +33,8 @@ export function ShortcutsDialog() {
             return keys ? [{ id, keys }] : [];
           });
           if (rows.length === 0) return null;
-          const title = section.id.startsWith("menu:") ? translate(`menubar.${section.id.slice(5)}`) : t("shortcuts.focus");
+          // A heading, not a menu: no mnemonic marker and no CJK "(F)" group (lib/menuMnemonic.ts).
+          const title = section.id.startsWith("menu:") ? nativeMenuTitle(translate(`menubar.${section.id.slice(5)}`)) : t("shortcuts.focus");
           return (
             <section key={section.id} className="shortcuts__section" aria-label={title}>
               <h3 className="sec">{title}</h3>

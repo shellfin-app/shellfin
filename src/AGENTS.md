@@ -24,9 +24,13 @@ Applies on top of the root [AGENTS.md](../AGENTS.md). Deep reference: `docs/ARCH
    cannot be both a string and a parent.
 3. Dynamic key families (`errors.<code>`, `action.<id>`, `menubar.<id>`, enum families) are listed in
    `preservePatterns` of `../i18next.config.ts`; extend it when you add a family.
-4. `npm run i18n:check` (also fails when two menu bar titles of one locale start with the same letter, i.e. share an
-   Alt+letter mnemonic, or cannot be opened with Alt+letter; `scripts/menu-mnemonics-check.mjs`) and `npm run lint`
-   must pass. In dev builds the pseudo-locale `en-XA` shows missed strings.
+4. `npm run i18n:check` (also fails when two menu bar titles of one locale share an Alt+letter mnemonic or one
+   cannot be opened with Alt+letter; `&` marks a mnemonic other than the first letter, CJK titles need `(&F)`-style
+   ASCII markers with the English letter; `scripts/menu-mnemonics-check.mjs`, CONTRIBUTING "Menu bar mnemonics") and
+   `npm run lint` must pass. Show a `menubar.*` title anywhere but the menu bar through `plainMenuTitle` /
+   `nativeMenuTitle` (`lib/menuMnemonic.ts`). In dev builds the pseudo-locale `en-XA` (`?xa=1`, `?xa=40`) shows
+   missed strings and long text.
+   Enter / Escape handlers on text fields ignore IME keys (`isImeKeyEvent`, `lib/ime.ts`).
 5. Never concatenate translated fragments; format numbers/sizes/times with `i18n/format.ts`.
 6. Server text goes through `displayServerText` (and `<ServerText>`); remote names/paths through
    `displayName`/`displayPath`; never into `<Trans>`, never as HTML.

@@ -29,12 +29,38 @@ export function clampSidebarWidth(width: number, windowWidth: number): number {
   return Math.round(Math.min(sidebarMaxPx(windowWidth), Math.max(SIDEBAR_MIN, width)));
 }
 
-/** Below this window width the title bar shows one menu button instead of the six menu titles (`TitleBar.tsx`). */
+/**
+ * Below this window width the title bar always shows one menu button instead of the six menu titles (`TitleBar.tsx`).
+ * At or above it the titles stay unless they do not fit (`isCompactTitleBar` with a measurement): the lower bound of
+ * the measured switch, so English keeps the behaviour of #14.
+ */
 export const COMPACT_TITLEBAR_BELOW = 960;
 /** Below this window width the status bar drops the transfer rates and the key type (`shell.css`, same number). */
 export const COMPACT_STATUSBAR_BELOW = 760;
+/** Below this window width the palette uses its short placeholder (`CommandPalette.tsx`). */
+export const SHORT_PALETTE_PLACEHOLDER_BELOW = 960;
+/** What the title bar keeps for the connection tab strip (`.conn-tabs-wrap` min-width in `shell.css`). */
+export const TITLEBAR_TABS_MIN = 140;
+/** What the title bar keeps for the empty drag area (`.title-bar__drag` min-width in `shell.css`). */
+export const TITLEBAR_DRAG_MIN = 24;
 
-/** Whether a window of `windowWidth` px uses the compact title bar. */
-export function isCompactTitleBar(windowWidth: number): boolean {
-  return windowWidth < COMPACT_TITLEBAR_BELOW;
+/** Measured widths of the title bar (CSS px), see `useCompactTitleBar`. */
+export interface TitleBarFit {
+  /** Inner width of `.title-bar__content` (everything left of the window controls). */
+  contentWidth: number;
+  /** Natural width of the six menu titles in the current language and UI scale. */
+  menuWidth: number;
+  /** Width of the other fixed parts in the row: logo, search button, the gaps between the items. */
+  othersWidth: number;
+}
+
+/**
+ * Whether a window of `windowWidth` px uses the compact title bar: always below `COMPACT_TITLEBAR_BELOW`, and above
+ * it when the measured menu titles plus the fixed parts and the minimum tab strip and drag area do not fit. Without
+ * a usable measurement (unknown yet, or no layout as in jsdom) only the width bound decides.
+ */
+export function isCompactTitleBar(windowWidth: number, fit?: TitleBarFit | null): boolean {
+  if (windowWidth < COMPACT_TITLEBAR_BELOW) return true;
+  if (!fit || !(fit.contentWidth > 0) || !(fit.menuWidth > 0) || !Number.isFinite(fit.othersWidth)) return false;
+  return fit.menuWidth + Math.max(0, fit.othersWidth) + TITLEBAR_TABS_MIN + TITLEBAR_DRAG_MIN > fit.contentWidth;
 }

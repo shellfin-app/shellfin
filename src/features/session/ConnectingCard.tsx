@@ -4,6 +4,7 @@ import { Button } from "../../components/Button";
 import { Icon } from "../../components/Icon";
 import { StatePanel } from "../../components/StatePanel";
 import { CONNECT_STEPS, currentStep, type ConnectStep } from "../../lib/connectSteps";
+import { isImeKeyEvent } from "../../lib/ime";
 import { guard } from "../../lib/reportError";
 import { displayServerText } from "../../lib/serverText";
 import { basename } from "../../lib/remotePath";
@@ -37,7 +38,7 @@ export function ConnectingCard({ sessionId }: { sessionId: string }) {
   // Esc cancels while nothing modal is above the card (prompts and dialogs handle their own Escape first).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape" || e.defaultPrevented) return;
+      if (e.key !== "Escape" || e.defaultPrevented || isImeKeyEvent(e)) return;
       const st = useStore.getState();
       if (st.dialog !== null || st.palette !== null || st.prompts[sessionId] !== undefined) return;
       if (st.activeSessionId !== sessionId) return;

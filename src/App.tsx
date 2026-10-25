@@ -15,6 +15,7 @@ import { openTerminalTab, rightClickPastes } from "./features/terminal/terminalA
 import { errorMessage } from "./i18n/errorMessage";
 import { isBrowserAccelerator } from "./lib/accelerators";
 import { installDragDropGuard } from "./lib/dragdrop";
+import { isImeKeyEvent } from "./lib/ime";
 import { connectionTabIndex, matchShortcut } from "./lib/keybindings";
 import { isModalOpen } from "./features/session/promptVisibility";
 import { guard } from "./lib/reportError";
@@ -24,6 +25,8 @@ import { useStore } from "./state/store";
 function useGlobalShortcuts() {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      // A key the IME is composing with is text input, never a shortcut.
+      if (isImeKeyEvent(e)) return;
       const state = useStore.getState();
       // No global shortcut while a modal (dialog, palette, prompt) is open: the modal owns the keyboard.
       if (isModalOpen(state)) return;

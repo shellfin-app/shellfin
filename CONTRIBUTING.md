@@ -263,12 +263,82 @@ looks, and `docs/i18n-glossary-uk.md` shows how a glossary is kept (add one for 
    suffixes (`_one`, `_few`, `_many`, `_other` as required by the language's CLDR plural rules) intact.
 2. Do not translate technical terms such as `known_hosts`, `ssh-agent`, `SHA256` or the product name. Keep
    terminology consistent with the glossary of your language (Ukrainian: `docs/i18n-glossary-uk.md`).
-3. Register the language: add it to `locales` in `i18next.config.ts` and to `SUPPORTED_LANGUAGES` and
-   `LANGUAGE_ENDONYMS` in `src/i18n/index.ts` (locale files are lazy-loaded chunks). The language then appears in
-   Settings > General > Language and the macOS menu follows it.
-4. Run `npm run i18n:check`, `npm run test` and `npm run lint`. The parity test `src/i18n/parity.test.ts` checks
+3. Mark the menu bar mnemonics (see below).
+4. Register the language: add it to `locales` in `i18next.config.ts`; to `SUPPORTED_LANGUAGES`,
+   `LANGUAGE_ENDONYMS` and `LANGUAGE_STATUS` (`"beta"` for a new translation) in `src/i18n/index.ts`; to
+   `bundle.windows.nsis.languages` in `src-tauri/tauri.conf.json` (the NSIS name, for example `German`,
+   `PortugueseBR`, `SimpChinese`; Tauri ships the installer strings) and to `CFBundleLocalizations` in
+   `src-tauri/Info.plist` (Apple's identifier: `zh-Hans` for `zh-CN`, `pt-BR` as is). `src/i18n/i18n.test.ts` fails until all of
+   them agree. If the language needs a region or script rule (like `pt-*` -> `pt-BR`, `zh-Hant` -> none), extend
+   `LOCALE_RULES` in `src/i18n/index.ts` with a test row. The language then appears in Settings > General > Language,
+   "System" picks it when it is the OS language, and the macOS menu follows it.
+5. Run `npm run i18n:check`, `npm run test` and `npm run lint`. The parity test `src/i18n/parity.test.ts` checks
    that your file has the same keys as English (plural-aware), the plural forms of the language, the same
-   `{{tokens}}` and no empty strings. In dev builds a pseudo-locale (`en-XA`) is
-   available to spot text that does not go through i18n or does not fit its layout.
-5. Open a pull request describing the language and your confidence level; a second reviewer who speaks the
-   language is appreciated.
+   `{{tokens}}` and no empty strings. In dev builds the pseudo-locale `en-XA` (`?xa=1`, or `?xa=40` for 40 %
+   longer text, about German) shows text that does not go through i18n or does not fit its layout.
+6. Open a pull request describing the language and your confidence level; a second reviewer who speaks the
+   language is appreciated. Attach screenshots at 580 px and 1280 px window width (Home, connect dialog, host key
+   dialog, file tree context menu, settings, conflict dialog).
+
+### Glossary
+
+Write `docs/i18n-glossary-<lng>.md` before translating, after the pattern of `docs/i18n-glossary-uk.md`: **Style**
+(tone, buttons and menu items, quotes, punctuation, units), **Plurals** (the categories below with examples),
+**Terms** (one translation per concept: connection vs session, upload vs download, host key vs fingerprint,
+passphrase vs password, bookmark, known hosts), **Keep in English** (SSH, SFTP, `known_hosts`, `ssh-agent`,
+`ProxyJump`, `SHA256`, LF/CRLF, key type names, keyboard keys `Ctrl`/`Shift`/`Alt`, which stay English in every
+language) and **Parameter families** (how the enum keys `entity.*`, `ioOp.*`, `timeoutOp.*`, `keyLoadReason.*`
+read inside their host sentences, for example `errors.notFound`). Take OS terms from the platform's own
+localization (Windows, macOS Finder / Terminal / Keychain Access, GNOME / KDE) and SSH terms from WinSCP, FileZilla
+and VS Code Remote-SSH in your language.
+
+### Plural categories
+
+i18next uses the CLDR categories of `Intl.PluralRules` (Node 24): every key that English pluralizes needs exactly
+the suffixes of your language, and the parity test fails on a missing or an extra one.
+
+| Language | Suffixes |
+|---|---|
+| ja, ko, zh-CN | `_other` only: it must contain `{{count}}` where a number is meant |
+| de, en | `_one`, `_other` |
+| fr, es, pt-BR | `_one`, `_many` (millions: "1 000 000 de fichiers"), `_other`; in fr and pt `_one` also covers 0 |
+| uk | `_one`, `_few`, `_many`, `_other` |
+
+### Menu bar mnemonics
+
+The six menu titles (`menubar.file`, `edit`, `view`, `connection`, `terminal`, `help`) open with Alt+letter. Without
+a marker the first letter is the mnemonic (English, Ukrainian). Put `&` before another letter when two titles start
+with the same one or the first letter is hard to type: `"Ay&uda"`, `"E&xibir"`. Write `&&` for a literal `&`.
+Chinese, Japanese and Korean titles append the English letter in parentheses, the Windows convention:
+`"ファイル(&F)"`, `"编辑(&E)"`, `"보기(&V)"`; the letters must be F, E, V, C, T, H as in English. The menu bar
+underlines the marked letter; aria labels show the title without `&`, and the macOS menu drops the `(&F)` group
+("ファイル"). `npm run i18n:check` (`scripts/menu-mnemonics-check.mjs`) fails on two markers in one title, a
+trailing `&`, `&` before a space, a mnemonic that is not a letter or digit, a CJK title without an ASCII marker or
+with another letter than English, and two titles with the same mnemonic (accents ignored: "Édition" and "Extras"
+collide). The items inside the menus have no mnemonics.
+
+### Beta and review
+
+A new language ships with `LANGUAGE_STATUS` `"beta"`: the picker shows "(beta)" and a link to the translation
+issues (label `i18n`). It becomes `"complete"` once a native speaker has reviewed it in a merged pull request.
+Review checklist (for the translator, the review agent and human reviewers):
+
+- Terms match the glossary; one term per concept across the whole file.
+- OS concepts use the native OS terms (Settings, Keychain / Credential Manager, Trash, Downloads folder).
+- Security texts are exact and not softened: host key changed, unknown or revoked, ignored `known_hosts`, agent
+  warnings, "Trust and continue", update verification failures.
+- Every `{{token}}` is kept; technical tokens are not translated.
+- Plural forms read correctly for 0, 1, 2, 5, 21 and 1,000,000 (CJK: the `_other` text contains the number).
+- Parameter families agree with their host sentences (case, gender).
+- Menu titles: mnemonic marked, unique, ASCII for CJK.
+- The ellipsis `…` exactly where English has one (the item opens a dialog).
+- Menu titles, buttons, tab labels, status bar texts and column headers fit at 580 px.
+- Punctuation and typography of the language (French spaces before `: ; ? !`, CJK full-width punctuation in prose,
+  German quotes „…“, Spanish ¿ ¡).
+- No HTML in values; nothing that a server sends is placed inside `<Trans>`.
+
+### Fonts
+
+No CJK font is bundled. The UI uses per-language system font stacks (`src/styles/tokens.css`, `:lang()`); on Linux
+install Noto Sans CJK (`fonts-noto-cjk` on Debian/Ubuntu, `google-noto-sans-cjk-fonts` on Fedora), otherwise
+Chinese, Japanese and Korean text shows empty boxes.
