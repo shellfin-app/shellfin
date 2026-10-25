@@ -7,6 +7,7 @@ import { HELP_LINKS } from "../../lib/helpLinks";
 import { guard } from "../../lib/reportError";
 import { sshCommand } from "../../lib/sshCommand";
 import { t } from "../../i18n/translate";
+import type { FilesSortKey } from "../../state/layoutPrefs";
 import type { RootState } from "../../state/slices/types";
 import { useStore } from "../../state/store";
 import { openErrorDetails } from "../errorReport/errorReport";
@@ -39,6 +40,8 @@ export interface ActionDef {
   enabled?(state: RootState): boolean;
   /** Present for toggles: the current state. */
   checked?(state: RootState): boolean;
+  /** A short state text the menu shows next to the label (the sort direction of the checked sort). */
+  detail?(state: RootState): string | undefined;
 }
 
 function activeId(s: RootState): string | null {
@@ -123,6 +126,23 @@ function toggleBookmarksPane(): void {
   s.setActivity(s.activity === "both" ? "files" : "both");
 }
 
+/**
+ * File tree sort (header buttons and View menu, §8.11): a new key starts in its natural direction (name ascending,
+ * size and date descending: largest and newest first); choosing the active key again flips the direction.
+ */
+export function chooseFilesSort(key: FilesSortKey): void {
+  const s = useStore.getState();
+  const current = s.filesSort;
+  if (current.key === key) s.setFilesSort({ key, dir: current.dir === "asc" ? "desc" : "asc" });
+  else s.setFilesSort({ key, dir: key === "name" ? "asc" : "desc" });
+}
+
+const sortFiles = (key: FilesSortKey): ActionDef => ({
+  run: () => chooseFilesSort(key),
+  checked: (s) => s.filesSort.key === key,
+  detail: (s) => (s.filesSort.key !== key ? undefined : s.filesSort.dir === "asc" ? t("files.sort.ascending") : t("files.sort.descending")),
+});
+
 export const ACTIONS: Record<ActionId, ActionDef> = {
   // ---- File ----
   newConnection: { run: () => useStore.getState().openDialog(bookmarkDialog(null)) },
@@ -201,6 +221,9 @@ export const ACTIONS: Record<ActionId, ActionDef> = {
     },
     checked: (s) => s.statusBarOpen,
   },
+  sortFilesByName: sortFiles("name"),
+  sortFilesBySize: sortFiles("size"),
+  sortFilesByModified: sortFiles("mtime"),
   commandPalette: { run: () => useStore.getState().openPalette("all") },
   zoomIn: { run: () => zoomFonts(1) },
   zoomOut: { run: () => zoomFonts(-1) },

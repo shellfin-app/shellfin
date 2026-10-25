@@ -54,6 +54,9 @@
     "selectAll": "Select all",
     "settings": "Settings…",
     "showTransfers": "Show transfers",
+    "sortFilesByModified": "Sort files by date modified",
+    "sortFilesByName": "Sort files by name",
+    "sortFilesBySize": "Sort files by size",
     "toggleBookmarks": "Toggle bookmarks",
     "toggleMaximizePanel": "Maximize terminal panel",
     "toggleSidebar": "Toggle sidebar",
@@ -527,6 +530,11 @@
   },
   "files": {
     "breadcrumb": "Current folder",
+    "column": {
+      "modified": "Modified",
+      "name": "Name",
+      "size": "Size"
+    },
     "copyPath": "Copy path",
     "delete": "Delete",
     "deleteFileBody": "The file is deleted on the server. This can't be undone.",
@@ -580,6 +588,16 @@
     "rename": "Rename",
     "renameName": "New name",
     "sftpUnavailable": "SFTP is not available on this server.",
+    "sort": {
+      "activeAsc": "{{column}}, sorted ascending",
+      "activeDesc": "{{column}}, sorted descending",
+      "ascending": "Ascending",
+      "byModified": "Sort by date modified",
+      "byName": "Sort by name",
+      "bySize": "Sort by size",
+      "descending": "Descending",
+      "toolbar": "Sort files"
+    },
     "title": "Files",
     "toolbar": "File actions",
     "tree": "Remote files",
@@ -974,6 +992,8 @@
     "doubleClickOpen": "Open it in the editor",
     "downloadLimit": "Download speed limit",
     "editor": "Editor",
+    "fileColumns": "Show size and date columns",
+    "fileColumnsInfo": "Shown when the sidebar is wide enough. Click a column header to sort.",
     "files": "Files",
     "foldersFirst": "Folders first",
     "fontBundled": "JetBrains Mono (bundled)",

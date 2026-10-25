@@ -205,6 +205,7 @@ export function makeSettings(): Settings {
       dateFormat: "relative",
       showPermissions: false,
       autoRefresh: 0,
+      columns: true,
     },
     ui: { sidebarWidth: 280, terminalPanelHeight: 300, terminalPanelOpen: true },
     transfers: {

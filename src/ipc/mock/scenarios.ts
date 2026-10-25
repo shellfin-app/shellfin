@@ -41,6 +41,7 @@ export const SCENARIO_NAMES = [
   "importStartupCommands",
   "configWarnings",
   "bugReport",
+  "fileColumns",
 ] as const;
 
 export type ScenarioName = (typeof SCENARIO_NAMES)[number];
@@ -412,6 +413,30 @@ export const SCENARIOS: Record<ScenarioName, ScenarioHooks> = {
     extraFiles: (fs) => {
       fs.addHuge("/srv/app/huge.log");
       fs.addCrowdedDir("/srv/app/many", 3000);
+    },
+  }),
+  // Size and date columns (§8.11): /srv/app/data holds sizes from 0 B to 80 MiB and dates from 30 s to 400 days
+  // ago, one in the future (clock skew), an old folder and a symlink (whose size the column leaves blank).
+  fileColumns: implemented(happyScript, {
+    extraFiles: (fs) => {
+      const now = Math.floor(Date.now() / 1000);
+      const day = 24 * 3600;
+      fs.addDatedDir("/srv/app/data", now - 3 * 3600);
+      fs.addDated("/srv/app/data/empty.txt", 0, now - 30);
+      fs.addDated("/srv/app/data/small.json", 734, now - 3 * 3600);
+      fs.addDated("/srv/app/data/report.csv", 1_536_000, now - 2 * day);
+      fs.addDated("/srv/app/data/dump.sql.gz", 80 * 1024 * 1024, now - 400 * day);
+      fs.addDated("/srv/app/data/skewed.log", 52_000, now + 300);
+      fs.addDated("/srv/app/data/a-very-long-file-name-that-does-not-fit-next-to-the-columns.tar.zst", 12_345_678, now - 40 * day);
+      fs.addDatedDir("/srv/app/data/archive", now - 800 * day);
+      // Deep nesting (the columns stay under the header; the indent is clipped on the left).
+      let deep = "/srv/app/data/archive";
+      for (const part of ["2019", "01", "logs", "app", "old", "rotated", "gz"]) {
+        deep = `${deep}/${part}`;
+        fs.addDatedDir(deep, now - 800 * day);
+      }
+      fs.addDated(`${deep}/deep-file-name.log.gz`, 9_876_543, now - 800 * day);
+      fs.addLink("/srv/app/data/latest.csv", "/srv/app/data/report.csv");
     },
   }),
   sftpUnavailable: implemented(happyScript, { sftpAvailable: false }),

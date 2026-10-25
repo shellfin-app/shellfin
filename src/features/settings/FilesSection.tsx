@@ -45,6 +45,12 @@ export function FilesSection({ form, patch }: SectionProps) {
         checked={form.showPermissions}
         onChange={(showPermissions) => patch({ showPermissions })}
       />
+      <Checkbox
+        label={t("settings.fileColumns")}
+        info={t("settings.fileColumnsInfo")}
+        checked={form.fileColumns}
+        onChange={(fileColumns) => patch({ fileColumns })}
+      />
     </fieldset>
   );
 }

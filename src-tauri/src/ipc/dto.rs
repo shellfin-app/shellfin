@@ -1115,6 +1115,9 @@ pub struct FilesSettings {
     /// Seconds: 0 (off), 5, 10, 30 or 60.
     #[serde(default)]
     pub auto_refresh: u32,
+    /// Size and date columns in the file tree (shown only when the sidebar is wide enough).
+    #[serde(default = "default_true")]
+    pub columns: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]

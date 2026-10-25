@@ -164,6 +164,16 @@ export class FakeFs {
     this.nodes.set(joinPath(dirPath, name), { kind: "file", content: "?\n", mtime: this.nowSec() - 60, permissions: 0o644 });
   }
 
+  /** A file with a given size and modification time (Unix seconds; the file tree's size and date columns). */
+  addDated(path: string, size: number, mtimeSec: number): void {
+    this.nodes.set(path, { kind: "file", content: "", size, mtime: mtimeSec, permissions: 0o644 });
+  }
+
+  /** A folder with a given modification time (Unix seconds). */
+  addDatedDir(path: string, mtimeSec: number): void {
+    this.nodes.set(path, { kind: "dir", mtime: mtimeSec, permissions: 0o755 });
+  }
+
   /** A symlink to a directory or file. */
   addLink(path: string, target: string): void {
     this.nodes.set(path, { kind: "symlink", linkTo: target, mtime: this.nowSec() - 60, permissions: 0o777 });

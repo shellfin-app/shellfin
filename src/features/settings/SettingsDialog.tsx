@@ -115,6 +115,7 @@ export function SettingsDialog() {
       ui.setActivity(LAYOUT_DEFAULTS.activity);
       ui.setSidebarOpen(LAYOUT_DEFAULTS.sidebarOpen);
       ui.setStatusBarOpen(LAYOUT_DEFAULTS.statusBarOpen);
+      ui.setFilesSort(LAYOUT_DEFAULTS.filesSort);
       setSettings(defaults);
       setForm(formFromSettings(defaults));
       setTerminalFontCustom(false);

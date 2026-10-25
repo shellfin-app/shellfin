@@ -77,6 +77,7 @@ describe("settings form: round trip and ranges", () => {
       sizeUnits: "decimal",
       dateFormat: "absolute",
       showPermissions: true,
+      fileColumns: false,
       autoRefresh: "30",
       defaultUser: " deploy ",
       readSshConfig: false,
@@ -109,7 +110,7 @@ describe("settings form: round trip and ranges", () => {
       showWhitespace: "activeLine",
       codeFolding: false,
     });
-    expect(out.files).toMatchObject({ doubleClick: "download", sizeUnits: "decimal", dateFormat: "absolute", showPermissions: true, autoRefresh: 30 });
+    expect(out.files).toMatchObject({ doubleClick: "download", sizeUnits: "decimal", dateFormat: "absolute", showPermissions: true, columns: false, autoRefresh: 30 });
     expect(out.connection).toMatchObject({ defaultUser: "deploy", readSshConfig: false, rememberPasswords: false });
     expect(out.transfers).toMatchObject({ preserveTimestamps: false, notifyOnComplete: true });
     // what the other agents / older fields own is untouched

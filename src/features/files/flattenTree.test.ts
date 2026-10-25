@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { DirListing, FileEntry } from "../../ipc/types";
 import type { TreeState } from "../../state/slices/workspaces";
-import { entryRows, flattenTree, sortStats } from "./flattenTree";
+import { compareEntries, entryRows, flattenTree, sortStats, type FlattenOptions } from "./flattenTree";
 
 function entry(path: string, kind: FileEntry["kind"], extra: Partial<FileEntry> = {}): FileEntry {
   const name = path.slice(path.lastIndexOf("/") + 1);
@@ -140,5 +140,126 @@ describe("flattenTree", () => {
     expect(sortStats.sorts).toBe(before + 2);
     flattenTree({ ...big, listings: { "/big": { ...big.listings["/big"]!, listing: { ...big.listings["/big"]!.listing } } } }, { showHidden: true });
     expect(sortStats.sorts).toBe(before + 3);
+  });
+});
+
+describe("file tree sort (size and date columns, §6.2)", () => {
+  const names = (t: TreeState, options: FlattenOptions) => entryRows(flattenTree(t, options)).slice(1).map((r) => r.name);
+  const tree: TreeState = {
+    root: "/d",
+    expanded: { "/d": true },
+    selection: null,
+    edit: null,
+    listings: {
+      "/d": listing("/d", [
+        entry("/d/b.txt", "file", { size: 300, mtime: 30 }),
+        entry("/d/a.txt", "file", { size: 100, mtime: 50 }),
+        entry("/d/c.txt", "file", { size: 200, mtime: null }),
+        entry("/d/zdir", "dir", { size: 4096, mtime: 10 }),
+        entry("/d/adir", "dir", { size: 4096, mtime: 40 }),
+        entry("/d/link-to-dir", "symlink", { linkTargetKind: "dir", size: 7, mtime: 20 }),
+        entry("/d/link-to-file", "symlink", { linkTargetKind: "file", size: 9, mtime: 60 }),
+        entry("/d/same1.txt", "file", { size: 300, mtime: 30 }),
+      ]),
+    },
+  };
+
+  it("name: folders (and links to folders) first, natural order; descending flips the names only", () => {
+    expect(names(tree, { showHidden: true, sort: { key: "name", dir: "asc" } })).toEqual([
+      "adir", "link-to-dir", "zdir", "a.txt", "b.txt", "c.txt", "link-to-file", "same1.txt",
+    ]);
+    expect(names(tree, { showHidden: true, sort: { key: "name", dir: "desc" } })).toEqual([
+      "zdir", "link-to-dir", "adir", "same1.txt", "link-to-file", "c.txt", "b.txt", "a.txt",
+    ]);
+  });
+
+  it("size: folders by name on top, files by size; links and folders have no size and go last without foldersFirst", () => {
+    expect(names(tree, { showHidden: true, sort: { key: "size", dir: "desc" } })).toEqual([
+      "adir", "link-to-dir", "zdir", "b.txt", "same1.txt", "c.txt", "a.txt", "link-to-file",
+    ]);
+    expect(names(tree, { showHidden: true, sort: { key: "size", dir: "asc" } })).toEqual([
+      "adir", "link-to-dir", "zdir", "a.txt", "c.txt", "b.txt", "same1.txt", "link-to-file",
+    ]);
+    expect(names(tree, { showHidden: true, foldersFirst: false, sort: { key: "size", dir: "asc" } })).toEqual([
+      "a.txt", "c.txt", "b.txt", "same1.txt", "adir", "link-to-dir", "link-to-file", "zdir",
+    ]);
+    expect(names(tree, { showHidden: true, foldersFirst: false, sort: { key: "size", dir: "desc" } })).toEqual([
+      "b.txt", "same1.txt", "c.txt", "a.txt", "adir", "link-to-dir", "link-to-file", "zdir",
+    ]);
+  });
+
+  it("mtime: folders by date on top; an unknown date goes last in both directions; ties by name", () => {
+    expect(names(tree, { showHidden: true, sort: { key: "mtime", dir: "desc" } })).toEqual([
+      "adir", "link-to-dir", "zdir", "link-to-file", "a.txt", "b.txt", "same1.txt", "c.txt",
+    ]);
+    expect(names(tree, { showHidden: true, sort: { key: "mtime", dir: "asc" } })).toEqual([
+      "zdir", "link-to-dir", "adir", "b.txt", "same1.txt", "a.txt", "link-to-file", "c.txt",
+    ]);
+    expect(names(tree, { showHidden: true, foldersFirst: false, sort: { key: "mtime", dir: "asc" } })).toEqual([
+      "zdir", "link-to-dir", "b.txt", "same1.txt", "adir", "a.txt", "link-to-file", "c.txt",
+    ]);
+  });
+
+  it("ties are total and do not depend on the server order (case-only differences by code units)", () => {
+    const collator = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
+    const a = entry("/d/Read.me", "file", { size: 5 });
+    const b = entry("/d/read.me", "file", { size: 5 });
+    for (const sort of [{ key: "name", dir: "asc" }, { key: "name", dir: "desc" }, { key: "size", dir: "desc" }, { key: "mtime", dir: "asc" }] as const) {
+      expect(compareEntries(a, b, sort, true, collator)).toBeLessThan(0);
+      expect(compareEntries(b, a, sort, true, collator)).toBeGreaterThan(0);
+      expect(compareEntries(a, a, sort, true, collator)).toBe(0);
+    }
+  });
+
+  it("sorts each folder level on its own, keeping the hierarchy", () => {
+    const nested: TreeState = {
+      ...tree,
+      expanded: { "/d": true, "/d/adir": true },
+      listings: {
+        ...tree.listings,
+        "/d/adir": listing("/d/adir", [entry("/d/adir/small", "file", { size: 1 }), entry("/d/adir/big", "file", { size: 999 })]),
+      },
+    };
+    const rows = entryRows(flattenTree(nested, { showHidden: true, sort: { key: "size", dir: "desc" } }));
+    expect(rows.slice(1, 4).map((r) => [r.name, r.depth])).toEqual([["adir", 1], ["big", 2], ["small", 2]]);
+  });
+
+  it("a new sort key or direction sorts once more and is cached as well", () => {
+    const fresh: TreeState = { ...tree, listings: { "/d": listing("/d", [...tree.listings["/d"]!.listing.entries]) } };
+    const before = sortStats.sorts;
+    flattenTree(fresh, { showHidden: true });
+    flattenTree(fresh, { showHidden: true, sort: { key: "name", dir: "asc" } }); // the default
+    expect(sortStats.sorts).toBe(before + 1);
+    flattenTree(fresh, { showHidden: true, sort: { key: "size", dir: "desc" } });
+    flattenTree(fresh, { showHidden: true, sort: { key: "size", dir: "desc" } });
+    expect(sortStats.sorts).toBe(before + 2);
+    flattenTree(fresh, { showHidden: true, sort: { key: "size", dir: "asc" } });
+    expect(sortStats.sorts).toBe(before + 3);
+    // only the last two orders are kept per listing: flipping back and forth is free, a third one evicts the oldest
+    flattenTree(fresh, { showHidden: true, sort: { key: "size", dir: "desc" } });
+    flattenTree(fresh, { showHidden: true, sort: { key: "size", dir: "asc" } });
+    expect(sortStats.sorts).toBe(before + 3);
+    flattenTree(fresh, { showHidden: true, sort: { key: "name", dir: "asc" } }); // evicted earlier: sorted again
+    expect(sortStats.sorts).toBe(before + 4);
+    flattenTree(fresh, { showHidden: true, sort: { key: "size", dir: "asc" } }); // still cached (most recent)
+    expect(sortStats.sorts).toBe(before + 4);
+    flattenTree(fresh, { showHidden: true, sort: { key: "size", dir: "desc" } }); // evicted by "name"
+    expect(sortStats.sorts).toBe(before + 5);
+  });
+
+  it("sorts a 100 000-entry folder by each key within a loose time bound", () => {
+    const entries = Array.from({ length: 100_000 }, (_, i) => {
+      const n = (i * 7919) % 100_000;
+      return entry(`/huge/file-${n}.log`, i % 50 === 0 ? "dir" : "file", { size: (n * 2654435761) % 1_000_000_007, mtime: n % 3 === 0 ? null : 1_700_000_000 + ((n * 31) % 86_400) });
+    });
+    const huge: TreeState = { root: "/huge", expanded: { "/huge": true }, selection: null, edit: null, listings: { "/huge": listing("/huge", entries) } };
+    for (const sort of [{ key: "size", dir: "desc" }, { key: "mtime", dir: "desc" }, { key: "name", dir: "asc" }] as const) {
+      const started = performance.now();
+      const rows = flattenTree(huge, { showHidden: true, sort });
+      const elapsed = performance.now() - started;
+      expect(rows).toHaveLength(100_001);
+      // jsdom on a slow CI runner: a loose bound that still catches an accidental O(n²) or a collator per compare.
+      expect(elapsed).toBeLessThan(3000);
+    }
   });
 });
