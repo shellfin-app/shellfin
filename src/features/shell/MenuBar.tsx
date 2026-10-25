@@ -213,6 +213,7 @@ function Dropdown({
         const checked = def.checked?.(state);
         const enabled = actionEnabled(entry, state);
         const hint = shortcutLabel(entry, platform);
+        const detail = def.detail?.(state);
         return (
           <button
             key={entry}
@@ -238,6 +239,7 @@ function Dropdown({
               {actionLabel(entry)}
             </span>
             {hint ? <span className="context-menu__shortcut">{hint}</span> : null}
+            {detail && !hint ? <span className="context-menu__shortcut">{detail}</span> : null}
           </button>
         );
       })}

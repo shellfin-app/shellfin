@@ -77,6 +77,7 @@ describe("settings: sections and saving", () => {
     await user.selectOptions(within(dialog).getByLabelText("Dates"), "Absolute (date and time)");
     await user.selectOptions(within(dialog).getByLabelText("Refresh expanded folders"), "Every 30 s");
     await user.click(within(dialog).getByRole("checkbox", { name: "Show permissions, owner and group" }));
+    await user.click(within(dialog).getByRole("checkbox", { name: "Show size and date columns" }));
     await user.click(within(dialog).getByRole("button", { name: "Save" }));
     await waitFor(() => expect(update).toHaveBeenCalledOnce());
     expect(update.mock.calls[0]?.[0].files).toMatchObject({
@@ -85,6 +86,7 @@ describe("settings: sections and saving", () => {
       dateFormat: "absolute",
       autoRefresh: 30,
       showPermissions: true,
+      columns: false,
     });
     expect(useStore.getState().settings?.files.autoRefresh).toBe(30);
   });

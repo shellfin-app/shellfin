@@ -1,5 +1,5 @@
 import type { AppError, BookmarksExportResult, BookmarksImportPreview, BookmarksImportResult, WindowState } from "../../ipc/types";
-import { loadLayoutPrefs } from "../layoutPrefs";
+import { loadLayoutPrefs, saveLayoutPrefs, type FilesSort } from "../layoutPrefs";
 import type { SliceCreator } from "./types";
 
 /** Sidebar views: Bookmarks only, Files only, or both panes. Keys, Settings and Search open dialogs. */
@@ -146,6 +146,8 @@ export interface UiSlice {
   sidebarOpen: boolean;
   /** Status bar visible (View > Toggle status bar). */
   statusBarOpen: boolean;
+  /** File tree sort (all sessions, every folder level; remembered in the layout prefs). */
+  filesSort: FilesSort;
   /** Native window state, fed by the backend (`window:state`). */
   windowState: WindowState;
   /** Command palette: `null` = closed. */
@@ -167,6 +169,8 @@ export interface UiSlice {
   setActivity(view: ActivityView): void;
   setSidebarOpen(open: boolean): void;
   setStatusBarOpen(open: boolean): void;
+  /** Sets and remembers the file tree sort. */
+  setFilesSort(sort: FilesSort): void;
   setWindowState(state: WindowState): void;
   openPalette(mode?: PaletteMode): void;
   closePalette(): void;
@@ -186,6 +190,7 @@ export const createUiSlice: SliceCreator<UiSlice> = (set) => ({
   activity: loadLayoutPrefs().activity,
   sidebarOpen: loadLayoutPrefs().sidebarOpen,
   statusBarOpen: loadLayoutPrefs().statusBarOpen,
+  filesSort: loadLayoutPrefs().filesSort,
   windowState: { maximized: false, fullscreen: false, focused: true },
   palette: null,
   dialog: null,
@@ -215,6 +220,12 @@ export const createUiSlice: SliceCreator<UiSlice> = (set) => ({
     set((s) => {
       s.statusBarOpen = open;
     }),
+  setFilesSort: (sort) => {
+    set((s) => {
+      s.filesSort = { key: sort.key, dir: sort.dir };
+    });
+    saveLayoutPrefs({ filesSort: { key: sort.key, dir: sort.dir } });
+  },
   setWindowState: (state) =>
     set((s) => {
       s.windowState = state;

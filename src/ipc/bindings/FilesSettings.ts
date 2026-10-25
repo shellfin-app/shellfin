@@ -11,4 +11,8 @@ confirmDelete: boolean, doubleClick: DoubleClickAction, sizeUnits: SizeUnits, da
 /**
  * Seconds: 0 (off), 5, 10, 30 or 60.
  */
-autoRefresh: number, };
+autoRefresh: number, 
+/**
+ * Size and date columns in the file tree (shown only when the sidebar is wide enough).
+ */
+columns: boolean, };

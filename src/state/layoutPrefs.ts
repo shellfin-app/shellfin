@@ -3,6 +3,26 @@
 // throw (private window, blocked site data), so every access is guarded and the app works without it.
 export type SidebarView = "bookmarks" | "files" | "both";
 
+/** File tree sort (§6.2, §8.11): one global choice, applied to every folder level. */
+export type FilesSortKey = "name" | "size" | "mtime";
+export type SortDir = "asc" | "desc";
+export interface FilesSort {
+  key: FilesSortKey;
+  dir: SortDir;
+}
+
+export const FILES_SORT_DEFAULT: FilesSort = { key: "name", dir: "asc" };
+
+/** A stored sort value, or the default when it is missing or not one of the known keys/directions. */
+export function parseFilesSort(value: unknown): FilesSort {
+  if (typeof value !== "object" || value === null) return { ...FILES_SORT_DEFAULT };
+  const v = value as Record<string, unknown>;
+  const key = v["key"];
+  const dir = v["dir"];
+  if ((key !== "name" && key !== "size" && key !== "mtime") || (dir !== "asc" && dir !== "desc")) return { ...FILES_SORT_DEFAULT };
+  return { key, dir };
+}
+
 export interface LayoutPrefs {
   activity: SidebarView;
   sidebarOpen: boolean;
@@ -15,6 +35,8 @@ export interface LayoutPrefs {
   filesCollapsed: boolean;
   /** Terminal panel height in px; null = the value from settings. */
   terminalHeight: number | null;
+  /** File tree sort (header buttons, View menu). */
+  filesSort: FilesSort;
 }
 
 export const LAYOUT_DEFAULTS: LayoutPrefs = {
@@ -26,6 +48,7 @@ export const LAYOUT_DEFAULTS: LayoutPrefs = {
   bookmarksCollapsed: false,
   filesCollapsed: false,
   terminalHeight: null,
+  filesSort: FILES_SORT_DEFAULT,
 };
 
 const STORAGE_KEY = "shellfin.layout.v1";
@@ -58,6 +81,7 @@ function readStored(): LayoutPrefs {
       bookmarksCollapsed: bool(data["bookmarksCollapsed"], LAYOUT_DEFAULTS.bookmarksCollapsed),
       filesCollapsed: bool(data["filesCollapsed"], LAYOUT_DEFAULTS.filesCollapsed),
       terminalHeight: data["terminalHeight"] === null ? null : num(data["terminalHeight"], 80, 10000, 0) || null,
+      filesSort: parseFilesSort(data["filesSort"]),
     };
   } catch {
     return { ...LAYOUT_DEFAULTS };

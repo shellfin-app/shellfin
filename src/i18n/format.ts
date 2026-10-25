@@ -8,8 +8,30 @@ function lang(): string {
   return l === "en-XA" ? "en" : l;
 }
 
+/**
+ * `Intl` formatters are costly to build and the file tree formats every visible row on each scroll frame: one
+ * instance per kind + language + options, dropped when the language changes.
+ */
+const formatters = new Map<string, unknown>();
+let formattersLang = "";
+
+function cached<T>(kind: string, options: object | undefined, make: (language: string) => T): T {
+  const language = lang();
+  if (language !== formattersLang) {
+    formatters.clear();
+    formattersLang = language;
+  }
+  const key = `${kind}|${options === undefined ? "" : JSON.stringify(options)}`;
+  let formatter = formatters.get(key) as T | undefined;
+  if (formatter === undefined) {
+    formatter = make(language);
+    formatters.set(key, formatter);
+  }
+  return formatter;
+}
+
 export function formatNumber(n: number, options?: Intl.NumberFormatOptions): string {
-  return new Intl.NumberFormat(lang(), options).format(n);
+  return cached("number", options, (l) => new Intl.NumberFormat(l, options)).format(n);
 }
 
 const BINARY_UNITS = ["B", "KiB", "MiB", "GiB", "TiB"] as const;
@@ -52,31 +74,84 @@ const RELATIVE_STEPS: [Intl.RelativeTimeFormatUnit, number][] = [
   ["second", 1],
 ];
 
-export function formatRelativeTime(timestampMs: number, nowMs: number = Date.now()): string {
-  const rtf = new Intl.RelativeTimeFormat(lang(), { numeric: "auto" });
+function relativeFormat(numeric: "auto" | "always", style: Intl.RelativeTimeFormatStyle): Intl.RelativeTimeFormat {
+  const options = { numeric, style };
+  return cached("relative", options, (l) => new Intl.RelativeTimeFormat(l, options));
+}
+
+/**
+ * "3 hours ago" (`long`, the default) or the compact "3h ago" (`narrow`, the file tree's date column). The narrow
+ * form keeps words only for "now" and "yesterday"/"tomorrow"; other units stay numeric ("1 mo. ago", not "last mo."),
+ * so the column reads the same way down the list (uk: «1 міс. тому», «1 р. тому», like «2 р. тому»).
+ */
+export function formatRelativeTime(
+  timestampMs: number,
+  nowMs: number = Date.now(),
+  style: Intl.RelativeTimeFormatStyle = "long",
+): string {
   const diffSec = Math.round((timestampMs - nowMs) / 1000);
-  if (Math.abs(diffSec) < 45) return rtf.format(0, "second"); // "now"
+  if (Math.abs(diffSec) < 45) return relativeFormat("auto", style).format(0, "second"); // "now"
   for (const [unit, secs] of RELATIVE_STEPS) {
-    if (Math.abs(diffSec) >= secs) return rtf.format(Math.round(diffSec / secs), unit);
+    if (Math.abs(diffSec) >= secs) {
+      const value = Math.round(diffSec / secs);
+      const numeric = style === "long" || (unit === "day" && Math.abs(value) === 1) ? "auto" : "always";
+      return relativeFormat(numeric, style).format(value, unit);
+    }
   }
-  return rtf.format(0, "second");
+  return relativeFormat("auto", style).format(0, "second");
 }
 
 export function formatDateTime(timestampMs: number, options?: Intl.DateTimeFormatOptions): string {
-  return new Intl.DateTimeFormat(lang(), options ?? { dateStyle: "medium", timeStyle: "short" }).format(timestampMs);
+  const resolved = options ?? { dateStyle: "medium", timeStyle: "short" };
+  return cached("date", resolved, (l) => new Intl.DateTimeFormat(l, resolved)).format(timestampMs);
 }
 
-/** A file's modification time (Unix seconds) following `files.dateFormat`: relative ("3 hours ago") or absolute. */
+/** Server mtimes can be anything: beyond the range of a JS date (±8.64e15 ms) or not a number, nothing is shown. */
+function validMs(mtimeSec: number): number | null {
+  const ms = mtimeSec * 1000;
+  return Number.isFinite(ms) && Math.abs(ms) <= 8.64e15 ? ms : null;
+}
+
+/**
+ * A file's modification time (Unix seconds) following `files.dateFormat`: relative ("3 hours ago") or absolute.
+ * An out-of-range value gives an empty string.
+ */
 export function formatFileDate(
   mtimeSec: number,
   nowMs: number = Date.now(),
   format: "relative" | "absolute" = useStore.getState().settings?.files.dateFormat ?? "relative",
 ): string {
-  const ms = mtimeSec * 1000;
+  const ms = validMs(mtimeSec);
+  if (ms === null) return "";
   if (format === "absolute") return formatDateTime(ms);
   return formatRelativeTime(ms, nowMs);
 }
 
+function sameLocalDay(a: number, b: number): boolean {
+  const x = new Date(a);
+  const y = new Date(b);
+  return x.getFullYear() === y.getFullYear() && x.getMonth() === y.getMonth() && x.getDate() === y.getDate();
+}
+
+/**
+ * The compact form of `formatFileDate` for the file tree's date column (fixed width, §8.11): relative ->
+ * "3h ago"; absolute -> the time for today ("14:05"), else the short date ("12.10.25"). Never throws on odd
+ * server values (0, negative, far future): out-of-range dates give an empty string.
+ */
+export function formatFileDateShort(
+  mtimeSec: number,
+  nowMs: number = Date.now(),
+  format: "relative" | "absolute" = useStore.getState().settings?.files.dateFormat ?? "relative",
+): string {
+  const ms = validMs(mtimeSec);
+  if (ms === null) return "";
+  if (format === "absolute") {
+    return sameLocalDay(ms, nowMs) ? formatDateTime(ms, { timeStyle: "short" }) : formatDateTime(ms, { dateStyle: "short" });
+  }
+  return formatRelativeTime(ms, nowMs, "narrow");
+}
+
 export function formatList(items: readonly string[], type: Intl.ListFormatType = "conjunction"): string {
-  return new Intl.ListFormat(lang(), { style: "long", type }).format(items);
+  const options = { style: "long", type } as const;
+  return cached("list", options, (l) => new Intl.ListFormat(l, options)).format(items);
 }

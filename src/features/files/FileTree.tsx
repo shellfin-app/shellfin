@@ -1,5 +1,5 @@
 import { observeElementRect, useVirtualizer } from "@tanstack/react-virtual";
-import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
 import { Icon } from "../../components/Icon";
@@ -13,7 +13,7 @@ import { guard, reportError } from "../../lib/reportError";
 import { displayName, displayServerText } from "../../lib/serverText";
 import { groupText, modeString, ownerText } from "../../lib/entryDetails";
 import { errorMessage } from "../../i18n/errorMessage";
-import { formatBytes, formatFileDate } from "../../i18n/format";
+import { formatBytes, formatFileDate, formatFileDateShort, formatList } from "../../i18n/format";
 import type { FileEntry } from "../../ipc/types";
 import { downloadFile } from "../transfers/transferActions";
 import { toIpcError } from "../../ipc/call";
@@ -32,6 +32,8 @@ import {
   type NameProblem,
 } from "./fileActions";
 import { entryRows, flattenTree, type EntryRow, type TreeRow } from "./flattenTree";
+import { FileTreeHeader } from "./FileTreeHeader";
+import { useMinuteTick } from "./useMinuteTick";
 import "./files.css";
 
 const ROW_HEIGHT = 28;
@@ -185,10 +187,24 @@ export function FileTree({ sessionId }: { sessionId: string }) {
   const sizeUnits = useStore((s) => s.settings?.files.sizeUnits ?? "binary");
   const dateFormat = useStore((s) => s.settings?.files.dateFormat ?? "relative");
   const downloadOnDoubleClick = useStore((s) => s.settings?.files.doubleClick === "download");
+  // Size and date columns (§8.11): the setting; the sidebar width decides what shows (files.css).
+  const columns = useStore((s) => s.settings?.files.columns ?? true);
+  const sort = useStore((s) => s.filesSort);
+  const now = useMinuteTick(columns);
   const rows = useMemo(
-    () => (tree ? flattenTree(tree, { showHidden, foldersFirst, locale: i18n.language }) : []),
-    [tree, showHidden, foldersFirst, i18n.language],
+    () => (tree ? flattenTree(tree, { showHidden, foldersFirst, locale: i18n.language, sort }) : []),
+    [tree, showHidden, foldersFirst, i18n.language, sort],
   );
+  const hasTree = tree !== undefined;
+  const [scrollbar, setScrollbar] = useState(0);
+  // The header's right padding follows the tree's vertical scrollbar (`scrollbar-gutter` is not reliable everywhere).
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!columns || !el || typeof ResizeObserver === "undefined") return undefined;
+    const observer = new ResizeObserver(() => setScrollbar(Math.max(0, el.offsetWidth - el.clientWidth)));
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [columns, hasTree, sftpAvailable, filesStatus]);
   const dirtyPaths = useMemo(() => new Set(dirtyList), [dirtyList]);
 
   // eslint-disable-next-line react-hooks/incompatible-library -- TanStack Virtual returns unmemoizable functions; used as documented
@@ -230,7 +246,8 @@ export function FileTree({ sessionId }: { sessionId: string }) {
   const detailLines = (e: FileEntry): string[] => {
     const lines: string[] = [];
     if (e.kind === "file" && e.size !== null) lines.push(t("files.meta.size", { size: formatBytes(e.size, sizeUnits) }));
-    if (e.mtime !== null) lines.push(t("files.meta.modified", { time: formatFileDate(e.mtime, Date.now(), dateFormat) }));
+    const modified = e.mtime === null ? "" : formatFileDate(e.mtime, columns ? now : Date.now(), dateFormat);
+    if (modified !== "") lines.push(t("files.meta.modified", { time: modified }));
     if (showPermissions) {
       const mode = modeString(e);
       const owner = ownerText(e);
@@ -340,11 +357,12 @@ export function FileTree({ sessionId }: { sessionId: string }) {
   };
 
   return (
-    <div className="file-tree-wrap">
+    <div className="file-tree-wrap" style={columns ? ({ "--file-tree-scrollbar": `${scrollbar}px` } as CSSProperties) : undefined}>
       {online ? null : <p className="file-tree__note file-tree__note--warn">{t("files.offline")}</p>}
+      {columns && tree.root !== null ? <FileTreeHeader /> : null}
       <div
         ref={scrollRef}
-        className={`file-tree${dropTarget === tree.root ? " file-tree--drop" : ""}`}
+        className={`file-tree${columns ? " file-tree--columns" : ""}${dropTarget === tree.root ? " file-tree--drop" : ""}`}
         role="tree"
         tabIndex={0}
         aria-label={t("files.tree")}
@@ -406,12 +424,29 @@ export function FileTree({ sessionId }: { sessionId: string }) {
             const readOnlyHint = noAccessHint || (!row.dirLike && !row.isRoot && writability(entryInfo, identity) === "no");
             const hintText = row.lossy ? t("files.lossyName") : noAccessHint ? t("files.probablyNoAccess") : readOnlyHint ? t("files.probablyReadOnly") : null;
             const details = entryInfo && !row.lossy ? detailLines(entryInfo) : [];
-            const rowTitle = [...(hintText === null ? [] : [hintText]), ...details].join("\n") || undefined;
+            const described = [...(hintText === null ? [] : [hintText]), ...details];
+            // With columns the name may be cut off: the full name leads the tooltip.
+            const rowTitle = [...(columns && !row.renaming ? [displayName(row.name)] : []), ...described].join("\n") || undefined;
             const perms = showPermissions && entryInfo && !row.lossy ? permissionsSummary(entryInfo) : null;
+            const cellInfo = columns && entryInfo && !row.lossy ? entryInfo : undefined;
+            const sizeText = cellInfo?.kind === "file" && cellInfo.size !== null ? formatBytes(cellInfo.size, sizeUnits) : "";
+            const dateText = cellInfo && cellInfo.mtime !== null ? formatFileDateShort(cellInfo.mtime, now, dateFormat) : "";
+            const descriptionId = described.length > 0 ? `${rowId(prefix, row)}-details` : undefined;
+            // One slot (`display: contents` without columns, a fixed-width box with them: files.css).
+            const marks = (
+              <span className="file-row__marks">
+                {row.lossy ? <Icon name="alert" size={12} className="file-row__warn" /> : null}
+                {readOnlyHint ? <Icon name="lock" size={11} className="file-row__lock" /> : null}
+                {dirtyPaths.has(row.path) ? (
+                  <span className="file-row__dirty" role="img" aria-label={t("editor.unsaved")} title={t("editor.unsaved")} />
+                ) : null}
+              </span>
+            );
             return (
               <div
                 key={row.path}
                 id={rowId(prefix, row)}
+                aria-describedby={descriptionId}
                 role="treeitem"
                 aria-level={row.depth + 1}
                 aria-posinset={row.posInSet}
@@ -463,14 +498,29 @@ export function FileTree({ sessionId }: { sessionId: string }) {
                   <bdi className="file-row__name">{displayName(row.name)}</bdi>
                 )}
                 {perms !== null ? (
-                  <span className="file-row__meta">
+                  // Also in the description below: the row's accessible name stays the file name.
+                  <span className="file-row__meta" aria-hidden="true">
                     <bdi>{perms}</bdi>
                   </span>
                 ) : null}
-                {row.lossy ? <Icon name="alert" size={12} className="file-row__warn" /> : null}
-                {readOnlyHint ? <Icon name="lock" size={11} className="file-row__lock" /> : null}
-                {dirtyPaths.has(row.path) ? (
-                  <span className="file-row__dirty" role="img" aria-label={t("editor.unsaved")} title={t("editor.unsaved")} />
+                {/* The same order with and without columns (files.css relies on it); the cells come last, so they
+                    keep one right edge under the header. */}
+                {marks}
+                {columns ? (
+                  <>
+                    <span className="file-row__col file-row__col--size" aria-hidden="true">
+                      {sizeText}
+                    </span>
+                    <span className="file-row__col file-row__col--date" aria-hidden="true">
+                      {dateText}
+                    </span>
+                  </>
+                ) : null}
+                {descriptionId !== undefined ? (
+                  // Referenced by aria-describedby (which reads hidden text); hidden so it stays out of the row's name.
+                  <span id={descriptionId} className="sr-only" aria-hidden="true">
+                    {formatList(described, "unit")}
+                  </span>
                 ) : null}
               </div>
             );

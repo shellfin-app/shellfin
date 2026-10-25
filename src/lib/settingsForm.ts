@@ -156,6 +156,8 @@ export interface SettingsFormState {
   sizeUnits: SizeUnits;
   dateFormat: DateFormat;
   showPermissions: boolean;
+  /** Size and date columns in the file tree. */
+  fileColumns: boolean;
   /** Seconds as text of a <select> value (`"0"` = off). */
   autoRefresh: string;
   // Connection
@@ -259,6 +261,7 @@ export function formFromSettings(settings: Settings): SettingsFormState {
     sizeUnits: settings.files.sizeUnits,
     dateFormat: settings.files.dateFormat,
     showPermissions: settings.files.showPermissions,
+    fileColumns: settings.files.columns,
     autoRefresh: String(settings.files.autoRefresh),
     reconnectEnabled: settings.connection.reconnect.enabled,
     defaultUser: settings.connection.defaultUser,
@@ -408,6 +411,7 @@ export function settingsFromForm(base: Settings, form: SettingsFormState): Setti
         sizeUnits: form.sizeUnits,
         dateFormat: form.dateFormat,
         showPermissions: form.showPermissions,
+        columns: form.fileColumns,
         autoRefresh: Number(form.autoRefresh),
       },
       transfers: {

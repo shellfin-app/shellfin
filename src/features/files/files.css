@@ -46,7 +46,9 @@
 .file-row__warn { color: var(--warn); flex: none; }
 /* files.showPermissions: rwx, owner and group, right-aligned and muted (the tree scrolls sideways when narrow). */
 .file-row__meta { margin-left: auto; flex: none; padding-left: 12px; font-size: calc(11px * var(--ui-scale, 1)); color: var(--text-muted); }
-.file-row__meta + .file-row__dirty { margin-left: 0; }
+/* warn / lock / dirty: one slot (FileTree.tsx); without columns it is transparent to the row's flex layout. */
+.file-row__marks { display: contents; }
+.file-row__meta + .file-row__marks > .file-row__dirty { margin-left: 0; }
 .file-row__input {
   flex: 1;
   min-width: 0;
@@ -76,3 +78,97 @@
 .sidebar__root { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 16px; }
 .file-row--readonly .file-row__name { opacity: 0.6; }
 .file-row__lock { color: var(--text-dim); flex: none; }
+
+/*
+ * Size and date columns (files.columns, ARCHITECTURE §8.11). Fixed widths in `ch` of the mono tree font (digits are
+ * tabular), so they follow --ui-scale; `columns.test.ts` checks that every formatted value fits. Which columns show
+ * depends on the width of the `.sidebar` container (hosts.css). The breakpoints are in `em` of the sidebar's UI font
+ * (13px at 100 %), so they scale with the UI too, and must stay in this order (checked by a test):
+ *   size (and the header) from 21em (~273 px), date from 29em (~377 px), permissions back from 48em (~624 px).
+ * They are computed, not guessed (`columns.test.ts` re-does the sum at UI 13 px and 16 px): at each one a row up to
+ * depth 2 fits its indent, icon, the name at its minimum (6ch; 16ch once permissions show), a typical permissions
+ * text (23ch), the marks slot and the cells, with the tree and row paddings and a thin scrollbar.
+ * Below the first one (and in a webview without container queries) the tree looks as without columns: sideways
+ * scrolling, no header, the permissions span shown. Between 21em and 48em the permissions span makes room for the
+ * columns; from 48em it truncates before the name goes below 16ch. With columns showing, a row never scrolls
+ * sideways: it clips, and only a row too deep for the width loses its indent and icons on the left (flex-end
+ * overflow), so the cells stay under the header; very deep levels then line up (the indentation plateaus).
+ */
+.file-row__col {
+  display: none;
+  flex: none;
+  margin-left: 4px; /* + the row gap = 12px */
+  overflow: hidden;
+  white-space: nowrap;
+  text-align: right;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.file-row--selected .file-row__col { color: inherit; }
+/* Column widths, shared by the rows and the header (both use the mono tree font, so `ch` is the same). */
+.file-tree-wrap { --file-col-size: 9ch; --file-col-date: 12ch; }
+.file-row__col--size { width: var(--file-col-size); }
+.file-row__col--date { width: var(--file-col-date); }
+
+.file-tree-header {
+  display: none;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  height: 22px;
+  /* Lines up with the rows: tree padding (6px) + row padding (12px) + the tree's scrollbar (FileTree.tsx). */
+  padding: 0 calc(18px + var(--file-tree-scrollbar, 0px)) 0 12px;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono);
+}
+.file-tree-header__cell { display: flex; flex: none; min-width: 0; }
+.file-tree-header__cell--name { flex: 1 1 auto; }
+.file-tree-header__cell--size { display: none; width: var(--file-col-size); margin-left: 4px; justify-content: flex-end; }
+.file-tree-header__cell--mtime { display: none; width: var(--file-col-date); margin-left: 4px; justify-content: flex-end; }
+.file-tree-header__button {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 1px 4px;
+  border: 0;
+  border-radius: 3px;
+  background: none;
+  color: var(--text-muted);
+  font-family: var(--font-ui);
+  font-size: calc(11px * var(--ui-scale, 1));
+  cursor: pointer;
+  white-space: nowrap;
+}
+.file-tree-header__button:hover { background: var(--hover); color: var(--text-bright); }
+.file-tree-header__button--active { color: var(--text); }
+.file-tree-header__text { overflow: hidden; text-overflow: ellipsis; }
+/* The labels of the right-aligned columns end where the values end (the button padding sits outside the cell). */
+.file-tree-header__cell--size .file-tree-header__button,
+.file-tree-header__cell--mtime .file-tree-header__button { margin-right: -4px; }
+.file-tree-header__hint { display: none; align-items: center; gap: 2px; margin-left: 6px; opacity: 0.8; }
+
+@container (width >= 21em) {
+  .file-tree--columns .file-tree__canvas { min-width: 0; }
+  /* Deep nesting: clip instead of overflowing; flex-end (unsafe) alignment pushes the overflow to the left edge. */
+  .file-tree--columns .file-row { overflow: hidden; justify-content: flex-end; }
+  /* The name gives way from 16ch down to 6ch only after the permissions span has shrunk away (shrink 1000). */
+  .file-tree--columns .file-row__name { flex: 1 1 16ch; min-width: min(6ch, 100%); }
+  .file-tree--columns .file-row__input { min-width: min(6ch, 100%); }
+  .file-tree--columns .file-row__meta { flex: 0 1000 auto; min-width: 0; margin-left: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* A fixed slot for warn / lock / dirty, so the permissions and the cells line up whether a row has a mark or not. */
+  .file-tree--columns .file-row__marks { display: flex; flex: none; align-items: center; justify-content: flex-end; gap: 4px; min-width: 12px; }
+  .file-tree--columns .file-row__dirty { margin-left: 0; }
+  .file-tree--columns .file-row__col--size { display: block; }
+  .file-tree-header { display: flex; }
+  .file-tree-header__cell--size { display: flex; }
+}
+/* Sorting by the (still hidden) date column stays visible next to "Name". */
+@container (21em <= width < 29em) { .file-tree-header__hint--mtime { display: inline-flex; } }
+@container (width >= 29em) {
+  .file-tree--columns .file-row__col--date { display: block; }
+  .file-tree-header__cell--mtime { display: flex; }
+}
+@container (21em <= width < 48em) { .file-tree--columns .file-row__meta { display: none; } }

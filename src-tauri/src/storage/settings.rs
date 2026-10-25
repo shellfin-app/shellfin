@@ -122,6 +122,7 @@ pub fn default_settings() -> Settings {
             date_format: DateFormat::Relative,
             show_permissions: false,
             auto_refresh: 0,
+            columns: true,
         },
         ui: UiSettings {
             sidebar_width: 280.0,
@@ -1155,6 +1156,7 @@ mod tests {
         assert_eq!(s.files.date_format, DateFormat::Relative);
         assert!(!s.files.show_permissions);
         assert_eq!(s.files.auto_refresh, 0);
+        assert!(s.files.columns, "file tree columns default to on");
         assert_eq!(s.connection.default_user, "");
         assert!(s.connection.read_ssh_config && s.connection.remember_passwords);
         assert!(s.transfers.preserve_timestamps && !s.transfers.notify_on_complete);
@@ -1181,7 +1183,9 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("preserveTimestamps");
-        v["files"].as_object_mut().unwrap().remove("autoRefresh");
+        for key in ["autoRefresh", "columns"] {
+            v["files"].as_object_mut().unwrap().remove(key);
+        }
         assert_eq!(
             serde_json::from_value::<Settings>(v).unwrap(),
             default_settings()

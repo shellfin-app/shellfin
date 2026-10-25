@@ -9,6 +9,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- The file tree can show size and modification date columns and sort by name, size or date. The columns appear when
+  the sidebar is wide enough (size first, then the date), with a header to sort by clicking; the View menu and the
+  command palette sort too. Folders stay first, and the choice is remembered. The date follows the date format setting
+  in a short form, and the columns can be turned off in Settings → Files.
 - Importing bookmarks can now keep the startup commands from the file, but only when you explicitly choose to for that
   import. The bookmarks and their commands are listed before anything is saved. By default startup commands are still
   dropped, and a command that is not a single valid line is always dropped.

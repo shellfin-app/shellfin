@@ -118,7 +118,7 @@ describe("settings form", () => {
     },
     files: {
       showHidden: true, foldersFirst: true, confirmDelete: true, doubleClick: "open", sizeUnits: "binary",
-      dateFormat: "relative", showPermissions: false, autoRefresh: 0,
+      dateFormat: "relative", showPermissions: false, autoRefresh: 0, columns: true,
     },
     ui: { sidebarWidth: 280, terminalPanelHeight: 300, terminalPanelOpen: true },
     transfers: {
