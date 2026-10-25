@@ -1,4 +1,4 @@
-import type { MouseEvent } from "react";
+import { useEffect, useState, type MouseEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { BrandMark } from "../../components/BrandMark";
 import { Icon } from "../../components/Icon";
@@ -12,6 +12,23 @@ function WindowControls() {
   const { t } = useTranslation();
   const maximized = useStore((s) => s.windowState.maximized);
   const backend = () => getBackend();
+  // Windows: the native Snap Layouts overlay sits over the maximize button and takes the mouse, so the button's
+  // hover look comes from `window:max-hover`. Transient, local state; the click still arrives through the overlay.
+  const [maxHover, setMaxHover] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+    void getBackend()
+      .listen("window:max-hover", ({ hovered }) => setMaxHover(hovered))
+      .then((off) => {
+        if (cancelled) off();
+        else unlisten = off;
+      });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
   return (
     <div className="window-controls">
       <button
@@ -25,7 +42,7 @@ function WindowControls() {
       </button>
       <button
         type="button"
-        className="window-controls__button"
+        className={`window-controls__button${maxHover ? " window-controls__button--hover" : ""}`}
         aria-label={maximized ? t("titlebar.restore") : t("titlebar.maximize")}
         title={maximized ? t("titlebar.restore") : t("titlebar.maximize")}
         onClick={() => guard(backend().windowToggleMaximize())}
@@ -71,6 +88,9 @@ export function TitleBar() {
       className={`title-bar title-bar--${platform}${mac && !fullscreen ? " title-bar--traffic-lights" : ""}${focused ? "" : " title-bar--unfocused"}`}
       onMouseDown={onMouseDown}
     >
+      {/* Everything but the window controls: it may shrink and clips, so the controls stay flush right (the Snap
+          Layouts overlay is placed by geometry). Below 960 px the menu bar is one menu button (MenuBar). */}
+      <div className="title-bar__content">
       <div className="title-bar__logo">
         <BrandMark size={20} />
       </div>
@@ -92,6 +112,7 @@ export function TitleBar() {
         <span className="search-box__input">{t("shell.search.placeholder")}</span>
         <kbd className="search-box__hint mono">{mac ? t("shortcut.paletteMac") : t("shortcut.palette")}</kbd>
       </button>
+      </div>
       {mac || fullscreen ? null : <WindowControls />}
     </header>
   );

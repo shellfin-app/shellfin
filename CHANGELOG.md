@@ -29,9 +29,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - File options in the SSH config (`UserKnownHostsFile`, `GlobalKnownHostsFile`, `IdentityFile`, `CertificateFile`,
   `IdentityAgent`) now support `%C` (the OpenSSH 9.6+ connection hash), `%l`, `%L`, `%i` and `%j`, so setups such as
   `UserKnownHostsFile ~/.ssh/known_hosts.d/%C` work.
+- Windows 11 Snap Layouts on the maximize button: hovering it shows the snap layout flyout, like in other Windows
+  apps (#14). Dialogs and menus stay clear of that corner, so their close buttons and items remain clickable in a
+  small window.
 
 ### Changed
 
+- The window can be made much smaller (minimum 580 × 500 instead of 960 × 600), so it fits half of the screen in
+  Snap layouts on laptops with display scaling. Below 960 px wide the menu bar becomes one Menu button (same
+  menus, same Alt/F10 keys), the window controls always stay at the right edge, and the status bar hides the
+  transfer rates and the key type below 760 px.
 - Editor whitespace markers (space dots and tab arrows) are now drawn faintly in both themes instead of in a colour
   close to the text, and "Show whitespace" has three choices: All, Active line only and None (the default stays
   None). A saved on/off choice carries over as All or None.

@@ -47,7 +47,11 @@ pub async fn window_toggle_fullscreen(window: WebviewWindow) -> Result<(), AppEr
             .map_err(|e| failed("state query", &e))?;
         window
             .set_fullscreen(!fullscreen)
-            .map_err(|e| failed("fullscreen", &e))
+            .map_err(|e| failed("fullscreen", &e))?;
+        // A fullscreen toggle that keeps the size sends no `Resized`: re-place the Snap Layouts overlay (hidden
+        // in fullscreen) and publish the state from here.
+        crate::window::resync_on_main_thread(&window);
+        Ok(())
     })
     .await
 }

@@ -93,7 +93,7 @@ The Docker integration suite is only needed when you touch `ssh/`, `session/`, `
    entry, and the ACL test (`commands::acl_tests`) must pass. Never add `core:window:*`, `fs:`, `shell:`,
    `dialog:` or `opener:` permissions to the webview.
 8. **Security-sensitive areas need tests, including hostile input:** `ssh/`, `known_hosts/`, `sftp/save` and
-   `sftp/transfer`, `platform/local_path` and `file_trust`, `window.rs` and the ACL, `storage/`. Never log secrets,
+   `sftp/transfer`, `platform/local_path` and `file_trust`, `window.rs`, `caption_overlay.rs` and the ACL, `storage/`. Never log secrets,
    terminal data or file contents. No `unwrap()`/`expect()` in non-test Rust, no `std::process::Command`.
 9. **Edit files with editor tools**, not ad-hoc `sed`/Python/PowerShell one-liners. Never write code containing
    backslashes (regexes, Windows paths) inside a shell heredoc.

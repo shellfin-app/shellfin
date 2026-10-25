@@ -17,6 +17,7 @@ compile_error!(
 
 pub mod app_menu;
 pub mod app_state;
+pub mod caption_overlay;
 pub mod commands;
 pub mod e2e;
 pub mod error;
@@ -184,10 +185,13 @@ pub fn run() {
         .setup(|app| setup(app.handle()))
         .on_menu_event(|app, event| app_menu::on_menu_event(app, &event.id().0))
         .on_window_event(|window, event| match event {
+            // Windows: keep the Snap Layouts overlay on the maximize button (§8.4), then
             // `window:state` for the custom title bar (deduplicated).
-            WindowEvent::Resized(_) | WindowEvent::Focused(_) => {
+            WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
+                window::sync_caption_overlay(window);
                 window::emit_state_if_changed(window);
             }
+            WindowEvent::Focused(_) => window::emit_state_if_changed(window),
             // Quit flow (§8.9): the close button never closes the window directly.
             WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();

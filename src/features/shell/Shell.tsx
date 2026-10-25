@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Group, Panel, Separator, type PanelImperativeHandle } from "react-resizable-panels";
 import { Button } from "../../components/Button";
@@ -21,6 +21,7 @@ import { Sidebar } from "./Sidebar";
 import { StatusBar } from "./StatusBar";
 import { TitleBar } from "./TitleBar";
 import { MAIN_MIN, SIDEBAR_MIN, clampSidebarWidth, sidebarMaxPx } from "./layoutLimits";
+import { createSidebarWidthTracker, sidebarCorrection } from "./sidebarWidth";
 import "./shell.css";
 
 const TERMINAL_MIN = 120;
@@ -156,17 +157,76 @@ export function Shell() {
   const windowWidth = useWindowWidth();
   const sidebarMax = sidebarMaxPx(windowWidth);
   const sidebarRef = useRef<PanelImperativeHandle | null>(null);
-  // The stored width is clamped to the window it is restored into (it may come from a larger window).
+  // Only widths the user chose are stored; the clamp to the current window happens here, at render time.
+  const widths = useMemo(() => createSidebarWidthTracker(loadLayoutPrefs().sidebarWidth), []);
+  // The user's width clamped to the window it is restored into (it may come from a larger window).
   const sidebarWidth = useMemo(
-    () => (sidebarOpen ? clampSidebarWidth(loadLayoutPrefs().sidebarWidth, window.innerWidth) : 0),
-    [sidebarOpen],
+    () => (sidebarOpen ? clampSidebarWidth(widths.userWidth(), window.innerWidth) : 0),
+    [sidebarOpen, widths],
   );
 
-  // A shrinking window takes the sidebar with it so the main area keeps its usable width.
+  // The shown width is always the user's width clamped to the current window: a shrinking window takes the sidebar
+  // with it (the main area keeps its usable width), a widening one gives the user's width back, also in one step
+  // (maximize, Snap). The panel library keeps percentages when its group resizes, so the shell corrects it on the next
+  // frame after every window or group resize and after every size change the user did not make. None of this is
+  // stored (`widths.onResize` ignores resizes the user did not make). At most a few corrections per resize, so a
+  // size the library refuses can never loop.
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const syncFrame = useRef(0);
+  const corrections = useRef(0);
+  const scheduleSync = useCallback(() => {
+    if (syncFrame.current !== 0) return;
+    syncFrame.current = requestAnimationFrame(() => {
+      syncFrame.current = 0;
+      const panel = sidebarRef.current;
+      if (!panel || corrections.current >= 4) return;
+      const want = sidebarCorrection(panel.getSize().inPixels, widths.userWidth(), window.innerWidth);
+      if (want === null) return;
+      corrections.current += 1;
+      panel.resize(want);
+    });
+  }, [widths]);
   useEffect(() => {
-    const panel = sidebarRef.current;
-    if (panel && panel.getSize().inPixels > sidebarMax) panel.resize(sidebarMax);
-  }, [sidebarMax]);
+    corrections.current = 0;
+    scheduleSync();
+  }, [windowWidth, scheduleSync]);
+  useEffect(() => {
+    const body = bodyRef.current;
+    if (!body || typeof ResizeObserver === "undefined") return undefined;
+    const observer = new ResizeObserver(() => {
+      corrections.current = 0;
+      scheduleSync();
+    });
+    observer.observe(body);
+    return () => {
+      observer.disconnect();
+      if (syncFrame.current !== 0) cancelAnimationFrame(syncFrame.current);
+      syncFrame.current = 0;
+    };
+  }, [scheduleSync]);
+
+  // User resizes of the sidebar: a press on its separator (until release) or a key on it. Window capture listeners
+  // see them before the panel library handles them.
+  useEffect(() => {
+    const onSeparator = (e: Event) => e.target instanceof Element && e.target.closest(".shell__separator--v") !== null;
+    const down = (e: Event) => {
+      if (onSeparator(e)) widths.pointerDown();
+    };
+    const up = () => widths.pointerUp();
+    const key = (e: Event) => {
+      if (onSeparator(e)) widths.key();
+    };
+    window.addEventListener("pointerdown", down, true);
+    window.addEventListener("pointerup", up, true);
+    window.addEventListener("pointercancel", up, true);
+    window.addEventListener("keydown", key, true);
+    return () => {
+      window.removeEventListener("pointerdown", down, true);
+      window.removeEventListener("pointerup", up, true);
+      window.removeEventListener("pointercancel", up, true);
+      window.removeEventListener("keydown", key, true);
+    };
+  }, [widths]);
 
   // Layout choices are remembered between runs (local UI state, not settings: no contract field exists for them).
   useEffect(() => saveLayoutPrefs({ sidebarOpen, statusBarOpen, activity }), [sidebarOpen, statusBarOpen, activity]);
@@ -174,7 +234,7 @@ export function Shell() {
   return (
     <div className="shell">
       <TitleBar />
-      <div className="shell__body">
+      <div ref={bodyRef} className="shell__body">
         <ActivityBar />
         <Group orientation="horizontal" id="shell" className="shell__group">
           {sidebarOpen ? (
@@ -186,7 +246,9 @@ export function Shell() {
               maxSize={sidebarMax}
               groupResizeBehavior="preserve-pixel-size"
               onResize={(size) => {
-                if (size.inPixels > 0) saveLayoutPrefs({ sidebarWidth: Math.round(size.inPixels) }, { debounce: true });
+                const chosen = widths.onResize(size.inPixels);
+                if (chosen !== null) saveLayoutPrefs({ sidebarWidth: chosen }, { debounce: true });
+                else scheduleSync(); // a layout change (group resize): back to the clamped user width
               }}
             >
               <Sidebar />

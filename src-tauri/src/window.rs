@@ -8,6 +8,8 @@ use std::sync::{Mutex, PoisonError};
 use tauri::webview::NewWindowResponse;
 use tauri::{AppHandle, Emitter, Manager, Runtime, Url, WebviewWindow, WebviewWindowBuilder};
 
+#[cfg(windows)]
+use crate::ipc::dto::MaxButtonHover;
 use crate::ipc::dto::{WindowState, events};
 
 pub const MAIN_WINDOW_LABEL: &str = "main";
@@ -76,6 +78,7 @@ pub fn create_main_window<R: Runtime>(
         .on_download(|_webview, event| download_allowed(&event))
         .build()?;
     harden_webview(&window, permission_dev_url);
+    install_caption_overlay(&window);
     #[cfg(debug_assertions)]
     if std::env::var_os("SHELLFIN_DEVTOOLS").is_some_and(|v| v == "1") {
         // Debug builds only: browser accelerator keys (F12, Ctrl+Shift+I) are off, so devtools
@@ -123,6 +126,65 @@ const TRAFFIC_LIGHT_Y: f64 = 15.0;
 
 /// Width (logical px) the frontend keeps free at the left of the title bar on macOS.
 pub const MAC_TRAFFIC_LIGHT_INSET: u32 = 78;
+
+/// (Windows): the invisible native window over the HTML maximize button that gives it Windows 11 Snap
+/// Layouts (`caption_overlay`, §8.4/§9.1). Hover changes go to the page as `window:max-hover`. If it cannot be
+/// created, the HTML button keeps working as before (logged). Other platforms: nothing.
+fn install_caption_overlay<R: Runtime>(window: &WebviewWindow<R>) {
+    #[cfg(windows)]
+    {
+        let parent = match window.hwnd() {
+            Ok(hwnd) => hwnd.0,
+            Err(e) => {
+                tracing::warn!(error = %e, "caption overlay: no window handle");
+                return;
+            }
+        };
+        let app = window.app_handle().clone();
+        let on_hover: crate::caption_overlay::HoverSink = std::sync::Arc::new(move |hovered| {
+            if let Err(e) = app.emit(events::WINDOW_MAX_HOVER, MaxButtonHover { hovered }) {
+                tracing::debug!(error = %e, "failed to emit window:max-hover");
+            }
+        });
+        match crate::caption_overlay::install(parent, on_hover) {
+            Ok(_) => sync_caption_overlay(&window.as_ref().window()),
+            Err(e) => tracing::warn!(error = %e, "caption overlay not installed"),
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = window;
+}
+
+/// (Windows): moves the maximize-button overlay to the button (or hides it: minimized, fullscreen). Called on
+/// every resize and DPI change of the main window; other windows and platforms: nothing.
+pub fn sync_caption_overlay<R: Runtime>(window: &tauri::Window<R>) {
+    #[cfg(windows)]
+    {
+        if window.label() != MAIN_WINDOW_LABEL {
+            return;
+        }
+        let Ok(hwnd) = window.hwnd() else { return };
+        // The DPI is read from the window inside `sync` (an unreadable DPI hides the overlay). An unreadable
+        // fullscreen state also hides it: no hot spot is better than one over content.
+        let fullscreen = window.is_fullscreen().unwrap_or(true);
+        crate::caption_overlay::sync(hwnd.0, window.is_maximized().unwrap_or(false), fullscreen);
+    }
+    #[cfg(not(windows))]
+    let _ = window;
+}
+
+/// After a window-state change that may not resize the window (a fullscreen toggle of a window already as large
+/// as the screen): [`sync_caption_overlay`] and [`emit_state_if_changed`], queued on the main thread behind the
+/// change itself (the overlay is a Win32 window of that thread).
+pub fn resync_on_main_thread<R: Runtime>(window: &WebviewWindow<R>) {
+    let target = window.as_ref().window();
+    if let Err(e) = window.run_on_main_thread(move || {
+        sync_caption_overlay(&target);
+        emit_state_if_changed(&target);
+    }) {
+        tracing::debug!(error = %e, "window state resync not queued");
+    }
+}
 
 /// Current state of `window` for `AppBootstrap.window` and `window:state`.
 pub fn state_of<R: Runtime>(window: &tauri::Window<R>) -> WindowState {

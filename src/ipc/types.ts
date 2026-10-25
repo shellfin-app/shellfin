@@ -105,6 +105,7 @@ export type * from "./bindings/TransferEvent";
 export type * from "./bindings/TransferSettings";
 export type * from "./bindings/UiSettings";
 export type * from "./bindings/WindowState";
+export type * from "./bindings/MaxButtonHover";
 export type * from "./bindings/MenuActionPayload";
 // Updater.
 export type * from "./bindings/UpdateCheckOutcome";

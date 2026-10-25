@@ -68,7 +68,7 @@ function SessionStatus({ sessionId }: { sessionId: string }) {
       ) : null}
       {info?.sftpAvailable ? <span>{t("status.sftp")}</span> : null}
       {connected ? (
-        <span>{t("status.rates", { tx: formatRate(stats?.txBytesPerSec ?? 0), rx: formatRate(stats?.rxBytesPerSec ?? 0) })}</span>
+        <span className="status-bar__rates">{t("status.rates", { tx: formatRate(stats?.txBytesPerSec ?? 0), rx: formatRate(stats?.rxBytesPerSec ?? 0) })}</span>
       ) : null}
       <span className="status-bar__group">
         <PanelToggles withTerminal />

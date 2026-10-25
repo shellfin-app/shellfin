@@ -1,4 +1,4 @@
-.palette-backdrop { align-items: flex-start; padding-top: 12vh; }
+.palette-backdrop { align-items: flex-start; padding-top: max(12vh, var(--caption-clearance, 0px)); }
 .palette {
   width: 560px; max-width: 100%; display: flex; flex-direction: column;
   background: var(--panel); border: 1px solid var(--border-input); border-radius: 12px;
@@ -7,6 +7,7 @@
 .palette__input {
   height: 48px; padding: 0 16px; border: 0; border-bottom: 1px solid var(--border);
   background: none; color: var(--text-bright); font-size: calc(14px * var(--ui-scale, 1)); outline: none;
+  min-width: 0; text-overflow: ellipsis; /* a long placeholder in a narrow window ends with an ellipsis */
 }
 .palette__input::placeholder { color: var(--text-muted); }
 .palette__list { max-height: 360px; overflow: auto; padding: 6px; }

@@ -13,6 +13,7 @@ import { actionEnabled, actionLabel, runAction } from "../actions/registry";
 import { openFile } from "../editor/editorActions";
 import { goToFolder } from "../files/fileActions";
 import { requestOpenSession } from "../session/sessionActions";
+import { useCompactTitleBar } from "../shell/useCompactTitleBar";
 import "./palette.css";
 
 /** Actions the palette lists: all of them except the ones that act on whatever has the focus (Edit menu) and itself. */
@@ -68,6 +69,9 @@ function PathGroup({ sessionId, path, onDone }: { sessionId: string | null; path
  */
 export function CommandPalette({ mode }: { mode: "all" | "files" }) {
   const { t } = useTranslation();
+  // A narrow window gets the short placeholder: an input does not show an ellipsis while it has the focus, so the long
+  // one would be cut mid-letter.
+  const compact = useCompactTitleBar();
   const close = useStore((s) => s.closePalette);
   const sshConfig = useStore((s) => s.sshConfig);
   const bookmarks = useStore((s) => s.bookmarks);
@@ -181,7 +185,9 @@ export function CommandPalette({ mode }: { mode: "all" | "files" }) {
           autoFocus
           value={query}
           onValueChange={setQuery}
-          placeholder={mode === "files" ? t("palette.filesPlaceholder") : t("palette.placeholder")}
+          placeholder={
+            mode === "files" ? t("palette.filesPlaceholder") : compact ? t("palette.placeholderShort") : t("palette.placeholder")
+          }
           aria-label={t("shell.search.label")}
         />
         <Command.List className="palette__list">

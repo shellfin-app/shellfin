@@ -16,13 +16,21 @@
   gap: 2px;
   padding: 0 8px;
   border-bottom: 1px solid var(--border-subtle);
-  overflow-x: auto;
+  /* Never a horizontal scrollbar: the buttons keep their size, the title truncates and the tab strip scrolls
+     inside (`.terminal-panel__tabs`). */
+  overflow: hidden;
 }
-.terminal-panel__title { padding: 0 10px 0 6px; white-space: nowrap; }
-.terminal-panel__spacer { flex: 1; }
+.terminal-panel__bar > :not(.terminal-panel__title, .terminal-panel__tabs, .terminal-panel__spacer) { flex: none; }
+/* The title gives way first (large shrink factor), so a single tab is never cut, its close button included. */
+.terminal-panel__title { padding: 0 10px 0 6px; white-space: nowrap; flex: 0 100 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.terminal-panel__spacer { flex: 1; min-width: 0; }
 /* terminal.hideMousePointerWhileTyping: shown again by the next mouse move. */
 .terminal-host--typing, .terminal-host--typing * { cursor: none !important; }
-.terminal-panel__tabs { display: flex; align-items: center; gap: 2px; }
+.terminal-panel__tabs {
+  display: flex; align-items: center; gap: 2px;
+  flex: 0 1 auto; min-width: 0; overflow-x: auto; scrollbar-width: none; /* wheel / keyboard / scrollIntoView */
+}
+.terminal-tab { flex: none; }
 
 .terminal-tab {
   display: inline-flex;

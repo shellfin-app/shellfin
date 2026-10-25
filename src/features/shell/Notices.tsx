@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { errorMessage } from "../../i18n/errorMessage";
 import { Icon } from "../../components/Icon";
@@ -108,10 +108,17 @@ function NoticeItem({ notice }: { notice: Notice }) {
 export function Notices() {
   const { t } = useTranslation();
   const notices = useStore((s) => s.notices);
+  const ref = useRef<HTMLDivElement>(null);
+  const newest = notices.at(-1)?.id;
+  // In a short window the stack scrolls (global.css): a new notice (at the bottom) is scrolled into view.
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (el && newest !== undefined) el.scrollTop = el.scrollHeight;
+  }, [newest]);
   // The live region stays mounted (empty) at all times: a region inserted together with its content is often not
   // announced by screen readers.
   return (
-    <div className="notices" role="region" aria-label={t("notices.label")} aria-live="polite">
+    <div ref={ref} className="notices" role="region" aria-label={t("notices.label")} aria-live="polite">
       {notices.map((n) => (
         <NoticeItem key={n.id} notice={n} />
       ))}

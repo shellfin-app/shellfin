@@ -39,22 +39,41 @@ export function ConnectionTabs() {
     setEdges((prev) => (prev.left === left && prev.right === right ? prev : { left, right }));
   }, []);
 
-  // Fades follow the scroll position and the available width.
+  // No `behavior`: an instant scroll (nothing sets `scroll-behavior: smooth`, and reduce motion forces `auto`).
+  const revealActive = useCallback(() => {
+    const el = scrollRef.current?.querySelector<HTMLElement>(".conn-tab--active");
+    el?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+  }, []);
+
+  // Fades follow the scroll position and the available width; a narrower strip (window resize, compact title bar)
+  // keeps the active tab in view.
   useLayoutEffect(() => {
     measure();
     const el = scrollRef.current;
     if (!el || typeof ResizeObserver === "undefined") return undefined;
-    const observer = new ResizeObserver(measure);
+    // Deferred to the next frame (and coalesced): scrolling or re-rendering inside the observer callback can change
+    // layout during delivery ("ResizeObserver loop completed with undelivered notifications").
+    let frame = 0;
+    const observer = new ResizeObserver(() => {
+      if (frame !== 0) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        revealActive();
+        measure();
+      });
+    });
     observer.observe(el);
-    return () => observer.disconnect();
-  }, [measure, order.length]);
+    return () => {
+      observer.disconnect();
+      if (frame !== 0) cancelAnimationFrame(frame);
+    };
+  }, [measure, revealActive, order.length]);
 
   // The active tab is always scrolled into view (new session, Mod+1..9, the list).
   useEffect(() => {
-    const el = scrollRef.current?.querySelector<HTMLElement>(".conn-tab--active");
-    el?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+    revealActive();
     measure();
-  }, [activeId, order.length, measure]);
+  }, [activeId, order.length, measure, revealActive]);
 
   const onWheel = (e: WheelEvent<HTMLDivElement>) => {
     const el = scrollRef.current;

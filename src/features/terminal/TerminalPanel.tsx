@@ -1,4 +1,4 @@
-import { type KeyboardEvent } from "react";
+import { useEffect, useRef, type KeyboardEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
 import { Button } from "../../components/Button";
@@ -39,6 +39,30 @@ export function TerminalPanel({ sessionId }: { sessionId: string }) {
   const findShortcut = t(isMac(platform) ? "shortcut.terminalFindMac" : "shortcut.terminalFind");
 
   const ids = tabs ?? [];
+  const tabsRef = useRef<HTMLDivElement>(null);
+  // The active tab stays visible in a strip narrower than its tabs (new tab, switching, a narrower panel).
+  useEffect(() => {
+    const strip = tabsRef.current;
+    if (!strip) return undefined;
+    const reveal = () => strip.querySelector<HTMLElement>(".terminal-tab--active")?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+    reveal();
+    if (typeof ResizeObserver === "undefined") return undefined;
+    // Next frame, coalesced: no scrolling inside the observer callback (see ConnectionTabs).
+    let frame = 0;
+    const observer = new ResizeObserver(() => {
+      if (frame === 0)
+        frame = requestAnimationFrame(() => {
+          frame = 0;
+          reveal();
+        });
+    });
+    observer.observe(strip);
+    return () => {
+      observer.disconnect();
+      if (frame !== 0) cancelAnimationFrame(frame);
+    };
+  }, [active, ids.length]);
+
   const onTabKeyDown = (e: KeyboardEvent<HTMLElement>, termId: string, index: number) => {
     if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
       const next = ids[(index + (e.key === "ArrowRight" ? 1 : ids.length - 1)) % ids.length];
@@ -56,7 +80,16 @@ export function TerminalPanel({ sessionId }: { sessionId: string }) {
     <section className="terminal-panel" aria-label={t("terminal.panel")}>
       <div className="terminal-panel__bar">
         <span className="sec terminal-panel__title">{t("terminal.title")}</span>
-        <div className="terminal-panel__tabs" role="tablist" aria-label={t("terminal.tabs")}>
+        <div
+          ref={tabsRef}
+          className="terminal-panel__tabs"
+          role="tablist"
+          aria-label={t("terminal.tabs")}
+          onWheel={(e) => {
+            // A narrow panel scrolls the tab strip (no scrollbar): a vertical wheel scrolls it sideways.
+            if (e.deltaY !== 0 && e.deltaX === 0) e.currentTarget.scrollLeft += e.deltaY;
+          }}
+        >
           {ids.map((termId, i) => {
             const meta = metas[i];
             if (!meta) return null;

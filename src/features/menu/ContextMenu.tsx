@@ -3,9 +3,9 @@ import { Icon } from "../../components/Icon";
 import { SEL_MENU_ITEM } from "../../lib/domIds";
 import { useTranslation } from "react-i18next";
 import { useMenuStore, type MenuItem } from "./menuStore";
+import { useStore } from "../../state/store";
+import { placeMenu } from "./menuPlacement";
 import "./menu.css";
-
-const EDGE = 6;
 
 /** The app's context menu: keyboard accessible (arrows, Home/End, Enter/Space, Escape, Tab closes). */
 export function ContextMenu() {
@@ -19,10 +19,19 @@ export function ContextMenu() {
   useLayoutEffect(() => {
     const el = rootRef.current;
     if (!menu || !el) return;
-    const left = Math.max(EDGE, Math.min(menu.x, window.innerWidth - el.offsetWidth - EDGE));
-    const top = Math.max(EDGE, Math.min(menu.y, window.innerHeight - el.offsetHeight - EDGE));
-    setPosition({ left, top });
-    el.querySelector<HTMLElement>(SEL_MENU_ITEM)?.focus();
+    setPosition(
+      placeMenu({
+        x: menu.x,
+        y: menu.y,
+        width: el.offsetWidth,
+        height: el.offsetHeight,
+        viewportWidth: window.innerWidth,
+        viewportHeight: window.innerHeight,
+        windows: useStore.getState().platform === "windows",
+      }),
+    );
+    // No enabled item: the menu itself keeps the focus, so Escape and Tab still close it.
+    (el.querySelector<HTMLElement>(SEL_MENU_ITEM) ?? el).focus();
   }, [menu]);
 
   // Anything that moves the pointer context closes the menu.
@@ -102,6 +111,7 @@ export function ContextMenu() {
       className="context-menu"
       role="menu"
       aria-label={t("menu.label")}
+      tabIndex={-1}
       style={{ left: position.left, top: position.top }}
       onKeyDown={onKeyDown}
     >

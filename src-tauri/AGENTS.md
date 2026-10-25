@@ -18,7 +18,8 @@ Applies on top of the root [AGENTS.md](../AGENTS.md). Deep reference: `docs/ARCH
 - `sshconfig/`, `known_hosts/` own parsers/writers (do not swap in russh's). `storage/` JSON files, atomic, 0600,
   validate-on-load, migrations. `platform/` is the only way to open local files (`local_path` allowlist + `file_trust`
   on the opened handle) and holds all Win32 security code. `updater.rs` signed self-update (ARCHITECTURE §9.8).
-  `window.rs`, `quit.rs`, `app_menu.rs`, `e2e.rs`.
+  `window.rs`, `caption_overlay.rs` (Windows Snap Layouts child window, ARCHITECTURE §8.4/§9.1), `quit.rs`,
+  `app_menu.rs`, `e2e.rs`.
 - `ipc/dto.rs` holds every DTO. Outbound types derive `Serialize + TS`, inbound `Deserialize + TS`; secrets are
   `Secret<T>` (inbound only, zeroized, `Debug` masked). Keep the list of secret-bearing fields exhaustive.
 

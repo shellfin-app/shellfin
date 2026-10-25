@@ -148,6 +148,17 @@ function useBrowserGuards() {
   }, [needsWheelGuard]);
 }
 
+/**
+ * `<html data-platform>` for platform-specific CSS. On Windows it makes dialogs keep clear of the top-right caption
+ * zone, where the native Snap Layouts overlay takes the mouse (`--caption-clearance`, dialog.css; ARCHITECTURE §8.4).
+ */
+function usePlatformAttribute() {
+  const platform = useStore((s) => s.platform);
+  useEffect(() => {
+    document.documentElement.dataset.platform = platform;
+  }, [platform]);
+}
+
 function BootError() {
   const { t } = useTranslation();
   const error = useStore((s) => s.bootError);
@@ -174,6 +185,7 @@ export function App() {
   const failed = useStore((s) => s.bootError !== null);
   useGlobalShortcuts();
   useBrowserGuards();
+  usePlatformAttribute();
   return (
     <ErrorBoundary reportHost>
       {ready ? <Shell /> : failed ? <BootError /> : null}

@@ -59,11 +59,20 @@ input:focus-visible { outline: none; }
 /* Thin dark scrollbars (WebView2 / WebKit). */
 * { scrollbar-width: thin; scrollbar-color: var(--border-input) transparent; }
 
+/* Windows: the native Snap Layouts overlay sits over the maximize button (two caption buttons wide, the title bar
+   high, top right) and takes every click there, even over a dialog or a notice. Overlays keep this much room at the
+   top (`data-platform` is set by App.tsx; caption_overlay.rs, ARCHITECTURE §8.4). 0 elsewhere. */
+:root[data-platform="windows"] { --caption-clearance: calc(var(--h-titlebar) + 6px); }
+
 /* ---- notices, error states ---- */
+/* Up to five notices stack upwards from the bottom right; in a short window they scroll instead of reaching the
+   caption zone (top >= --caption-clearance + 8 px). */
 .notices {
   position: fixed; right: 16px; bottom: 40px; z-index: 50;
   display: flex; flex-direction: column; gap: 8px; max-width: 420px;
+  max-height: calc(100vh - 40px - var(--caption-clearance, 0px) - 8px); overflow-y: auto;
 }
+.notices > * { flex: none; }
 .notice {
   display: flex; align-items: center; gap: 8px; padding: 8px 8px 8px 12px;
   background: var(--danger-bg); border: 1px solid var(--danger-border); border-radius: var(--radius);

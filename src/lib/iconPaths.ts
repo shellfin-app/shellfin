@@ -47,6 +47,8 @@ export type IconName =
   | "panelBottom"
   | "panes"
   | "more"
+  | "menu"
+  | "chevronLeft"
   | "help";
 
 export interface IconDef {
@@ -73,6 +75,8 @@ export const ICONS: Record<IconName, IconDef> = {
   file: { paths: ["M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z", "M14 3v5h5"] },
   chevronDown: { paths: ["M6 9l6 6 6-6"] },
   chevronRight: { paths: ["M9 6l6 6-6 6"] },
+  chevronLeft: { paths: ["M15 6l-6 6 6 6"] },
+  menu: { paths: ["M4 6h16M4 12h16M4 18h16"] },
   star: { paths: ["M12 3l2.8 5.7 6.2.9-4.5 4.4 1 6.2L12 17.3 6.5 20.2l1-6.2L3 9.6l6.2-.9z"] },
   key: { paths: ["M11 12l9-9M17 6l3 3"], circles: [{ cx: 8, cy: 15, r: 4 }] },
   settings: {
