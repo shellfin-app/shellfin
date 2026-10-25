@@ -44,7 +44,7 @@ Website: <https://shellfin.app>
 - **Appearance:** dark, light or system theme, six accent colours, interface text size 12 to 16, reduced motion and a
   configurable terminal background; many terminal, editor and file-tree settings, applied live.
 - **Desktop UX:** frameless window with an in-app menu bar (native menu on macOS), command palette, layout-independent
-  keyboard shortcuts, a maximizable terminal panel, UI in English, Ukrainian and German (beta) (switchable in Settings; more
+  keyboard shortcuts, a maximizable terminal panel, UI in English, Ukrainian, German (beta) and Japanese (beta) (switchable in Settings; more
   languages welcome, see CONTRIBUTING).
 - **Updates:** signed automatic updates (Windows, macOS, Linux AppImage); checks can be turned off, and nothing is
   installed without your OK. `.deb`/`.rpm` installs get a download link.
