@@ -45,7 +45,7 @@ keyring = "=4.2.0"
 notify-debouncer-mini = "=0.7.0"
 encoding_rs = "=0.8.42"
 glob = "=0.3.4"
-uuid = { version = "=1.28.0", features = ["v4", "serde"] }
+uuid = { version = "=1.29.0", features = ["v4", "serde"] }
 zeroize = "=1.9.1"
 ring = "=0.17.14"
 base64 = "=0.23.1"
