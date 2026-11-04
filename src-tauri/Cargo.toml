@@ -30,7 +30,7 @@ tauri-plugin-updater = { version = "=2.14.0", default-features = false, features
 # only, no JS commands or permissions; no new crates in the tree (windows-sys / zbus 5 / tokio are
 # already there).
 tauri-plugin-single-instance = "=2.5.4"
-russh = { version = "=0.64.1", default-features = false, features = ["ring", "rsa", "flate2"] }
+russh = { version = "=0.65.0", default-features = false, features = ["ring", "rsa", "flate2"] }
 russh-sftp = "=3.0.1"
 tokio = { version = "=1.54.1", features = ["sync", "time", "net", "io-util", "macros", "fs"] }
 serde = { version = "=1.0.229", features = ["derive"] }
