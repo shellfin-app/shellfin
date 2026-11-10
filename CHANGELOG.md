@@ -13,6 +13,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   not fit, they end after the last complete entry with a link to the full release notes on GitHub, and the dialog
   always offers a "Release notes on GitHub" link under the notes.
 
+### Security
+
+- The SSH library is updated to russh 0.65.0. A malicious server can no longer make Shellfin use more and more
+  memory by sending endless EXT_INFO messages (GHSA-4p9f-7p9m-5vfg), and it can no longer hang a terminal or file
+  transfer by declaring a maximum packet size of zero (GHSA-fw5c-8223-6h42). The update also fixes the channel window
+  accounting and a busy loop when the keepalive timer fires before login.
+
 ## [0.2.0] - 2026-10-26
 
 ### Added
