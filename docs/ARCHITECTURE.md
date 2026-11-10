@@ -71,7 +71,7 @@ Out of scope for v1: port forwarding UI (no activity bar entry; only its label k
 │  │  Session (super-  │   │  dial, hops, │  │ key/agent/pw/ │◀▶│ PromptBroker     │   │
 │  │  visor task)      │   │  handler     │  │ kbd-int       │  │ (UI round trip)  │   │
 │  │  ├ terminal::*    │   └──────┬───────┘  └──────┬────────┘  └──────────────────┘   │
-│  │  ├ sftp::*        │          │ russh 0.64.1    │ ssh::agent (owner-verified pipe/  │
+│  │  ├ sftp::*        │          │ russh 0.65.0    │ ssh::agent (owner-verified pipe/  │
 │  │  └ stats          │          │ (ring)          │ socket → AgentClient::connect)    │
 │  └───────────────────┘   ┌──────▼────────┐  ┌──────────────┐  ┌───────────────────┐   │
 │  watcher (notify) ──────▶│ known_hosts   │  │ sshconfig    │  │ storage (JSON,    │   │
@@ -109,7 +109,7 @@ Out of scope for v1: port forwarding UI (no activity bar entry; only its label k
 
 | Concern | Decision | Reason |
 |---|---|---|
-| SSH | `russh =0.64.1`, **`default-features = false, features = ["ring", "rsa", "flate2"]`** | Pure-Rust async client. The default `aws-lc-rs` backend needs NASM/CMake and fails to build with MSVC on Windows (`aws-lc-sys`), and is banned in `deny.toml`; `ring` builds everywhere. |
+| SSH | `russh =0.65.0`, **`default-features = false, features = ["ring", "rsa", "flate2"]`** | Pure-Rust async client. The default `aws-lc-rs` backend needs NASM/CMake and fails to build with MSVC on Windows (`aws-lc-sys`), and is banned in `deny.toml`; `ring` builds everywhere. |
 | SFTP | `russh-sftp =3.0.1` via **`RawSftpSession`** | `SftpSession` hides the raw session, so `posix-rename@openssh.com` would be unreachable; `RawSftpSession::extended()` exposes it. |
 | ssh_config | **Own parser** (`sshconfig`) | §2.4. |
 | known_hosts | **Own parser, matcher and writer** (`known_hosts`) | russh's checker aborts on `@revoked`/`@cert-authority`, has no wildcard/negation/multi-file support; russh's `learn_known_hosts_path` always writes `[host]:port` (wrong for `HostKeyAlias`), creates dirs/files with default modes and writes the host verbatim (source-verified) — not used. |
