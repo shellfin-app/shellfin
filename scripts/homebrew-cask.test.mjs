@@ -15,12 +15,19 @@ import {
 } from "./homebrew-cask.mjs";
 
 const HASH = "a".repeat(64);
-const base = { repo: "shellfin-app/shellfin", version: "0.2.0", sha256: HASH, macos: ":big_sur", notarized: false };
+const base = { repo: "shellfin-app/shellfin", version: "0.2.0", sha256: HASH, macos: ":macos", notarized: false };
 
 describe("macosRequirement", () => {
   it("maps the bundle minimum to a Homebrew symbol", () => {
-    expect(macosRequirement("11.0")).toBe(":big_sur");
-    expect(macosRequirement("14")).toBe(":sonoma");
+    expect(macosRequirement("12.0")).toBe("macos: :monterey");
+    expect(macosRequirement("14")).toBe("macos: :sonoma");
+  });
+
+  it("writes the bare :macos for the oldest macOS Homebrew knows (brew style Homebrew/OSDependsOn)", () => {
+    expect(macosRequirement("11.0")).toBe(":macos");
+  });
+
+  it("refuses a version Homebrew has no symbol for", () => {
     expect(() => macosRequirement("10.15")).toThrow(/no Homebrew macOS symbol/);
     expect(() => macosRequirement(undefined)).toThrow();
   });
@@ -28,7 +35,7 @@ describe("macosRequirement", () => {
   it("matches tauri.conf.json", () => {
     const dir = dirname(fileURLToPath(import.meta.url));
     const conf = JSON.parse(readFileSync(join(dir, "..", "src-tauri", "tauri.conf.json"), "utf8"));
-    expect(macosRequirement(conf.bundle.macOS.minimumSystemVersion)).toMatch(/^:[a-z_]+$/);
+    expect(macosRequirement(conf.bundle.macOS.minimumSystemVersion)).toMatch(/^(:macos|macos: :[a-z_]+)$/);
   });
 });
 
@@ -58,7 +65,8 @@ describe("renderCask", () => {
     expect(text).not.toContain("conflicts_with");
     expect(text).not.toContain("experimental");
     expect(text).toContain("  depends_on arch: :arm64");
-    expect(text).toContain("  depends_on macos: :big_sur");
+    expect(text).toContain("  depends_on :macos\n");
+    expect(renderCask({ ...base, macos: "macos: :sonoma" })).toContain("  depends_on macos: :sonoma\n");
     expect(text).toContain('  app "Shellfin.app"');
     expect(text).toContain('  homepage "https://shellfin.app/"');
     expect(text).toContain("  livecheck do\n    skip ");
@@ -80,7 +88,7 @@ describe("renderCask", () => {
 
   it("keeps Homebrew's stanza order", () => {
     const text = renderCask(base);
-    const order = ["version ", "sha256 ", "url ", "name ", "desc ", "homepage ", "livecheck ", "auto_updates ", "depends_on arch", "depends_on macos", "app ", "zap ", "caveats "];
+    const order = ["version ", "sha256 ", "url ", "name ", "desc ", "homepage ", "livecheck ", "auto_updates ", "depends_on arch", "depends_on :macos", "app ", "zap ", "caveats "];
     const at = order.map((s) => text.indexOf(`\n  ${s}`));
     expect(at.every((i) => i > 0)).toBe(true);
     expect([...at].sort((x, y) => x - y)).toEqual(at);
