@@ -25,7 +25,7 @@ export const CASK_FILE = `${CASK_TOKEN}.rb`;
 export const DESCRIPTION = "Cross-platform SSH client with terminals, SFTP file tree and editor";
 export const HOMEPAGE = "https://shellfin.app/";
 
-/** Homebrew's macOS symbols by major version. */
+/** Homebrew's macOS symbols by major version; the lowest key is the oldest macOS Homebrew knows. */
 export const MACOS_NAMES = {
   11: "big_sur",
   12: "monterey",
@@ -35,15 +35,19 @@ export const MACOS_NAMES = {
   26: "tahoe",
 };
 
+const OLDEST_MACOS = Math.min(...Object.keys(MACOS_NAMES).map(Number));
+
 /**
- * `bundle.macOS.minimumSystemVersion` ("11.0") -> `:big_sur`. Homebrew's style check wants the bare symbol, which
- * already means "this version or newer". Throws for a version Homebrew has no symbol for.
+ * The argument of the cask's macOS `depends_on` for `bundle.macOS.minimumSystemVersion`: "14.0" ->
+ * `macos: :sonoma` (the bare symbol already means "this version or newer"). The oldest macOS Homebrew knows
+ * ("11.0", Big Sur) is no restriction at all, and `brew style` (Homebrew/OSDependsOn) then wants the bare
+ * `:macos`. Throws for a version Homebrew has no symbol for.
  */
 export function macosRequirement(minimumSystemVersion) {
   const major = Number(String(minimumSystemVersion ?? "").split(".")[0]);
   const name = MACOS_NAMES[major];
   if (!name) throw new Error(`no Homebrew macOS symbol for minimumSystemVersion ${minimumSystemVersion}`);
-  return `:${name}`;
+  return major === OLDEST_MACOS ? ":macos" : `macos: :${name}`;
 }
 
 /** The hash of `fileName` in a `sha256sum` file; throws unless exactly one well-formed line names it. */
@@ -90,7 +94,7 @@ export function renderCask({ repo, version, sha256, macos, notarized }) {
     ``,
     `  auto_updates true`,
     `  depends_on arch: :arm64`,
-    `  depends_on macos: ${macos}`,
+    `  depends_on ${macos}`,
     ``,
     `  app "Shellfin.app"`,
     ``,
