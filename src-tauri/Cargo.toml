@@ -19,7 +19,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "=2.7.4", features = [] }
 
 [dependencies]
-tauri = { version = "=2.12.4", features = [] }
+tauri = { version = "=2.12.5", features = [] }
 tauri-plugin-dialog = "=2.8.4"       # Rust-side only (no JS permissions)
 tauri-plugin-opener = "=2.7.2"         # Rust-side only (reveal paths, open http(s) links)
 tauri-plugin-notification = "=2.8.0"   # Rust-side only (OS notifications); no JS permission
