@@ -43,7 +43,7 @@ tracing-subscriber = { version = "=0.3.23", features = ["env-filter", "fmt"] }
 tracing-appender = "=0.2.5"
 keyring = "=4.2.0"
 notify-debouncer-mini = "=0.7.0"
-encoding_rs = "=0.8.42"
+encoding_rs = "=0.8.44"
 glob = "=0.3.4"
 uuid = { version = "=1.29.0", features = ["v4", "serde"] }
 zeroize = "=1.9.1"
