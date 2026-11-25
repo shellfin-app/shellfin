@@ -16,13 +16,13 @@ name = "shellfin_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
-tauri-build = { version = "=2.7.4", features = [] }
+tauri-build = { version = "=2.7.6", features = [] }
 
 [dependencies]
-tauri = { version = "=2.12.4", features = [] }
+tauri = { version = "=2.12.5", features = [] }
 tauri-plugin-dialog = "=2.8.4"       # Rust-side only (no JS permissions)
-tauri-plugin-opener = "=2.7.2"         # Rust-side only (reveal paths, open http(s) links)
-tauri-plugin-notification = "=2.8.0"   # Rust-side only (OS notifications); no JS permission
+tauri-plugin-opener = "=2.7.3"         # Rust-side only (reveal paths, open http(s) links)
+tauri-plugin-notification = "=2.8.1"   # Rust-side only (OS notifications); no JS permission
 # Updater: signed self-update (minisign, §9.8). Rust-side only, no JS permission. rustls with
 # ring (no aws-lc, no OpenSSL); system proxy settings honoured; `zip` off (v1-compatible bundles only).
 tauri-plugin-updater = { version = "=2.14.1", default-features = false, features = ["rustls-tls", "system-proxy"] }
